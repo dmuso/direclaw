@@ -74,6 +74,8 @@ pub struct OrchestratorConfig {
     pub agents: BTreeMap<String, AgentConfig>,
     #[serde(default)]
     pub workflows: Vec<WorkflowConfig>,
+    #[serde(default)]
+    pub workflow_orchestration: Option<WorkflowOrchestrationConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,6 +97,8 @@ pub struct WorkflowConfig {
     #[serde(default)]
     pub inputs: serde_yaml::Value,
     #[serde(default)]
+    pub limits: Option<WorkflowLimitsConfig>,
+    #[serde(default)]
     pub steps: Vec<WorkflowStepConfig>,
 }
 
@@ -105,6 +109,44 @@ pub struct WorkflowStepConfig {
     pub step_type: String,
     pub agent: String,
     pub prompt: String,
+    #[serde(default)]
+    pub next: Option<String>,
+    #[serde(default)]
+    pub on_approve: Option<String>,
+    #[serde(default)]
+    pub on_reject: Option<String>,
+    #[serde(default)]
+    pub outputs: Option<Vec<String>>,
+    #[serde(default)]
+    pub output_files: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub limits: Option<StepLimitsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowOrchestrationConfig {
+    #[serde(default)]
+    pub max_total_iterations: Option<u32>,
+    #[serde(default)]
+    pub default_run_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub default_step_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub max_step_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkflowLimitsConfig {
+    #[serde(default)]
+    pub max_total_iterations: Option<u32>,
+    #[serde(default)]
+    pub run_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StepLimitsConfig {
+    #[serde(default)]
+    pub max_retries: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -328,6 +370,12 @@ impl OrchestratorConfig {
                     return Err(ConfigError::Orchestrator(format!(
                         "workflow `{}` step `{}` requires non-empty prompt",
                         workflow.id, step.id
+                    )));
+                }
+                if step.step_type != "agent_task" && step.step_type != "agent_review" {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` has unsupported type `{}`",
+                        workflow.id, step.id, step.step_type
                     )));
                 }
             }

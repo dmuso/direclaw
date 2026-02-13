@@ -8,7 +8,7 @@ Deliver orchestrator-first routing, selector-driven action resolution, workflow 
 
 ### P03-T01 Implement channel-profile to orchestrator routing and selector I/O persistence
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Channel-originated messages resolve `orchestrator_id` via `channel_profiles`.
   - Selector request/result artifacts persist to required orchestrator message/select paths.
@@ -19,7 +19,7 @@ Deliver orchestrator-first routing, selector-driven action resolution, workflow 
 
 ### P03-T02 Implement selector action routing (`workflow_start|workflow_status|command_invoke`)
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `workflow_start` launches selected valid workflow.
   - `workflow_status` resolves run by precedence and returns progress without advancing steps.
@@ -30,7 +30,7 @@ Deliver orchestrator-first routing, selector-driven action resolution, workflow 
 
 ### P03-T03 Implement workflow run state model and progress snapshots
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Run and step state persist under `~/.direclaw/workflows/runs/<run_id>`.
   - `progress.json` is updated at required lifecycle points.
@@ -41,7 +41,7 @@ Deliver orchestrator-first routing, selector-driven action resolution, workflow 
 
 ### P03-T04 Implement workflow step execution contract and deterministic routing rules
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Step attempts parse required `[workflow_result]` JSON envelope.
   - `agent_task` and `agent_review` transitions follow deterministic routing rules.
