@@ -17,12 +17,12 @@ Defines orchestrator-owned workflow execution across agents, definition schema, 
 
 Persisted run state:
 
-- `~/.rustyclaw/workflows/runs/<run_id>.json`
+- `~/.direclaw/workflows/runs/<run_id>.json`
 - Valid run states: `queued`, `running`, `waiting`, `succeeded`, `failed`, `canceled`
 
 Run progress snapshot:
 
-- `~/.rustyclaw/workflows/runs/<run_id>/progress.json`
+- `~/.direclaw/workflows/runs/<run_id>/progress.json`
 - Must be updated at workflow start, step-attempt start/end, state transitions, and periodic heartbeat ticks while `state=running|waiting`
 - Must include:
   - `runId`
@@ -69,7 +69,7 @@ Selection rules:
   - `workflow_start` (and one workflow id from discovered workflow ids)
   - `workflow_status` (status report request for current conversation context)
   - `diagnostics_investigate` (diagnose failure or runtime behavior for current conversation context)
-  - `command_invoke` (invoke one supported RustyClaw function from function registry)
+  - `command_invoke` (invoke one supported DireClaw function from function registry)
 - `workflows` must be non-empty.
 - `default_workflow` must exist in `workflows`.
 - If selector output is invalid or selection fails after retries, orchestrator starts `default_workflow`.
@@ -171,14 +171,14 @@ Recommended selected-workflow `inputs` for channel dispatch:
 
 Selector request persistence:
 
-- `~/.rustyclaw/orchestrator/messages/<message_id>.json` (canonical normalized message snapshot)
-- `~/.rustyclaw/orchestrator/select/incoming/<selector_id>.json`
-- `~/.rustyclaw/orchestrator/select/processing/<selector_id>.json`
+- `~/.direclaw/orchestrator/messages/<message_id>.json` (canonical normalized message snapshot)
+- `~/.direclaw/orchestrator/select/incoming/<selector_id>.json`
+- `~/.direclaw/orchestrator/select/processing/<selector_id>.json`
 
 Selector result persistence:
 
-- `~/.rustyclaw/orchestrator/select/results/<selector_id>.json`
-- `~/.rustyclaw/orchestrator/select/logs/<selector_id>.log`
+- `~/.direclaw/orchestrator/select/results/<selector_id>.json`
+- `~/.direclaw/orchestrator/select/logs/<selector_id>.log`
 
 Selector request JSON must include:
 
@@ -277,9 +277,9 @@ Scope rules:
   3. active run association for `(channelProfileId, conversationId)`
 - If scope cannot be resolved, runtime must ask a clarifying question instead of guessing target run.
 - All file reads must be restricted to:
-  - `~/.rustyclaw/workflows/runs/<run_id>`
-  - `~/.rustyclaw/orchestrator/select`
-  - `~/.rustyclaw/logs`
+  - `~/.direclaw/workflows/runs/<run_id>`
+  - `~/.direclaw/orchestrator/select`
+  - `~/.direclaw/logs`
   - resolved orchestrator private workspace
 - Path traversal outside allowed roots is invalid and must be blocked and logged.
 
@@ -292,7 +292,7 @@ Deterministic context gathering:
   - relevant result artifacts (`progress.json`, step `result.json`, selector result)
   - bounded log excerpts filtered by run/conversation identifiers and recent window
 - Persist gathered bundle at:
-  - `~/.rustyclaw/orchestrator/diagnostics/context/<diagnostics_id>.json`
+  - `~/.direclaw/orchestrator/diagnostics/context/<diagnostics_id>.json`
 
 Retrieval policy:
 
@@ -317,7 +317,7 @@ Tool contracts (orchestrator-internal):
 
 All tool outputs must be serializable JSON and persisted under:
 
-- `~/.rustyclaw/orchestrator/diagnostics/results/<diagnostics_id>.json`
+- `~/.direclaw/orchestrator/diagnostics/results/<diagnostics_id>.json`
 
 Looping and fallback controls:
 
@@ -338,17 +338,17 @@ Auditability:
   - tool call trace and selected excerpts
   - final user-facing response
 - Diagnostics logs must be written to:
-  - `~/.rustyclaw/orchestrator/diagnostics/logs/<diagnostics_id>.log`
+  - `~/.direclaw/orchestrator/diagnostics/logs/<diagnostics_id>.log`
 
 ## Execution Workspace Model
 
 Run workspace root:
 
-- `~/.rustyclaw/workflows/runs/<run_id>/workspace/`
+- `~/.direclaw/workflows/runs/<run_id>/workspace/`
 
 Per-step attempt output root:
 
-- `~/.rustyclaw/workflows/runs/<run_id>/steps/<step_id>/attempts/<attempt>/outputs/`
+- `~/.direclaw/workflows/runs/<run_id>/steps/<step_id>/attempts/<attempt>/outputs/`
 
 Rules:
 
@@ -413,7 +413,7 @@ Invalid JSON envelope, missing outputs, invalid paths, or unreadable files:
 
 Control payload persistence:
 
-- `~/.rustyclaw/workflows/runs/<run_id>/steps/<step_id>/result.json`
+- `~/.direclaw/workflows/runs/<run_id>/steps/<step_id>/result.json`
 
 ## Deterministic Routing Rules
 

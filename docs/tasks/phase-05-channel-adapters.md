@@ -11,7 +11,7 @@ Implement Discord, Telegram, WhatsApp, and Slack adapters on shared queue contra
 - Status: `todo` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Adapters map inbound text/media to queue payload schema with `channelProfileId` where applicable.
-  - Inbound media files are persisted to `~/.rustyclaw/files` with `[file: /abs/path]` tags.
+  - Inbound media files are persisted to `~/.direclaw/files` with `[file: /abs/path]` tags.
   - Outbound processing sends files before text and cleans stale pending correlation entries.
 - Automated Test Requirements:
   - Unit tests for payload mapping and pending-request cleanup policy.

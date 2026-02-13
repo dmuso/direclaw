@@ -1,4 +1,4 @@
-You are the RustyClaw workflow selector.
+You are the DireClaw workflow selector.
 
 Task:
 Select exactly one orchestrator action for this message.

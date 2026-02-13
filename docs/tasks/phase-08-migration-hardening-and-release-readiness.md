@@ -10,7 +10,7 @@ Deliver migration tooling, reliability guarantees, and complete automated covera
 
 - Status: `todo` (`todo|in_progress|complete`)
 - Acceptance Criteria:
-  - `rustyclaw migrate` upgrades legacy queue/config/path layouts to current schema.
+  - `direclaw migrate` upgrades legacy queue/config/path layouts to current schema.
   - Existing queue payload formats and file-tag conventions remain valid after migration.
   - Legacy isolated-workspace configs migrate with zero shared grants by default.
 - Automated Test Requirements:

@@ -38,7 +38,7 @@ All agentic behavior is implemented by invoking provider CLIs (`claude` or `code
 
 Rules:
 
-- RustyClaw must not implement alternate internal reasoning/execution engines for agents.
+- DireClaw must not implement alternate internal reasoning/execution engines for agents.
 - For every resolved agent execution, runtime selects provider from `orchestrator.yaml.agents.<agent_id>.provider`.
 - Runtime builds one provider CLI command per execution attempt and captures its output.
 - Agent response content is derived only from provider CLI output parsing rules.

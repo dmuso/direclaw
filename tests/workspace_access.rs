@@ -1,4 +1,4 @@
-use rustyclaw::config::{ConfigError, OrchestratorConfig, Settings};
+use direclaw::config::{ConfigError, OrchestratorConfig, Settings};
 
 #[test]
 fn agent_shared_access_is_deny_by_default_without_orchestrator_grant() {

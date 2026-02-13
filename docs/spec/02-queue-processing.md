@@ -56,9 +56,9 @@ Queue worker behavior:
 4. For new channel messages, orchestrator must:
    - resolve `orchestrator_id` from `settings.yaml` channel profile mapping
    - load `<orchestrator_private_workspace>/orchestrator.yaml`
-   - write selector request file under `~/.rustyclaw/orchestrator/select/incoming`
+   - write selector request file under `~/.direclaw/orchestrator/select/incoming`
    - run selector agent via provider CLI
-   - persist selector output under `~/.rustyclaw/orchestrator/select/results`
+   - persist selector output under `~/.direclaw/orchestrator/select/results`
    - execute selector-chosen action:
      - `workflow_start`: select workflow and start new run
      - `workflow_status`: resolve run in precedence order and return run progress snapshot without advancing workflow steps:

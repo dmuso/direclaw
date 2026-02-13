@@ -1,7 +1,7 @@
 # AGENTS
 
 ## Project Overview
-RustyClaw is a Rust-based, file-backed multi-agent orchestration runtime. It processes channel events through a queue, routes execution through an orchestrator, and runs provider-backed agents with strict workspace and configuration controls.
+DireClaw is a Rust-based, file-backed multi-agent orchestration runtime. It processes channel events through a queue, routes execution through an orchestrator, and runs provider-backed agents with strict workspace and configuration controls.
 
 Primary source of truth for behavior:
 - `docs/spec/INDEX.md`
@@ -35,7 +35,7 @@ cargo --version
 
 ## Configuration and Runtime Expectations
 Implement configuration and runtime behavior to match spec requirements, including:
-- State root layout under `~/.rustyclaw`
+- State root layout under `~/.direclaw`
 - Global `settings.yaml` + per-orchestrator `orchestrator.yaml`
 - Orchestrator private workspace resolution
 - Shared workspace registry and per-orchestrator grants

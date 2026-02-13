@@ -6,7 +6,7 @@ Defines required long-lived processes, polling cadence, state root layout, and w
 
 ## Required Runtime Processes
 
-RustyClaw must run these components as independent long-lived workers:
+DireClaw must run these components as independent long-lived workers:
 
 - One process per enabled channel adapter
 - Queue processor
@@ -31,38 +31,38 @@ Supervisor behavior:
 
 ## State Root and Required Paths
 
-Default state root: `~/.rustyclaw`
+Default state root: `~/.direclaw`
 
 Required filesystem structure:
 
-- `~/.rustyclaw/queue/incoming`
-- `~/.rustyclaw/queue/processing`
-- `~/.rustyclaw/queue/outgoing`
-- `~/.rustyclaw/files`
-- `~/.rustyclaw/logs/*.log`
-- `~/.rustyclaw/settings.yaml`
-- `~/.rustyclaw/orchestrator/messages`
-- `~/.rustyclaw/orchestrator/select/incoming`
-- `~/.rustyclaw/orchestrator/select/processing`
-- `~/.rustyclaw/orchestrator/select/results`
-- `~/.rustyclaw/orchestrator/select/logs`
-- `~/.rustyclaw/orchestrator/diagnostics/incoming`
-- `~/.rustyclaw/orchestrator/diagnostics/processing`
-- `~/.rustyclaw/orchestrator/diagnostics/context`
-- `~/.rustyclaw/orchestrator/diagnostics/results`
-- `~/.rustyclaw/orchestrator/diagnostics/logs`
-- `~/.rustyclaw/workflows/runs`
+- `~/.direclaw/queue/incoming`
+- `~/.direclaw/queue/processing`
+- `~/.direclaw/queue/outgoing`
+- `~/.direclaw/files`
+- `~/.direclaw/logs/*.log`
+- `~/.direclaw/settings.yaml`
+- `~/.direclaw/orchestrator/messages`
+- `~/.direclaw/orchestrator/select/incoming`
+- `~/.direclaw/orchestrator/select/processing`
+- `~/.direclaw/orchestrator/select/results`
+- `~/.direclaw/orchestrator/select/logs`
+- `~/.direclaw/orchestrator/diagnostics/incoming`
+- `~/.direclaw/orchestrator/diagnostics/processing`
+- `~/.direclaw/orchestrator/diagnostics/context`
+- `~/.direclaw/orchestrator/diagnostics/results`
+- `~/.direclaw/orchestrator/diagnostics/logs`
+- `~/.direclaw/workflows/runs`
 
 Configuration layering model:
 
-- Global config: `~/.rustyclaw/settings.yaml`
+- Global config: `~/.direclaw/settings.yaml`
 - Per-orchestrator config: `<orchestrator_private_workspace>/orchestrator.yaml`
 
 ## Workspace Roots
 
 Config field:
 
-- `workspace_path` (default `~/rustyclaw-workspace`)
+- `workspace_path` (default `~/direclaw-workspace`)
 
 Private workspace root per orchestrator:
 

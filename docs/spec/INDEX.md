@@ -1,6 +1,6 @@
-# RustyClaw Core Specs Index
+# DireClaw Core Specs Index
 
-This index defines the canonical feature-spec set for RustyClaw.
+This index defines the canonical feature-spec set for DireClaw.
 Source baseline: `docs/SPEC.md`.
 
 ## How To Use This Spec Set

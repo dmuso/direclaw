@@ -30,7 +30,7 @@ Requirements:
 
 - Existing queue payload formats remain valid.
 - Existing file-tag conventions remain valid.
-- Provide `rustyclaw migrate` command for schema/path evolution.
+- Provide `direclaw migrate` command for schema/path evolution.
 - Legacy isolated-workspace configs migrate cleanly with zero shared-area grants by default.
 
 ## Test Strategy

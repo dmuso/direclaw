@@ -16,7 +16,7 @@ Supported channels:
 All adapters must:
 
 - Accept text and media
-- Save inbound media to `~/.rustyclaw/files`
+- Save inbound media to `~/.direclaw/files`
 - Add `[file: /abs/path]` tags to queued message text
 - Include `channelProfileId` in queued payload when channel integration uses multiple channel identities
 - Track pending requests for response correlation
@@ -46,9 +46,9 @@ All adapters must:
 
 - Ignore group chats
 - Support text and supported media message types
-- Persist auth session in `~/.rustyclaw/whatsapp-session`
-- Emit QR code to terminal and `~/.rustyclaw/channels/whatsapp_qr.txt`
-- Mark ready state via `~/.rustyclaw/channels/whatsapp_ready`
+- Persist auth session in `~/.direclaw/whatsapp-session`
+- Emit QR code to terminal and `~/.direclaw/channels/whatsapp_qr.txt`
+- Mark ready state via `~/.direclaw/channels/whatsapp_ready`
 
 ## Slack Adapter
 

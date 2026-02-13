@@ -32,7 +32,7 @@ Deliver orchestrator-first routing, selector-driven action resolution, workflow 
 
 - Status: `todo` (`todo|in_progress|complete`)
 - Acceptance Criteria:
-  - Run and step state persist under `~/.rustyclaw/workflows/runs/<run_id>`.
+  - Run and step state persist under `~/.direclaw/workflows/runs/<run_id>`.
   - `progress.json` is updated at required lifecycle points.
   - Valid run states are enforced (`queued|running|waiting|succeeded|failed|canceled`).
 - Automated Test Requirements:

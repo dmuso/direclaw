@@ -67,17 +67,17 @@ Reference examples:
 
 ## Example Workspace Resolution
 
-Given `workspace_path` = `/Users/example/rustyclaw-workspace` and the example shared registry:
+Given `workspace_path` = `/Users/example/direclaw-workspace` and the example shared registry:
 
-- `shared` -> `/Users/example/rustyclaw-shared`
+- `shared` -> `/Users/example/direclaw-shared`
 - `docs` -> `/Users/example/company-docs`
 - `data` -> `/Volumes/team-data`
 
 Resolved orchestrator workspace examples:
 
-- `engineering_orchestrator` private workspace: `/Users/example/rustyclaw-workspace/orchestrators/engineering_orchestrator`
-- `engineering_orchestrator` shared access: `/Users/example/rustyclaw-shared`, `/Users/example/company-docs`
-- `product_orchestrator` private workspace: `/Users/example/rustyclaw-workspace/orchestrators/product_orchestrator`
+- `engineering_orchestrator` private workspace: `/Users/example/direclaw-workspace/orchestrators/engineering_orchestrator`
+- `engineering_orchestrator` shared access: `/Users/example/direclaw-shared`, `/Users/example/company-docs`
+- `product_orchestrator` private workspace: `/Users/example/direclaw-workspace/orchestrators/product_orchestrator`
 - `product_orchestrator` shared access: `/Users/example/company-docs`
 
 ## Orchestrator Commands

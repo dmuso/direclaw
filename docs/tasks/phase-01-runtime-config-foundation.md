@@ -10,7 +10,7 @@ Establish state root layout, worker process model, settings/orchestrator config 
 
 - Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
-  - Startup creates all required `~/.rustyclaw` queue/orchestrator/workflow/log paths if missing.
+  - Startup creates all required `~/.direclaw` queue/orchestrator/workflow/log paths if missing.
   - Polling defaults are set to 1s for queue and outbound channel processing.
   - Worker registry supports independent lifecycle for queue, orchestrator, adapters, and optional heartbeat.
 - Automated Test Requirements:

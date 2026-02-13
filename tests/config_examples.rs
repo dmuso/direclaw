@@ -1,4 +1,4 @@
-use rustyclaw::config::{OrchestratorConfig, Settings, ValidationOptions};
+use direclaw::config::{OrchestratorConfig, Settings, ValidationOptions};
 use std::path::Path;
 
 #[test]
