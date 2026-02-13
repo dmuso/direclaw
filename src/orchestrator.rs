@@ -1,4 +1,7 @@
-use crate::config::{OrchestratorConfig, Settings, WorkflowConfig, WorkflowStepConfig};
+use crate::config::{
+    load_orchestrator_config, ConfigError, OrchestratorConfig, Settings, WorkflowConfig,
+    WorkflowStepConfig,
+};
 use crate::queue::IncomingMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -18,6 +21,10 @@ pub enum OrchestratorError {
     SelectorValidation(String),
     #[error("unknown function id `{function_id}`")]
     UnknownFunction { function_id: String },
+    #[error("missing required function argument `{arg}`")]
+    MissingFunctionArg { arg: String },
+    #[error("workflow run `{run_id}` not found")]
+    UnknownRunId { run_id: String },
     #[error("workflow run state transition `{from}` -> `{to}` is invalid")]
     InvalidRunTransition { from: RunState, to: RunState },
     #[error("workflow result envelope parse failed: {0}")]
@@ -30,6 +37,8 @@ pub enum OrchestratorError {
     RunTimeout { run_timeout_seconds: u64 },
     #[error("workflow step timed out after {step_timeout_seconds}s")]
     StepTimeout { step_timeout_seconds: u64 },
+    #[error("config error: {0}")]
+    Config(String),
     #[error("io error at {path}: {source}")]
     Io {
         path: String,
@@ -44,6 +53,12 @@ pub enum OrchestratorError {
     },
 }
 
+impl From<ConfigError> for OrchestratorError {
+    fn from(value: ConfigError) -> Self {
+        Self::Config(value.to_string())
+    }
+}
+
 fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
     OrchestratorError::Io {
         path: path.display().to_string(),
@@ -55,6 +70,17 @@ fn json_error(path: &Path, source: serde_json::Error) -> OrchestratorError {
     OrchestratorError::Json {
         path: path.display().to_string(),
         source,
+    }
+}
+
+fn missing_run_for_io(run_id: &str, err: &OrchestratorError) -> Option<OrchestratorError> {
+    match err {
+        OrchestratorError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
+            Some(OrchestratorError::UnknownRunId {
+                run_id: run_id.to_string(),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -207,8 +233,9 @@ pub fn resolve_selector_with_retries<F>(
 where
     F: FnMut(u32) -> Option<String>,
 {
+    let max_attempts = orchestrator.selection_max_retries.saturating_add(1);
     let mut attempt = 0_u32;
-    while attempt < orchestrator.selection_max_retries {
+    while attempt < max_attempts {
         let raw = next_attempt(attempt);
         if let Some(raw) = raw {
             if let Ok(validated) = parse_and_validate_selector_result(&raw, request) {
@@ -285,6 +312,9 @@ impl SelectorArtifactStore {
             .state_root
             .join("orchestrator/select/processing")
             .join(format!("{selector_id}.json"));
+        if let Some(parent) = processing.parent() {
+            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+        }
         fs::rename(&incoming, &processing).map_err(|e| io_error(&incoming, e))?;
         Ok(processing)
     }
@@ -354,6 +384,13 @@ impl RunState {
                 | (RunState::Waiting, RunState::Running)
                 | (RunState::Waiting, RunState::Failed)
                 | (RunState::Waiting, RunState::Canceled)
+        )
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            RunState::Succeeded | RunState::Failed | RunState::Canceled
         )
     }
 }
@@ -427,8 +464,17 @@ pub struct StepAttemptRecord {
     pub next_step_id: Option<String>,
 }
 
+#[derive(Debug, Clone)]
 pub struct WorkflowRunStore {
     state_root: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelectorStartedRunMetadata {
+    pub source_message_id: Option<String>,
+    pub selector_id: Option<String>,
+    pub selected_workflow: Option<String>,
+    pub status_conversation_id: Option<String>,
 }
 
 impl WorkflowRunStore {
@@ -438,10 +484,29 @@ impl WorkflowRunStore {
         }
     }
 
+    pub fn state_root(&self) -> &Path {
+        &self.state_root
+    }
+
     pub fn create_run(
         &self,
         run_id: impl Into<String>,
         workflow_id: impl Into<String>,
+        now: i64,
+    ) -> Result<WorkflowRunRecord, OrchestratorError> {
+        self.create_run_with_metadata(
+            run_id,
+            workflow_id,
+            SelectorStartedRunMetadata::default(),
+            now,
+        )
+    }
+
+    pub fn create_run_with_metadata(
+        &self,
+        run_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        metadata: SelectorStartedRunMetadata,
         now: i64,
     ) -> Result<WorkflowRunRecord, OrchestratorError> {
         let run = WorkflowRunRecord {
@@ -453,10 +518,10 @@ impl WorkflowRunStore {
             started_at: now,
             updated_at: now,
             total_iterations: 0,
-            source_message_id: None,
-            selector_id: None,
-            selected_workflow: None,
-            status_conversation_id: None,
+            source_message_id: metadata.source_message_id,
+            selector_id: metadata.selector_id,
+            selected_workflow: metadata.selected_workflow,
+            status_conversation_id: metadata.status_conversation_id,
         };
         self.persist_run(&run)?;
         self.persist_progress(&ProgressSnapshot {
@@ -476,18 +541,32 @@ impl WorkflowRunStore {
     }
 
     pub fn load_run(&self, run_id: &str) -> Result<WorkflowRunRecord, OrchestratorError> {
-        let path = self.run_path(run_id);
-        let raw = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        let path = self.run_metadata_path(run_id);
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                let legacy = self.run_dir(run_id).join("run.json");
+                fs::read_to_string(&legacy).map_err(|e| io_error(&legacy, e))?
+            }
+            Err(err) => return Err(io_error(&path, err)),
+        };
         serde_json::from_str(&raw).map_err(|e| json_error(&path, e))
     }
 
     pub fn persist_run(&self, run: &WorkflowRunRecord) -> Result<(), OrchestratorError> {
-        let path = self.run_path(&run.run_id);
+        let path = self.run_metadata_path(&run.run_id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
         }
         let body = serde_json::to_vec_pretty(run).map_err(|e| json_error(&path, e))?;
-        fs::write(&path, body).map_err(|e| io_error(&path, e))
+        fs::write(&path, &body).map_err(|e| io_error(&path, e))?;
+
+        // Keep a mirrored run record in run directory for compatibility.
+        let legacy_path = self.run_dir(&run.run_id).join("run.json");
+        if let Some(parent) = legacy_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+        }
+        fs::write(&legacy_path, body).map_err(|e| io_error(&legacy_path, e))
     }
 
     pub fn transition_state(
@@ -523,6 +602,57 @@ impl WorkflowRunStore {
         })
     }
 
+    pub fn heartbeat_tick(
+        &self,
+        run: &WorkflowRunRecord,
+        now: i64,
+        summary: impl Into<String>,
+    ) -> Result<(), OrchestratorError> {
+        self.persist_progress(&ProgressSnapshot {
+            run_id: run.run_id.clone(),
+            workflow_id: run.workflow_id.clone(),
+            state: run.state.clone(),
+            current_step_id: run.current_step_id.clone(),
+            current_attempt: run.current_attempt,
+            started_at: run.started_at,
+            updated_at: now,
+            last_progress_at: now,
+            summary: summary.into(),
+            pending_human_input: run.state == RunState::Waiting,
+            next_expected_action: if run.state == RunState::Waiting {
+                "await human response".to_string()
+            } else {
+                "continue workflow".to_string()
+            },
+        })
+    }
+
+    pub fn mark_step_attempt_started(
+        &self,
+        run: &mut WorkflowRunRecord,
+        step_id: &str,
+        attempt: u32,
+        now: i64,
+    ) -> Result<(), OrchestratorError> {
+        run.current_step_id = Some(step_id.to_string());
+        run.current_attempt = Some(attempt);
+        run.updated_at = now;
+        self.persist_run(run)?;
+        self.persist_progress(&ProgressSnapshot {
+            run_id: run.run_id.clone(),
+            workflow_id: run.workflow_id.clone(),
+            state: run.state.clone(),
+            current_step_id: run.current_step_id.clone(),
+            current_attempt: run.current_attempt,
+            started_at: run.started_at,
+            updated_at: now,
+            last_progress_at: now,
+            summary: format!("step {step_id} attempt {attempt} running"),
+            pending_human_input: false,
+            next_expected_action: "await step output".to_string(),
+        })
+    }
+
     pub fn persist_progress(&self, progress: &ProgressSnapshot) -> Result<(), OrchestratorError> {
         let path = self.progress_path(&progress.run_id);
         if let Some(parent) = path.parent() {
@@ -546,12 +676,39 @@ impl WorkflowRunStore {
             .run_dir(&attempt.run_id)
             .join("steps")
             .join(&attempt.step_id)
-            .join(format!("attempt_{}.json", attempt.attempt));
+            .join("attempts")
+            .join(attempt.attempt.to_string())
+            .join("result.json");
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
         }
         let body = serde_json::to_vec_pretty(attempt).map_err(|e| json_error(&path, e))?;
         fs::write(&path, body).map_err(|e| io_error(&path, e))?;
+
+        let mut run = self.load_run(&attempt.run_id)?;
+        run.total_iterations = run.total_iterations.saturating_add(1);
+        run.updated_at = attempt.ended_at;
+        self.persist_run(&run)?;
+        self.persist_progress(&ProgressSnapshot {
+            run_id: run.run_id.clone(),
+            workflow_id: run.workflow_id.clone(),
+            state: run.state.clone(),
+            current_step_id: Some(attempt.step_id.clone()),
+            current_attempt: Some(attempt.attempt),
+            started_at: run.started_at,
+            updated_at: attempt.ended_at,
+            last_progress_at: attempt.ended_at,
+            summary: format!(
+                "step {} attempt {} {}",
+                attempt.step_id, attempt.attempt, attempt.state
+            ),
+            pending_human_input: run.state == RunState::Waiting,
+            next_expected_action: attempt
+                .next_step_id
+                .clone()
+                .unwrap_or_else(|| "workflow terminal transition".to_string()),
+        })?;
+
         Ok(path)
     }
 
@@ -559,8 +716,10 @@ impl WorkflowRunStore {
         self.state_root.join("workflows/runs").join(run_id)
     }
 
-    fn run_path(&self, run_id: &str) -> PathBuf {
-        self.run_dir(run_id).join("run.json")
+    fn run_metadata_path(&self, run_id: &str) -> PathBuf {
+        self.state_root
+            .join("workflows/runs")
+            .join(format!("{run_id}.json"))
     }
 
     fn progress_path(&self, run_id: &str) -> PathBuf {
@@ -672,6 +831,43 @@ impl Default for ExecutionSafetyLimits {
     }
 }
 
+pub fn resolve_execution_safety_limits(
+    orchestrator: &OrchestratorConfig,
+    workflow: &WorkflowConfig,
+    step: &WorkflowStepConfig,
+) -> ExecutionSafetyLimits {
+    let defaults = ExecutionSafetyLimits::default();
+    let orchestration = orchestrator.workflow_orchestration.as_ref();
+
+    let mut step_timeout_seconds = orchestration
+        .and_then(|v| v.default_step_timeout_seconds)
+        .unwrap_or(defaults.step_timeout_seconds);
+    if let Some(max_step) = orchestration.and_then(|v| v.max_step_timeout_seconds) {
+        step_timeout_seconds = step_timeout_seconds.min(max_step);
+    }
+
+    ExecutionSafetyLimits {
+        max_total_iterations: workflow
+            .limits
+            .as_ref()
+            .and_then(|v| v.max_total_iterations)
+            .or_else(|| orchestration.and_then(|v| v.max_total_iterations))
+            .unwrap_or(defaults.max_total_iterations),
+        run_timeout_seconds: workflow
+            .limits
+            .as_ref()
+            .and_then(|v| v.run_timeout_seconds)
+            .or_else(|| orchestration.and_then(|v| v.default_run_timeout_seconds))
+            .unwrap_or(defaults.run_timeout_seconds),
+        step_timeout_seconds,
+        max_retries: step
+            .limits
+            .as_ref()
+            .and_then(|v| v.max_retries)
+            .unwrap_or(defaults.max_retries),
+    }
+}
+
 pub fn enforce_execution_safety(
     run: &WorkflowRunRecord,
     limits: ExecutionSafetyLimits,
@@ -713,9 +909,16 @@ pub struct FunctionCall {
     pub args: Map<String, Value>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FunctionRegistry {
     allowed: BTreeSet<String>,
+    run_store: Option<WorkflowRunStore>,
+}
+
+impl Default for FunctionRegistry {
+    fn default() -> Self {
+        Self::new(Vec::<String>::new())
+    }
 }
 
 impl FunctionRegistry {
@@ -725,11 +928,26 @@ impl FunctionRegistry {
     {
         Self {
             allowed: function_ids.into_iter().collect(),
+            run_store: None,
+        }
+    }
+
+    pub fn with_run_store<I>(function_ids: I, run_store: WorkflowRunStore) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
+        Self {
+            allowed: function_ids.into_iter().collect(),
+            run_store: Some(run_store),
         }
     }
 
     pub fn contains(&self, function_id: &str) -> bool {
         self.allowed.contains(function_id)
+    }
+
+    pub fn available_function_ids(&self) -> Vec<String> {
+        self.allowed.iter().cloned().collect()
     }
 
     pub fn invoke(&self, call: &FunctionCall) -> Result<Value, OrchestratorError> {
@@ -738,14 +956,79 @@ impl FunctionRegistry {
                 function_id: call.function_id.clone(),
             });
         }
-        Ok(Value::Object(Map::from_iter([
-            (
-                "functionId".to_string(),
-                Value::String(call.function_id.clone()),
-            ),
-            ("functionArgs".to_string(), Value::Object(call.args.clone())),
-        ])))
+
+        match call.function_id.as_str() {
+            "workflow.status" => {
+                let run_id = parse_run_id_arg(&call.args)?;
+                let run_store = self.run_store.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "workflow.status requires workflow run store".to_string(),
+                    )
+                })?;
+                let progress = run_store
+                    .load_progress(&run_id)
+                    .map_err(|e| missing_run_for_io(&run_id, &e).unwrap_or(e))?;
+                Ok(Value::Object(Map::from_iter([
+                    ("runId".to_string(), Value::String(run_id)),
+                    (
+                        "progress".to_string(),
+                        serde_json::to_value(progress)
+                            .map_err(|e| OrchestratorError::SelectorJson(e.to_string()))?,
+                    ),
+                ])))
+            }
+            "workflow.cancel" => {
+                let run_id = parse_run_id_arg(&call.args)?;
+                let run_store = self.run_store.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "workflow.cancel requires workflow run store".to_string(),
+                    )
+                })?;
+                let mut run = run_store
+                    .load_run(&run_id)
+                    .map_err(|e| missing_run_for_io(&run_id, &e).unwrap_or(e))?;
+                if !run.state.clone().is_terminal() {
+                    let now = run.updated_at.saturating_add(1);
+                    run_store.transition_state(
+                        &mut run,
+                        RunState::Canceled,
+                        now,
+                        "canceled by command",
+                        false,
+                        "none",
+                    )?;
+                }
+                Ok(Value::Object(Map::from_iter([
+                    ("runId".to_string(), Value::String(run_id)),
+                    ("state".to_string(), Value::String(run.state.to_string())),
+                ])))
+            }
+            "orchestrator.list" => Ok(Value::Object(Map::from_iter([(
+                "availableFunctions".to_string(),
+                Value::Array(
+                    self.allowed
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect::<Vec<_>>(),
+                ),
+            )]))),
+            _ => Err(OrchestratorError::SelectorValidation(format!(
+                "function `{}` is allowed but has no implementation",
+                call.function_id
+            ))),
+        }
     }
+}
+
+fn parse_run_id_arg(args: &Map<String, Value>) -> Result<String, OrchestratorError> {
+    args.get("runId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .ok_or_else(|| OrchestratorError::MissingFunctionArg {
+            arg: "runId".to_string(),
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -785,17 +1068,38 @@ pub fn resolve_status_run_id(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutedSelectorAction {
-    WorkflowStart { workflow_id: String },
-    WorkflowStatus { run_id: Option<String> },
-    CommandInvoke { result: Value },
+    WorkflowStart {
+        run_id: String,
+        workflow_id: String,
+    },
+    WorkflowStatus {
+        run_id: Option<String>,
+        progress: Option<ProgressSnapshot>,
+        message: String,
+    },
+    DiagnosticsInvestigate {
+        run_id: Option<String>,
+        findings: String,
+    },
+    CommandInvoke {
+        result: Value,
+    },
+}
+
+pub struct RouteContext<'a> {
+    pub status_input: &'a StatusResolutionInput,
+    pub active_conversation_runs: &'a BTreeMap<(String, String), String>,
+    pub functions: &'a FunctionRegistry,
+    pub run_store: &'a WorkflowRunStore,
+    pub orchestrator: &'a OrchestratorConfig,
+    pub source_message_id: Option<&'a str>,
+    pub now: i64,
 }
 
 pub fn route_selector_action(
     request: &SelectorRequest,
     result: &SelectorResult,
-    status_input: &StatusResolutionInput,
-    active_conversation_runs: &BTreeMap<(String, String), String>,
-    functions: &FunctionRegistry,
+    ctx: RouteContext<'_>,
 ) -> Result<RoutedSelectorAction, OrchestratorError> {
     let validated = parse_and_validate_selector_result(
         &serde_json::to_string(result)
@@ -806,17 +1110,196 @@ pub fn route_selector_action(
     let action = validated
         .action
         .ok_or_else(|| OrchestratorError::SelectorValidation("missing action".to_string()))?;
+
     match action {
-        SelectorAction::WorkflowStart => Ok(RoutedSelectorAction::WorkflowStart {
-            workflow_id: validated.selected_workflow.ok_or_else(|| {
+        SelectorAction::WorkflowStart => {
+            let workflow_id = validated.selected_workflow.ok_or_else(|| {
                 OrchestratorError::SelectorValidation(
                     "workflow_start requires selectedWorkflow".to_string(),
                 )
-            })?,
-        }),
-        SelectorAction::WorkflowStatus => Ok(RoutedSelectorAction::WorkflowStatus {
-            run_id: resolve_status_run_id(status_input, active_conversation_runs),
-        }),
+            })?;
+            if !ctx
+                .orchestrator
+                .workflows
+                .iter()
+                .any(|w| w.id == workflow_id)
+            {
+                return Err(OrchestratorError::SelectorValidation(format!(
+                    "workflow `{workflow_id}` is not declared in orchestrator"
+                )));
+            }
+
+            let run_id = format!("run-{}-{}", request.selector_id, ctx.now);
+            let mut run = ctx.run_store.create_run_with_metadata(
+                run_id.clone(),
+                workflow_id.clone(),
+                SelectorStartedRunMetadata {
+                    source_message_id: ctx.source_message_id.map(|v| v.to_string()),
+                    selector_id: Some(request.selector_id.clone()),
+                    selected_workflow: Some(workflow_id.clone()),
+                    status_conversation_id: request.conversation_id.clone(),
+                },
+                ctx.now,
+            )?;
+            ctx.run_store.transition_state(
+                &mut run,
+                RunState::Running,
+                ctx.now,
+                format!("workflow {workflow_id} started"),
+                false,
+                "execute first step",
+            )?;
+
+            Ok(RoutedSelectorAction::WorkflowStart {
+                run_id,
+                workflow_id,
+            })
+        }
+        SelectorAction::WorkflowStatus => {
+            let run_id = resolve_status_run_id(ctx.status_input, ctx.active_conversation_runs);
+            let Some(run_id_value) = run_id.clone() else {
+                return Ok(RoutedSelectorAction::WorkflowStatus {
+                    run_id: None,
+                    progress: None,
+                    message: "no active workflow run found for this conversation".to_string(),
+                });
+            };
+
+            match ctx.run_store.load_progress(&run_id_value) {
+                Ok(progress) => Ok(RoutedSelectorAction::WorkflowStatus {
+                    run_id,
+                    progress: Some(progress),
+                    message: "workflow progress loaded".to_string(),
+                }),
+                Err(err) => {
+                    let err = missing_run_for_io(&run_id_value, &err).unwrap_or(err);
+                    match err {
+                        OrchestratorError::UnknownRunId { .. } => {
+                            Ok(RoutedSelectorAction::WorkflowStatus {
+                                run_id,
+                                progress: None,
+                                message: format!("workflow run `{run_id_value}` was not found"),
+                            })
+                        }
+                        other => Err(other),
+                    }
+                }
+            }
+        }
+        SelectorAction::DiagnosticsInvestigate => {
+            let explicit_run = validated
+                .diagnostics_scope
+                .as_ref()
+                .and_then(|m| m.get("runId"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
+            let run_id = explicit_run
+                .or_else(|| ctx.status_input.inbound_workflow_run_id.clone())
+                .or_else(|| {
+                    if let (Some(profile), Some(conv)) = (
+                        ctx.status_input.channel_profile_id.as_ref(),
+                        ctx.status_input.conversation_id.as_ref(),
+                    ) {
+                        ctx.active_conversation_runs
+                            .get(&(profile.clone(), conv.clone()))
+                            .cloned()
+                    } else {
+                        None
+                    }
+                });
+
+            let diagnostics_id = format!("diag-{}-{}", request.selector_id, ctx.now);
+            let diagnostics_root = ctx.run_store.state_root().join("orchestrator/diagnostics");
+            fs::create_dir_all(diagnostics_root.join("context"))
+                .map_err(|e| io_error(&diagnostics_root, e))?;
+            fs::create_dir_all(diagnostics_root.join("results"))
+                .map_err(|e| io_error(&diagnostics_root, e))?;
+            fs::create_dir_all(diagnostics_root.join("logs"))
+                .map_err(|e| io_error(&diagnostics_root, e))?;
+
+            let (findings, context_bundle) = if let Some(run_id_value) = run_id.clone() {
+                match ctx.run_store.load_progress(&run_id_value) {
+                    Ok(progress) => (
+                        format!(
+                            "Diagnostics summary for run {}: state={}, summary={}.",
+                            run_id_value, progress.state, progress.summary
+                        ),
+                        Value::Object(Map::from_iter([
+                            ("diagnosticsId".to_string(), Value::String(diagnostics_id.clone())),
+                            ("runId".to_string(), Value::String(run_id_value.clone())),
+                            (
+                                "progress".to_string(),
+                                serde_json::to_value(progress)
+                                    .map_err(|e| OrchestratorError::SelectorJson(e.to_string()))?,
+                            ),
+                        ])),
+                    ),
+                    Err(_) => (
+                        format!(
+                            "Requested diagnostics for run `{run_id_value}`, but no persisted progress was found."
+                        ),
+                        Value::Object(Map::from_iter([
+                            ("diagnosticsId".to_string(), Value::String(diagnostics_id.clone())),
+                            ("runId".to_string(), Value::String(run_id_value)),
+                            (
+                                "note".to_string(),
+                                Value::String("run artifacts not found".to_string()),
+                            ),
+                        ])),
+                    ),
+                }
+            } else {
+                (
+                    "Diagnostics scope is ambiguous. Which workflow run should I investigate?"
+                        .to_string(),
+                    Value::Object(Map::from_iter([
+                        (
+                            "diagnosticsId".to_string(),
+                            Value::String(diagnostics_id.clone()),
+                        ),
+                        (
+                            "note".to_string(),
+                            Value::String("scope unresolved".to_string()),
+                        ),
+                    ])),
+                )
+            };
+
+            let context_path = diagnostics_root
+                .join("context")
+                .join(format!("{diagnostics_id}.json"));
+            let result_path = diagnostics_root
+                .join("results")
+                .join(format!("{diagnostics_id}.json"));
+            let log_path = diagnostics_root
+                .join("logs")
+                .join(format!("{diagnostics_id}.log"));
+
+            fs::write(
+                &context_path,
+                serde_json::to_vec_pretty(&context_bundle)
+                    .map_err(|e| json_error(&context_path, e))?,
+            )
+            .map_err(|e| io_error(&context_path, e))?;
+
+            fs::write(
+                &result_path,
+                serde_json::to_vec_pretty(&Value::Object(Map::from_iter([
+                    (
+                        "diagnosticsId".to_string(),
+                        Value::String(diagnostics_id.clone()),
+                    ),
+                    ("findings".to_string(), Value::String(findings.clone())),
+                ])))
+                .map_err(|e| json_error(&result_path, e))?,
+            )
+            .map_err(|e| io_error(&result_path, e))?;
+
+            fs::write(&log_path, findings.as_bytes()).map_err(|e| io_error(&log_path, e))?;
+
+            Ok(RoutedSelectorAction::DiagnosticsInvestigate { run_id, findings })
+        }
         SelectorAction::CommandInvoke => {
             let function_id = validated.function_id.ok_or_else(|| {
                 OrchestratorError::SelectorValidation("missing functionId".to_string())
@@ -826,15 +1309,141 @@ pub fn route_selector_action(
                 function_id,
                 args: function_args,
             };
-            let invoke_result = functions.invoke(&call)?;
+            let invoke_result = ctx.functions.invoke(&call)?;
             Ok(RoutedSelectorAction::CommandInvoke {
                 result: invoke_result,
             })
         }
-        SelectorAction::DiagnosticsInvestigate => Err(OrchestratorError::SelectorValidation(
-            "diagnostics_investigate is not part of this phase action router".to_string(),
-        )),
     }
+}
+
+pub fn process_queued_message<F>(
+    state_root: &Path,
+    settings: &Settings,
+    inbound: &IncomingMessage,
+    now: i64,
+    active_conversation_runs: &BTreeMap<(String, String), String>,
+    functions: &FunctionRegistry,
+    mut next_selector_attempt: F,
+) -> Result<RoutedSelectorAction, OrchestratorError>
+where
+    F: FnMut(u32, &SelectorRequest) -> Option<String>,
+{
+    let run_store = WorkflowRunStore::new(state_root);
+    if let Some(run_id) = inbound
+        .workflow_run_id
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        let status_input = StatusResolutionInput {
+            explicit_run_id: Some(run_id.clone()),
+            inbound_workflow_run_id: Some(run_id.clone()),
+            channel_profile_id: inbound.channel_profile_id.clone(),
+            conversation_id: inbound.conversation_id.clone(),
+        };
+
+        let pseudo_request = SelectorRequest {
+            selector_id: format!("status-{}", inbound.message_id),
+            channel_profile_id: inbound.channel_profile_id.clone().unwrap_or_default(),
+            message_id: inbound.message_id.clone(),
+            conversation_id: inbound.conversation_id.clone(),
+            user_message: inbound.message.clone(),
+            available_workflows: Vec::new(),
+            default_workflow: String::new(),
+            available_functions: functions.available_function_ids(),
+        };
+        let status_result = SelectorResult {
+            selector_id: pseudo_request.selector_id.clone(),
+            status: SelectorStatus::Selected,
+            action: Some(SelectorAction::WorkflowStatus),
+            selected_workflow: None,
+            diagnostics_scope: None,
+            function_id: None,
+            function_args: None,
+            reason: None,
+        };
+
+        return route_selector_action(
+            &pseudo_request,
+            &status_result,
+            RouteContext {
+                status_input: &status_input,
+                active_conversation_runs,
+                functions,
+                run_store: &run_store,
+                orchestrator: &OrchestratorConfig {
+                    id: "status_only".to_string(),
+                    selector_agent: "none".to_string(),
+                    default_workflow: "none".to_string(),
+                    selection_max_retries: 1,
+                    agents: BTreeMap::new(),
+                    workflows: Vec::new(),
+                    workflow_orchestration: None,
+                },
+                source_message_id: Some(&inbound.message_id),
+                now,
+            },
+        );
+    }
+
+    let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
+    let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
+
+    let request = SelectorRequest {
+        selector_id: format!("sel-{}", inbound.message_id),
+        channel_profile_id: inbound
+            .channel_profile_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        message_id: inbound.message_id.clone(),
+        conversation_id: inbound.conversation_id.clone(),
+        user_message: inbound.message.clone(),
+        available_workflows: orchestrator
+            .workflows
+            .iter()
+            .map(|w| w.id.clone())
+            .collect(),
+        default_workflow: orchestrator.default_workflow.clone(),
+        available_functions: functions.available_function_ids(),
+    };
+
+    let artifact_store = SelectorArtifactStore::new(state_root);
+    artifact_store.persist_message_snapshot(inbound)?;
+    artifact_store.persist_selector_request(&request)?;
+    let _ = artifact_store.move_request_to_processing(&request.selector_id)?;
+
+    let selection = resolve_selector_with_retries(&orchestrator, &request, |attempt| {
+        next_selector_attempt(attempt, &request)
+    });
+    artifact_store.persist_selector_result(&selection.result)?;
+    artifact_store.persist_selector_log(
+        &request.selector_id,
+        selection
+            .result
+            .reason
+            .as_deref()
+            .unwrap_or("selector completed"),
+    )?;
+
+    let status_input = StatusResolutionInput {
+        explicit_run_id: None,
+        inbound_workflow_run_id: inbound.workflow_run_id.clone(),
+        channel_profile_id: inbound.channel_profile_id.clone(),
+        conversation_id: inbound.conversation_id.clone(),
+    };
+    route_selector_action(
+        &request,
+        &selection.result,
+        RouteContext {
+            status_input: &status_input,
+            active_conversation_runs,
+            functions,
+            run_store: &run_store,
+            orchestrator: &orchestrator,
+            source_message_id: Some(&inbound.message_id),
+            now,
+        },
+    )
 }
 
 #[cfg(test)]

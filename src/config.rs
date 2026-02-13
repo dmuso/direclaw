@@ -378,6 +378,28 @@ impl OrchestratorConfig {
                         workflow.id, step.id, step.step_type
                     )));
                 }
+                if let Some(outputs) = &step.outputs {
+                    if outputs.is_empty() {
+                        return Err(ConfigError::Orchestrator(format!(
+                            "workflow `{}` step `{}` `outputs` must be non-empty when present",
+                            workflow.id, step.id
+                        )));
+                    }
+                    let output_files = step.output_files.as_ref().ok_or_else(|| {
+                        ConfigError::Orchestrator(format!(
+                            "workflow `{}` step `{}` requires `output_files` when `outputs` is present",
+                            workflow.id, step.id
+                        ))
+                    })?;
+                    for key in outputs {
+                        if !output_files.contains_key(key) {
+                            return Err(ConfigError::Orchestrator(format!(
+                                "workflow `{}` step `{}` missing output_files mapping for `{}`",
+                                workflow.id, step.id, key
+                            )));
+                        }
+                    }
+                }
             }
         }
 
