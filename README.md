@@ -81,17 +81,9 @@ direclaw stop
 direclaw orchestrator add main
 ```
 
-2. Create a channel profile mapped to that orchestrator:
+2. For Slack setup (app creation, required tokens, channel profile wiring), use the user guide:
 
-```bash
-direclaw channel-profile add local_cli slack main
-```
-
-3. Queue a message through that profile:
-
-```bash
-direclaw send local_cli "hello from cli"
-```
+- [`docs/user-guide/slack-setup.md`](docs/user-guide/slack-setup.md)
 
 ### Useful commands
 
