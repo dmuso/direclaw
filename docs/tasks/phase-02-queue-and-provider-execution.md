@@ -8,7 +8,7 @@ Implement queue lifecycle, ordering guarantees, and provider CLI execution contr
 
 ### P02-T01 Implement queue claim/process/requeue lifecycle
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Incoming files are claimed in `mtime` FIFO order using atomic move to processing.
   - Success writes valid outgoing payload files with correct naming rules.
@@ -19,7 +19,7 @@ Implement queue lifecycle, ordering guarantees, and provider CLI execution contr
 
 ### P02-T02 Implement per-key ordering and cross-key concurrency controls
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Strict sequential processing is preserved per `workflowRunId`.
   - Strict sequential processing is preserved per `(channel, channelProfileId, conversationId)` key.
@@ -30,7 +30,7 @@ Implement queue lifecycle, ordering guarantees, and provider CLI execution contr
 
 ### P02-T03 Implement provider runner for Anthropic and OpenAI CLIs
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Runner builds one CLI invocation per attempt with resolved provider/model/cwd.
   - Anthropic alias model mapping and OpenAI JSONL extraction behave per spec.
@@ -41,9 +41,9 @@ Implement queue lifecycle, ordering guarantees, and provider CLI execution contr
 
 ### P02-T04 Implement reset flag semantics and file-backed prompt assembly
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
-  - Global and per-agent reset flags are consumed exactly once after use.
+  - Per-agent reset flags are consumed exactly once after use.
   - Prompt/context artifacts are written to files before invocation.
   - Provider invocation logs include required metadata fields.
 - Automated Test Requirements:
