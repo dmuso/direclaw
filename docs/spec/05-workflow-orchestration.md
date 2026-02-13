@@ -115,7 +115,7 @@ Optional fields:
 
 - `needs`, `outputs`, `next`
 - `limits.max_retries`
-- `workspace_mode` (`run_workspace` default, `agent_workspace`)
+- `workspace_mode` (`orchestrator_workspace` default, `run_workspace`, `agent_workspace`)
 - For review steps: `on_approve`, `on_reject`
 - For output-producing steps: `output_files` is required whenever `outputs` is present
   - `output_files` must map every key in `outputs`
@@ -352,7 +352,8 @@ Per-step attempt output root:
 
 Rules:
 
-- `workspace_mode: run_workspace` executes inside run workspace (default when omitted).
+- `workspace_mode: orchestrator_workspace` executes in the resolved orchestrator private workspace (default when omitted).
+- `workspace_mode: run_workspace` executes inside run workspace.
 - `workspace_mode: agent_workspace` executes in agent private/shared context.
 - Output paths are precomputed deterministically by orchestrator from `output_files`.
 - Each attempt has distinct output root and canonical paths.
@@ -479,6 +480,14 @@ Required controls:
 - max total iterations per run
 - run-level timeout
 - step-level timeout (global default with optional per-step override)
+
+Timeout precedence and clamp rules:
+
+- Effective step timeout resolves in this order:
+  1. `steps[].limits.timeout_seconds` (when present)
+  2. `workflow_orchestration.default_step_timeout_seconds`
+- Effective step timeout must not exceed `workflow_orchestration.max_step_timeout_seconds` when that max is configured.
+- If a configured per-step timeout exceeds the max, runtime must clamp to max and log the clamp event in run diagnostics.
 
 Unauthorized workflow start attempts must be rejected and logged.
 

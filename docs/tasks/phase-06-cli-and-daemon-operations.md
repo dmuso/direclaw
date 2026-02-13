@@ -12,7 +12,7 @@ Provide full command-surface management for orchestrators, workflows, channel pr
 - Acceptance Criteria:
   - `start|stop|restart|status|logs|attach` behave per spec and are repeatable.
   - `status` reports real process state including per-channel-profile health for Slack.
-  - `attach` returns explicit actionable error when unavailable.
+  - `attach` returns orchestrator-generated workflow/process status summary when no attachable supervisor/session exists.
 - Automated Test Requirements:
   - Unit tests for command argument and state validation.
   - Integration tests for lifecycle transitions and status/log output behavior.

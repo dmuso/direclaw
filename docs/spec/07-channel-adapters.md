@@ -59,7 +59,8 @@ All adapters must:
 - Channels: process only when one condition is true:
   - message is in thread
   - channel is allowlisted
-  - target Slack app user is mentioned (unless mention requirement is disabled for that channel profile)
+  - target Slack app user is mentioned for the receiving profile
+- Mention targeting rule: when multiple Slack profiles are configured, inbound events mentioning a specific app user must map to that profile's `channelProfileId` and therefore to its mapped orchestrator.
 - Download files using bearer token auth
 - Upload files via Slack file upload API
 - Reply in thread context for non-DM messages

@@ -59,7 +59,7 @@ Natural-language chat parity:
 `attach`:
 
 - Attach to running process supervisor/session where applicable.
-- If no attachable supervisor/session exists, return explicit actionable error.
+- If no attachable supervisor/session exists, run orchestrator inspection and return current workflow/process status summary instead of failing.
 
 ## Acceptance Criteria
 

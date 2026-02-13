@@ -8,7 +8,7 @@ Establish state root layout, worker process model, settings/orchestrator config 
 
 ### P01-T01 Implement runtime bootstrap and required filesystem layout
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Startup creates all required `~/.rustyclaw` queue/orchestrator/workflow/log paths if missing.
   - Polling defaults are set to 1s for queue and outbound channel processing.
@@ -19,7 +19,7 @@ Establish state root layout, worker process model, settings/orchestrator config 
 
 ### P01-T02 Implement settings and orchestrator config schema validation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `settings.yaml` required domains and references validate with explicit errors.
   - `<orchestrator_private_workspace>/orchestrator.yaml` required fields validate.
@@ -30,7 +30,7 @@ Establish state root layout, worker process model, settings/orchestrator config 
 
 ### P01-T03 Implement workspace path resolution and shared-workspace grants
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Deterministic private workspace resolution uses override or default rule.
   - Shared workspace registry paths are absolute and canonicalized.

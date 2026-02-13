@@ -26,7 +26,8 @@ Polling behavior:
 
 Supervisor behavior:
 
-- Process supervision may run natively or via tmux-compatibility mode.
+- Process supervision must support native mode and tmux-compatibility mode.
+- tmux mode is mandatory for per-agent provider sessions (for example `claude`, `codex`, and related provider CLIs).
 
 ## State Root and Required Paths
 

@@ -8,7 +8,7 @@ Resolve open spec decisions and lock implementation defaults before coding runti
 
 ### P00-T01 Decide unresolved options in decision workbook
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Every decision section in `docs/spec/13-decision-workbook.md` has `Status: decided`.
   - Each decision includes chosen option and rationale.
@@ -18,7 +18,7 @@ Resolve open spec decisions and lock implementation defaults before coding runti
 
 ### P00-T02 Patch normative specs with decided behavior
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Resolved behavior is reflected in `docs/spec/01-runtime-filesystem.md`, `docs/spec/05-workflow-orchestration.md`, `docs/spec/06-provider-integration.md`, `docs/spec/07-channel-adapters.md`, and `docs/spec/10-daemon-operations.md`.
   - Removed ambiguities are replaced with deterministic rules.
@@ -27,7 +27,7 @@ Resolve open spec decisions and lock implementation defaults before coding runti
 
 ### P00-T03 Freeze examples to match final specs
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Example settings/orchestrator/prompt files under `docs/spec/examples` are updated for decision-aligned fields and defaults.
   - Example configs validate against current schema checks.

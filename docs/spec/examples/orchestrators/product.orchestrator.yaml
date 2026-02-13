@@ -31,3 +31,4 @@ workflow_orchestration:
   max_total_iterations: 12
   default_run_timeout_seconds: 3600
   default_step_timeout_seconds: 900
+  max_step_timeout_seconds: 1800

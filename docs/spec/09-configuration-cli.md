@@ -48,6 +48,11 @@ Per-orchestrator config requirements:
   - `provider`, `model`, optional `private_workspace`, `can_orchestrate_workflows`
   - optional `shared_access[]` (must be subset of orchestrator shared grants from global settings)
 - `workflow_orchestration` safety defaults may be defined per orchestrator config
+  - supported keys include:
+    - `default_run_timeout_seconds`
+    - `default_step_timeout_seconds`
+    - `max_step_timeout_seconds`
+    - `max_total_iterations`
 - `workflows` must contain at least one valid workflow definition
 - `default_workflow` must exist in `workflows`
 - `selector_agent` must reference an agent in the same orchestrator config and must have `can_orchestrate_workflows: true`

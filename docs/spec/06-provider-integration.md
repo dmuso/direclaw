@@ -20,7 +20,7 @@ Command construction inputs:
 - `model`: `orchestrator.yaml.agents.<agent_id>.model`
 - `message`: fully rendered prompt/request text for that attempt
 - `cwd`: resolved execution workspace for the attempt
-- reset scope flags (global or per-agent)
+- per-agent reset scope flag
 
 Invocation rules:
 
@@ -86,18 +86,21 @@ Output handling:
 
 ## Reset Flags
 
-Global reset flag:
-
-- `~/.rustyclaw/reset_flag`
-
 Per-agent reset flag:
 
 - `<resolved_private_workspace>/reset_flag`
 
 Behavior:
 
-- If reset flag exists for run scope, next execution must start fresh conversation (no resume/continue).
+- Runtime checks only per-agent reset flags.
+- If reset flag exists for the target agent, next execution must start fresh conversation (no resume/continue).
 - Reset flag is consumed and removed after it is used.
+
+Conversation continuity policy:
+
+- For normal execution, provider resume/continue behavior is allowed unless reset is requested.
+- If the prior workflow run state is `failed`, the next workflow execution for that run context must start fresh.
+- Fresh-on-failure must be enforced before provider invocation command construction.
 
 ## Error Handling
 
