@@ -25,6 +25,7 @@ channels: {{}}
     .expect("write global config");
 
     let output = Command::new(env!("CARGO_BIN_EXE_direclaw"))
+        .arg("setup")
         .env("HOME", home)
         .output()
         .expect("run binary");

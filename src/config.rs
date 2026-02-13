@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ pub enum ConfigError {
 
 pub const GLOBAL_CONFIG_FILE_NAME: &str = ".direclaw.yaml";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Settings {
     pub workspace_path: PathBuf,
     #[serde(default)]
@@ -44,14 +44,14 @@ pub struct Settings {
     pub channels: BTreeMap<String, ChannelConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SettingsOrchestrator {
     pub private_workspace: Option<PathBuf>,
     #[serde(default)]
     pub shared_access: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChannelProfile {
     pub channel: String,
     pub orchestrator_id: String,
@@ -59,17 +59,17 @@ pub struct ChannelProfile {
     pub require_mention_in_channels: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Monitoring {
     pub heartbeat_interval: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ChannelConfig {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OrchestratorConfig {
     pub id: String,
     pub selector_agent: String,
@@ -82,7 +82,7 @@ pub struct OrchestratorConfig {
     pub workflow_orchestration: Option<WorkflowOrchestrationConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
     pub provider: String,
     pub model: String,
@@ -94,7 +94,7 @@ pub struct AgentConfig {
     pub shared_access: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkflowConfig {
     pub id: String,
     pub version: u32,
@@ -106,7 +106,7 @@ pub struct WorkflowConfig {
     pub steps: Vec<WorkflowStepConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkflowStepConfig {
     pub id: String,
     #[serde(rename = "type")]
@@ -127,7 +127,7 @@ pub struct WorkflowStepConfig {
     pub limits: Option<StepLimitsConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkflowOrchestrationConfig {
     #[serde(default)]
     pub max_total_iterations: Option<u32>,
@@ -139,7 +139,7 @@ pub struct WorkflowOrchestrationConfig {
     pub max_step_timeout_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkflowLimitsConfig {
     #[serde(default)]
     pub max_total_iterations: Option<u32>,
@@ -147,7 +147,7 @@ pub struct WorkflowLimitsConfig {
     pub run_timeout_seconds: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StepLimitsConfig {
     #[serde(default)]
     pub max_retries: Option<u32>,
