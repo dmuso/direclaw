@@ -76,34 +76,36 @@ Here's an example workflow to show what DireClaw can do:
                               |
                               v
 +---------------------------------------------------------------+
-| Planning Agent writes plan output file                        |
+| Planning Agent writes plan                                    |
 +---------------------------------------------------------------+
-                              |
-                              v
+                 |                               ^
+                 |                             reject
+                 |                               |
+                 v                               |
 +---------------------------------------------------------------+
 | Plan Review Agent reviews plan and returns approve/reject     |
 +---------------------------------------------------------------+
-                 |                               ^
-           approve                               reject
-                 |                               |
-                 v                               |
+                              |
+                           approve
+                              v
 +---------------------------------------------------------------+ 
 | Send approved plan + build instructions to Build Agent        | 
 +---------------------------------------------------------------+ 
-                 |                               |                
-                 v                               |                
+                              |
+                              v
 +---------------------------------------------------------------+ 
-| Build Agent writes implementation summary file                | 
+| Build Agent codes furiously                                   | 
 +---------------------------------------------------------------+ 
+                 |                               ^                
+                 |                             reject           
                  |                               |                
                  v                               |                
 +---------------------------------------------------------------+ 
 | Build Review Agent reviews implementation (approve/reject)    | 
 +---------------------------------------------------------------+ 
-                 |                               ^                
-           approve                               reject           
-                 |                               |                
-                 v                               |                
+                              |
+                           approve
+                              v
 +---------------------------------------------------------------+ 
 | Push branch and create PR via `gh` CLI                        | 
 +---------------------------------------------------------------+ 
