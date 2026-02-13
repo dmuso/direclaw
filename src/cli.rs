@@ -1,7 +1,7 @@
 use crate::config::{
-    default_global_config_path, load_orchestrator_config, AgentConfig, ChannelProfile, ConfigError,
-    OrchestratorConfig, Settings, SettingsOrchestrator, ValidationOptions, WorkflowConfig,
-    WorkflowStepConfig,
+    default_global_config_path, load_orchestrator_config, AgentConfig, AuthSyncConfig,
+    AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig, Settings,
+    SettingsOrchestrator, ValidationOptions, WorkflowConfig, WorkflowStepConfig,
 };
 use crate::orchestrator::{RunState, WorkflowRunStore};
 use crate::queue::IncomingMessage;
@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -50,6 +53,7 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
         "orchestrator-agent" => cmd_orchestrator_agent(&args[1..]),
         "workflow" => cmd_workflow(&args[1..]),
         "channel-profile" => cmd_channel_profile(&args[1..]),
+        "auth" => cmd_auth(&args[1..]),
         other => Err(format!("unknown command `{other}`")),
     }
 }
@@ -59,9 +63,33 @@ fn help_text() -> String {
         "direclaw command surface:",
         "  start|stop|restart|status|logs|setup|send|update|attach",
         "  channels reset",
+        "  auth sync",
         "  provider|model|agent|workflow|orchestrator|orchestrator-agent|channel-profile",
     ]
     .join("\n")
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuthSyncResult {
+    synced_sources: Vec<String>,
+}
+
+fn render_auth_sync_result(result: &AuthSyncResult, command_context: bool) -> String {
+    if result.synced_sources.is_empty() {
+        if command_context {
+            return "auth sync skipped\nauth_sync_enabled=false".to_string();
+        }
+        return "auth_sync=skipped".to_string();
+    }
+
+    if command_context {
+        return format!(
+            "auth sync complete\nsynced={}\nsources={}",
+            result.synced_sources.len(),
+            result.synced_sources.join(",")
+        );
+    }
+    format!("auth_sync=synced({})", result.synced_sources.join(","))
 }
 
 fn now_secs() -> i64 {
@@ -237,6 +265,7 @@ fn cmd_setup() -> Result<String, String> {
         channel_profiles: BTreeMap::new(),
         monitoring: Default::default(),
         channels: BTreeMap::new(),
+        auth_sync: AuthSyncConfig::default(),
     };
     let path = save_settings(&settings)?;
     Ok(format!(
@@ -250,6 +279,7 @@ fn cmd_setup() -> Result<String, String> {
 fn cmd_start() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
     let settings = load_settings()?;
+    let auth_sync = sync_auth_sources(&settings)?;
 
     let mut workers = vec!["queue_processor".to_string(), "orchestrator".to_string()];
     if settings.monitoring.heartbeat_interval.unwrap_or(0) > 0 {
@@ -289,9 +319,10 @@ fn cmd_start() -> Result<String, String> {
     save_daemon_state(&paths, &state)?;
 
     Ok(format!(
-        "started\nstate_root={}\nworkers={}",
+        "started\nstate_root={}\nworkers={}\n{}",
         paths.root.display(),
-        state.workers.join(",")
+        state.workers.join(","),
+        render_auth_sync_result(&auth_sync, false)
     ))
 }
 
@@ -400,6 +431,142 @@ fn cmd_send(args: &[String]) -> Result<String, String> {
     fs::write(&queue_path, body)
         .map_err(|e| format!("failed to write {}: {e}", queue_path.display()))?;
     Ok(format!("queued\nmessage_id={msg_id}"))
+}
+
+fn cmd_auth(args: &[String]) -> Result<String, String> {
+    if args.len() == 1 && args[0] == "sync" {
+        let settings = load_settings()?;
+        let result = sync_auth_sources(&settings)?;
+        return Ok(render_auth_sync_result(&result, true));
+    }
+    Err("usage: auth sync".to_string())
+}
+
+fn resolve_auth_destination(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let raw = path.to_string_lossy();
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "HOME is unavailable".to_string())?;
+        return Ok(home.join(rest));
+    }
+    Err(format!(
+        "auth destination `{}` must be absolute or start with `~/`",
+        path.display()
+    ))
+}
+
+fn op_service_token() -> Result<String, String> {
+    let raw = std::env::var("OP_SERVICE_ACCOUNT_TOKEN")
+        .map_err(|_| "OP_SERVICE_ACCOUNT_TOKEN is required for auth sync".to_string())?;
+    if raw.trim().is_empty() {
+        return Err("OP_SERVICE_ACCOUNT_TOKEN is required for auth sync".to_string());
+    }
+    Ok(raw)
+}
+
+fn sync_onepassword_source(
+    source_id: &str,
+    source: &AuthSyncSource,
+    token: &str,
+) -> Result<(), String> {
+    let destination = resolve_auth_destination(&source.destination)?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+
+    let output = Command::new("op")
+        .arg("read")
+        .arg(&source.reference)
+        .env("OP_SERVICE_ACCOUNT_TOKEN", token)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "auth sync failed: `op` binary is not available in PATH".to_string()
+            } else {
+                format!("auth sync source `{source_id}` failed to execute op: {e}")
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.trim();
+        if reason.is_empty() {
+            return Err(format!(
+                "auth sync source `{source_id}` failed to read `{}`",
+                source.reference
+            ));
+        }
+        return Err(format!(
+            "auth sync source `{source_id}` failed to read `{}`: {}",
+            source.reference, reason
+        ));
+    }
+
+    if output.stdout.is_empty() {
+        return Err(format!(
+            "auth sync source `{source_id}` returned empty content"
+        ));
+    }
+
+    let file_name = destination
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| {
+            format!(
+                "auth sync source `{source_id}` destination `{}` must include a file name",
+                destination.display()
+            )
+        })?;
+    let temp_path = destination.with_file_name(format!(".{file_name}.tmp-{}", now_nanos()));
+    fs::write(&temp_path, &output.stdout)
+        .map_err(|e| format!("failed to write {}: {e}", temp_path.display()))?;
+
+    #[cfg(unix)]
+    if source.owner_only {
+        let mut perms = fs::metadata(&temp_path)
+            .map_err(|e| format!("failed to read {}: {e}", temp_path.display()))?
+            .permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&temp_path, perms)
+            .map_err(|e| format!("failed to chmod {}: {e}", temp_path.display()))?;
+    }
+
+    fs::rename(&temp_path, &destination).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        format!(
+            "failed to replace {} with {}: {e}",
+            destination.display(),
+            temp_path.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn sync_auth_sources(settings: &Settings) -> Result<AuthSyncResult, String> {
+    if !settings.auth_sync.enabled {
+        return Ok(AuthSyncResult::default());
+    }
+
+    let mut result = AuthSyncResult::default();
+    let token = op_service_token()?;
+
+    for (source_id, source) in &settings.auth_sync.sources {
+        match source.backend.trim() {
+            "onepassword" => sync_onepassword_source(source_id, source, &token)?,
+            other => {
+                return Err(format!(
+                    "auth sync source `{source_id}` has unsupported backend `{other}`"
+                ))
+            }
+        }
+        result.synced_sources.push(source_id.clone());
+    }
+    Ok(result)
 }
 
 fn cmd_channels(args: &[String]) -> Result<String, String> {

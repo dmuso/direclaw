@@ -99,6 +99,7 @@ fn daemon_command_surface_works() {
     assert_ok(&run(temp.path(), &["attach"]));
     assert_ok(&run(temp.path(), &["update", "check"]));
     assert_ok(&run(temp.path(), &["channels", "reset"]));
+    assert_ok(&run(temp.path(), &["auth", "sync"]));
     let send_missing_profile = run(temp.path(), &["send", "missing-profile", "hello"]);
     assert_err_contains(&send_missing_profile, "unknown channel profile");
 

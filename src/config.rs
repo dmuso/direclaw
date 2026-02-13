@@ -42,6 +42,8 @@ pub struct Settings {
     pub monitoring: Monitoring,
     #[serde(default)]
     pub channels: BTreeMap<String, ChannelConfig>,
+    #[serde(default)]
+    pub auth_sync: AuthSyncConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -67,6 +69,27 @@ pub struct Monitoring {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ChannelConfig {
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct AuthSyncConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub sources: BTreeMap<String, AuthSyncSource>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AuthSyncSource {
+    pub backend: String,
+    pub reference: String,
+    pub destination: PathBuf,
+    #[serde(default = "default_true")]
+    pub owner_only: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -239,6 +262,47 @@ impl Settings {
                 if profile.require_mention_in_channels.is_none() {
                     return Err(ConfigError::Settings(format!(
                         "slack profile `{profile_id}` requires `require_mention_in_channels`"
+                    )));
+                }
+            }
+        }
+
+        if self.auth_sync.enabled {
+            if self.auth_sync.sources.is_empty() {
+                return Err(ConfigError::Settings(
+                    "`auth_sync.sources` must be non-empty when `auth_sync.enabled=true`"
+                        .to_string(),
+                ));
+            }
+            for (source_id, source) in &self.auth_sync.sources {
+                if source_id.trim().is_empty() {
+                    return Err(ConfigError::Settings(
+                        "`auth_sync.sources` keys must be non-empty".to_string(),
+                    ));
+                }
+                if source.backend.trim().is_empty() {
+                    return Err(ConfigError::Settings(format!(
+                        "auth sync source `{source_id}` requires non-empty `backend`"
+                    )));
+                }
+                if source.backend.trim() != "onepassword" {
+                    return Err(ConfigError::Settings(format!(
+                        "auth sync source `{source_id}` has unsupported backend `{}`",
+                        source.backend
+                    )));
+                }
+                if source.reference.trim().is_empty() {
+                    return Err(ConfigError::Settings(format!(
+                        "auth sync source `{source_id}` requires non-empty `reference`"
+                    )));
+                }
+                let destination_raw = source.destination.to_string_lossy();
+                let valid_destination =
+                    source.destination.is_absolute() || destination_raw.starts_with("~/");
+                if !valid_destination {
+                    return Err(ConfigError::Settings(format!(
+                        "auth sync source `{source_id}` destination `{}` must be absolute or start with `~/`",
+                        source.destination.display()
                     )));
                 }
             }
