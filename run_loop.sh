@@ -17,7 +17,10 @@ if [[ ! -d "$TASK_DIR" ]]; then
   exit 1
 fi
 
-mapfile -t task_files < <(find "$TASK_DIR" -maxdepth 1 -type f ! -name '*-review.*' | sort)
+task_files=()
+while IFS= read -r task_file; do
+  task_files+=("$task_file")
+done < <(find "$TASK_DIR" -maxdepth 1 -type f ! -name '*-review.*' | sort)
 
 if [[ ${#task_files[@]} -eq 0 ]]; then
   echo "No task files found in $TASK_DIR"
@@ -40,11 +43,11 @@ for x in "${task_files[@]}"; do
 
   echo "=== Processing task: $x ==="
 
-  codex --non-interactive "Implement all tasks described in file '$x'."
+  codex exec "Implement all tasks described in file '$x'."
 
-  codex --non-interactive "Review the uncommitted work from task file '$x' against the spec docs in '$SPEC_DIR'. Write a report to '$y'."
+  codex exec "Review the uncommitted work from task file '$x' against the spec docs in '$SPEC_DIR'. Write a report to '$y'."
 
-  codex --non-interactive "Rectify all issues identified in review doc '$y' and then commit all uncommitted work. Include in the commit message a comprehensive feature based description of every change in the commit."
+  codex exec "Rectify all issues identified in review doc '$y' and then commit all uncommitted work."
 
   echo "=== Completed task: $x ==="
   echo
