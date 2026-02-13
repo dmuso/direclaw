@@ -28,11 +28,32 @@ In Slack, you connect one installed bot to one orchestrator in DireClaw. This al
 
 ## Agents
 
-Agents are defined with configuration and are attached to orchestrators and workflows. Agents are of two types: 1. Task and 2. Review. A Task Agent is one that just executes a step and is given input and ouput instructions. A Review Agent is one that does a task with a defined set of ouptut states: `approve` | `reject`. These outputs are used in workflows to decide on next steps.
+Agents exist to separate responsibilities in a workflow into explicit, reusable execution units.
+Instead of one prompt handling everything, each step can call a specific configured agent with a specific role.
+
+Agents are defined per orchestrator in `orchestrator.yaml` and referenced by workflow steps.
+
+Each agent is responsible for:
+
+- Executing exactly one provider-backed attempt per step invocation (`claude` or `codex`).
+- Running with its configured `provider` and `model`.
+- Running in the resolved workspace context for that step/run.
+- Producing output that the workflow engine can evaluate and route on.
+
+Important boundary:
+
+- Routing decisions stay orchestrator-owned.
+- An agent only executes the step it is assigned.
+- The `selector_agent` is a normal configured agent with one extra capability flag: `can_orchestrate_workflows: true`.
 
 ## Workflows
 
 You can configure custom workflows to achieve any complex task. They're designed to be deterministic in nature and to yield reliable results.
+
+Workflow behavior uses step types:
+
+- `agent_task`: executes a task step using the configured agent.
+- `agent_review`: executes a review step and drives branching with `approve` or `reject` outcomes via workflow step routing (`on_approve` / `on_reject`).
 
 Here's an example workflow to show what DireClaw can do:
 
