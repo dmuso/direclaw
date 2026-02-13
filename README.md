@@ -147,6 +147,10 @@ direclaw orchestrator add main
 
 - [`docs/user-guide/slack-setup.md`](docs/user-guide/slack-setup.md)
 
+3. For headless provider auth artifact sync from 1Password, use:
+
+- [`docs/user-guide/provider-auth-sync-1password.md`](docs/user-guide/provider-auth-sync-1password.md)
+
 ### Useful commands
 
 ```bash
@@ -158,6 +162,7 @@ direclaw workflow run <orchestrator_id> <workflow_id> --input key=value
 direclaw workflow status <run_id>
 direclaw workflow progress <run_id>
 direclaw channels reset
+direclaw auth sync
 direclaw update check
 ```
 
