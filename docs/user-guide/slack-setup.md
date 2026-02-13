@@ -31,6 +31,14 @@ export SLACK_BOT_TOKEN="xoxb-..."
 
 Persist these in your shell profile or process supervisor so they are present when `direclaw start` runs.
 
+Optional multi-profile overrides:
+
+- `SLACK_BOT_TOKEN_<PROFILE_ID>`
+- `SLACK_APP_TOKEN_<PROFILE_ID>`
+
+Where `<PROFILE_ID>` is uppercased and non-alphanumeric characters are replaced with `_`.
+Example: profile `slack-main` maps to `SLACK_BOT_TOKEN_SLACK_MAIN`.
+
 ## 3. Bootstrap DireClaw and create an orchestrator
 
 ```bash
@@ -74,9 +82,15 @@ Expected fields include:
 ```bash
 direclaw start
 direclaw status
+direclaw channels slack sync
 ```
 
 `status` should show the Slack worker when `channels.slack.enabled=true` and should show channel-profile state.
+`channels slack sync` performs a real Slack sync cycle:
+
+- validates Slack connectivity using `auth.test` + `apps.connections.open`
+- pulls inbound Slack messages into `~/.direclaw/queue/incoming`
+- delivers queued Slack replies from `~/.direclaw/queue/outgoing`
 
 ## 6. Test in Slack
 

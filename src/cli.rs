@@ -6,6 +6,7 @@ use crate::config::{
 use crate::orchestrator::{RunState, WorkflowRunStore};
 use crate::queue::IncomingMessage;
 use crate::runtime::{bootstrap_state_root, default_state_root_path, StatePaths};
+use crate::slack;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -62,7 +63,7 @@ fn help_text() -> String {
     [
         "direclaw command surface:",
         "  start|stop|restart|status|logs|setup|send|update|attach",
-        "  channels reset",
+        "  channels reset|slack sync",
         "  auth sync",
         "  provider|model|agent|workflow|orchestrator|orchestrator-agent|channel-profile",
     ]
@@ -581,7 +582,16 @@ fn cmd_channels(args: &[String]) -> Result<String, String> {
             .map_err(|e| format!("failed to create {}: {e}", channels_dir.display()))?;
         return Ok("channels reset complete".to_string());
     }
-    Err("usage: channels reset".to_string())
+    if args.len() == 2 && args[0] == "slack" && args[1] == "sync" {
+        let paths = ensure_runtime_root()?;
+        let settings = load_settings()?;
+        let report = slack::sync_once(&paths.root, &settings).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "slack sync complete\nprofiles_processed={}\ninbound_enqueued={}\noutbound_messages_sent={}",
+            report.profiles_processed, report.inbound_enqueued, report.outbound_messages_sent
+        ));
+    }
+    Err("usage: channels reset | channels slack sync".to_string())
 }
 
 fn cmd_update(args: &[String]) -> Result<String, String> {

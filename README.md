@@ -162,9 +162,20 @@ direclaw workflow run <orchestrator_id> <workflow_id> --input key=value
 direclaw workflow status <run_id>
 direclaw workflow progress <run_id>
 direclaw channels reset
+direclaw channels slack sync
 direclaw auth sync
 direclaw update check
 ```
+
+Slack runtime uses:
+
+- `SLACK_BOT_TOKEN`
+- `SLACK_APP_TOKEN`
+
+Optional profile-specific overrides are also supported:
+
+- `SLACK_BOT_TOKEN_<PROFILE_ID>`
+- `SLACK_APP_TOKEN_<PROFILE_ID>`
 
 ## Development
 
