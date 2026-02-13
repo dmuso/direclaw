@@ -1,0 +1,186 @@
+# Configuration and Management Commands
+
+## Scope
+
+Defines required configuration surface and command interfaces for agent, workflow, provider, and model management.
+
+## Required Configuration Domains
+
+Setup/config must support:
+
+- Channel enablement and credentials
+- Channel profiles and channel-profile -> orchestrator mapping
+- Workspace root path
+- Per-orchestrator private workspace override
+- Shared workspace registry: logical name -> absolute path
+- Per-orchestrator shared workspace allowlist
+- Per-orchestrator config file path resolution and validation
+- Heartbeat interval
+
+## Settings Shape Requirements
+
+`settings.yaml` must support:
+
+- `workspace_path`
+- `shared_workspaces` object
+- `orchestrators` object keyed by orchestrator id
+  - each orchestrator:
+    - `private_workspace` (optional override; default `<workspace_path>/orchestrators/<orchestrator_id>`)
+    - `shared_access[]` (logical names from `shared_workspaces`)
+- `channel_profiles` object keyed by channel profile id
+  - each profile: `channel`, channel credentials/settings, `orchestrator_id`
+  - `orchestrator_id` must reference `orchestrators.<orchestrator_id>`
+  - for `slack` profiles include `slack_app_user_id` and `require_mention_in_channels`
+- `monitoring` controls
+- `channels` enablement controls
+
+Per-orchestrator config requirements:
+
+- File location: `<resolved_orchestrator_private_workspace>/orchestrator.yaml`
+- Required fields:
+  - `id`
+  - `selector_agent`
+  - `workflows`
+  - `default_workflow`
+  - `selection_max_retries`
+  - `agents` object keyed by agent id
+- For each orchestrator-local agent:
+  - `provider`, `model`, optional `private_workspace`, `can_orchestrate_workflows`
+  - optional `shared_access[]` (must be subset of orchestrator shared grants from global settings)
+- `workflow_orchestration` safety defaults may be defined per orchestrator config
+- `workflows` must contain at least one valid workflow definition
+- `default_workflow` must exist in `workflows`
+- `selector_agent` must reference an agent in the same orchestrator config and must have `can_orchestrate_workflows: true`
+
+Reference examples:
+
+- `docs/spec/examples/settings/minimal.settings.yaml`
+- `docs/spec/examples/settings/full.settings.yaml`
+- `docs/spec/examples/orchestrators/minimal.orchestrator.yaml`
+- `docs/spec/examples/orchestrators/engineering.orchestrator.yaml`
+- `docs/spec/examples/orchestrators/product.orchestrator.yaml`
+
+## Example Workspace Resolution
+
+Given `workspace_path` = `/Users/example/rustyclaw-workspace` and the example shared registry:
+
+- `shared` -> `/Users/example/rustyclaw-shared`
+- `docs` -> `/Users/example/company-docs`
+- `data` -> `/Volumes/team-data`
+
+Resolved orchestrator workspace examples:
+
+- `engineering_orchestrator` private workspace: `/Users/example/rustyclaw-workspace/orchestrators/engineering_orchestrator`
+- `engineering_orchestrator` shared access: `/Users/example/rustyclaw-shared`, `/Users/example/company-docs`
+- `product_orchestrator` private workspace: `/Users/example/rustyclaw-workspace/orchestrators/product_orchestrator`
+- `product_orchestrator` shared access: `/Users/example/company-docs`
+
+## Orchestrator Commands
+
+Required subcommands:
+
+- `orchestrator list`
+- `orchestrator add`
+- `orchestrator show`
+- `orchestrator remove`
+- `orchestrator set-private-workspace <orchestrator_id> <abs_path>`
+- `orchestrator grant-shared-access <orchestrator_id> <shared_key>`
+- `orchestrator revoke-shared-access <orchestrator_id> <shared_key>`
+- `orchestrator set-selector-agent <orchestrator_id> <agent_id>`
+- `orchestrator set-default-workflow <orchestrator_id> <workflow_id>`
+- `orchestrator set-selection-max-retries <orchestrator_id> <count>`
+
+`orchestrator add` must:
+
+- Create orchestrator private workspace.
+- Bootstrap `<private_workspace>/orchestrator.yaml`.
+
+Workflow management in orchestrator config must support:
+
+- `workflow add <orchestrator_id> <workflow_id>`
+- `workflow show <orchestrator_id> <workflow_id>`
+- `workflow remove <orchestrator_id> <workflow_id>`
+- `workflow list <orchestrator_id>`
+
+`orchestrator show` must display:
+
+- private workspace path
+- shared-area access list
+
+## Orchestrator Agent Commands
+
+Required subcommands:
+
+- `orchestrator-agent list <orchestrator_id>`
+- `orchestrator-agent add <orchestrator_id> <agent_id>`
+- `orchestrator-agent show <orchestrator_id> <agent_id>`
+- `orchestrator-agent remove <orchestrator_id> <agent_id>`
+- `orchestrator-agent reset <orchestrator_id> <agent_id>`
+
+`orchestrator-agent add` must:
+
+- Add agent definition to `<orchestrator_private_workspace>/orchestrator.yaml`.
+- Create default agent private workspace under `<orchestrator_private_workspace>/agents/<agent_id>` unless overridden.
+- Set provider/model and capability flags in orchestrator config.
+
+## Workflow Commands
+
+Required subcommands:
+
+- `workflow list <orchestrator_id>`
+- `workflow show <orchestrator_id> <workflow_id>`
+- `workflow run <orchestrator_id> <workflow_id> [--input key=value ...]`
+- `workflow status <run_id>`
+- `workflow progress <run_id>`
+- `workflow cancel <run_id>`
+
+Scope:
+
+- Workflow definitions are scoped by orchestrator identity.
+- Workflow commands must resolve target orchestrator scope explicitly (for example via `--orchestrator <orchestrator_id>`) or through deterministic caller context.
+
+Authorization:
+
+- Workflow starts must enforce `selector_agent` capability and `can_orchestrate_workflows` rules from orchestrator config.
+- `workflow status` and `workflow progress` must be read-only operations and must never mutate run execution state.
+
+## Channel Profile Commands
+
+Required subcommands:
+
+- `channel-profile list`
+- `channel-profile add`
+- `channel-profile show`
+- `channel-profile remove`
+- `channel-profile set-orchestrator <channel_profile_id> <orchestrator_id>`
+
+`channel-profile show` must display:
+
+- channel and credentials identity metadata
+- mapped `orchestrator_id`
+- effective mention policy (for slack profiles)
+
+## Provider and Model Commands
+
+Required commands:
+
+- `provider [anthropic|openai] [--model ...]`
+- `model [sonnet|opus|gpt-5.2|gpt-5.3-codex]`
+
+## Acceptance Criteria
+
+- CLI supports full configuration lifecycle without manual YAML edits.
+- Orchestrator workspace creation and per-orchestrator config bootstrap are automatic.
+- Workflow command suite supports execution lifecycle from listing through cancel/status.
+- Channel profiles can be configured and validated end-to-end, including orchestrator mapping and workflow behavior.
+
+## Selector Function Exposure Contract
+
+- All supported CLI commands in this spec and `docs/spec/10-daemon-operations.md` must be exposed as selector-callable functions for natural-language chat routing.
+- Function registry must be machine-readable and passed to selector as `availableFunctions`.
+- Each function entry must include:
+  - stable `functionId`
+  - argument schema (required/optional args and types)
+  - short description for selector disambiguation
+- `functionId` naming should be command-aligned (for example: `workflow.status`, `workflow.cancel`, `orchestrator.list`, `channel_profile.set_orchestrator`).
+- Selector must not invoke functions outside `availableFunctions`.

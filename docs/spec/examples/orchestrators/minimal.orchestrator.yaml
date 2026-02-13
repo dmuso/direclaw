@@ -1,0 +1,41 @@
+id: default_orchestrator
+selector_agent: workflow_router
+default_workflow: minimal_single_agent
+selection_max_retries: 2
+
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+
+  default:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: false
+
+workflows:
+  - id: minimal_single_agent
+    version: 1
+    inputs: [user_prompt]
+    steps:
+      - id: generate
+        type: agent_task
+        agent: default
+        workspace_mode: agent_workspace
+        prompt: |
+          Complete the request:
+          {{inputs.user_prompt}}
+          Return one [workflow_result] JSON [/workflow_result] block.
+          Required outputs schema:
+          {{workflow.output_schema_json}}
+          Write output exactly to:
+          result -> {{workflow.output_paths.result}}
+        outputs: [result]
+        output_files:
+          result: output/result__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+
+workflow_orchestration:
+  max_total_iterations: 12
+  default_run_timeout_seconds: 3600
+  default_step_timeout_seconds: 900

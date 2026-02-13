@@ -1,0 +1,33 @@
+# Root workspace path used to derive default per-orchestrator private workspaces.
+workspace_path: /Users/example/rustyclaw-workspace
+
+# Named shared workspace registry. Empty means no shared areas are defined.
+shared_workspaces: {}
+
+# Orchestrator registry. Each orchestrator has its own private workspace and config file.
+orchestrators:
+  default_orchestrator:
+    private_workspace: /Users/example/rustyclaw-workspace/orchestrators/default_orchestrator
+    shared_access: []
+
+# Channel profiles are external-facing integration identities.
+# Each profile routes inbound messages into exactly one orchestrator.
+channel_profiles:
+  default_discord_profile:
+    channel: discord
+    orchestrator_id: default_orchestrator
+
+# Runtime monitoring controls.
+monitoring:
+  heartbeat_interval: 3600
+
+# Per-channel enablement and channel-level controls.
+channels:
+  discord:
+    enabled: false
+  telegram:
+    enabled: false
+  whatsapp:
+    enabled: false
+  slack:
+    enabled: false

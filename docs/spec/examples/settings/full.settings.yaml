@@ -1,0 +1,52 @@
+# Root workspace path used to derive default per-orchestrator private workspaces.
+workspace_path: /Users/example/rustyclaw-workspace
+
+# Named shared workspace registry. Keys are logical names used in orchestrator shared_access lists.
+shared_workspaces:
+  shared: /Users/example/rustyclaw-shared
+  docs: /Users/example/company-docs
+  data: /Volumes/team-data
+
+# Orchestrator registry. Each orchestrator owns agents/workflows in its private workspace.
+orchestrators:
+  engineering_orchestrator:
+    private_workspace: /Users/example/rustyclaw-workspace/orchestrators/engineering_orchestrator
+    shared_access: [shared, docs, data]
+
+  product_orchestrator:
+    private_workspace: /Users/example/rustyclaw-workspace/orchestrators/product_orchestrator
+    shared_access: [docs]
+
+# Channel profiles are external-facing integration identities.
+# Each profile routes inbound messages into a mapped orchestrator.
+channel_profiles:
+  engineering_profile:
+    channel: slack
+    slack_app_user_id: U02ABC3DE45
+    orchestrator_id: engineering_orchestrator
+    require_mention_in_channels: true
+
+  product_profile:
+    channel: slack
+    slack_app_user_id: U07FGH8JKL9
+    orchestrator_id: product_orchestrator
+    require_mention_in_channels: true
+
+# Runtime monitoring controls.
+monitoring:
+  heartbeat_interval: 3600
+
+# Per-channel enablement and channel-level controls.
+channels:
+  discord:
+    enabled: true
+
+  telegram:
+    enabled: true
+
+  whatsapp:
+    enabled: false
+
+  slack:
+    enabled: false
+    allowlisted_channels: []

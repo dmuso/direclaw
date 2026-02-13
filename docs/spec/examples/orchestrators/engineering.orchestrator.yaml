@@ -1,0 +1,210 @@
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: engineering_default
+selection_max_retries: 2
+
+agents:
+  workflow_router:
+    provider: anthropic
+    model: opus
+    can_orchestrate_workflows: true
+
+  code_planner:
+    provider: openai
+    model: gpt-5.2
+    can_orchestrate_workflows: false
+
+  plan_reviewer:
+    provider: anthropic
+    model: opus
+    can_orchestrate_workflows: false
+
+  builder:
+    provider: openai
+    model: gpt-5.3-codex
+    can_orchestrate_workflows: false
+
+  build_reviewer:
+    provider: anthropic
+    model: opus
+    can_orchestrate_workflows: false
+
+  default_worker:
+    provider: openai
+    model: gpt-5.3-codex
+    can_orchestrate_workflows: false
+
+workflows:
+  - id: engineering_default
+    version: 1
+    inputs: [user_prompt]
+    steps:
+      - id: default_execute
+        type: agent_task
+        agent: default_worker
+        workspace_mode: run_workspace
+        prompt: |
+          Complete this engineering request end-to-end:
+          {{inputs.user_prompt}}
+          Return one [workflow_result] JSON [/workflow_result] block.
+
+  - id: code_with_reviews
+    version: 1
+    inputs: [user_prompt, repository_url, base_branch, feature_branch]
+    limits:
+      max_total_iterations: 12
+      run_timeout_seconds: 14400
+    steps:
+      - id: clone_repository
+        type: agent_task
+        agent: default_worker
+        workspace_mode: run_workspace
+        prompt: |
+          Clone repository:
+          {{inputs.repository_url}}
+          Base branch:
+          {{inputs.base_branch}}
+          Feature branch:
+          {{inputs.feature_branch}}
+          Use {{workflow.run_workspace}} as the working directory.
+          Return one [workflow_result] JSON [/workflow_result] block.
+        next: plan_create
+
+      - id: plan_create
+        type: agent_task
+        agent: code_planner
+        workspace_mode: run_workspace
+        prompt: |
+          Create an implementation plan for:
+          {{inputs.user_prompt}}
+          Prior feedback:
+          {{state.plan_review_feedback}}
+          You are running in workspace:
+          {{workflow.run_workspace}}
+          Do not return prose-only output.
+          Return a single [workflow_result] JSON [/workflow_result] block.
+          Required outputs schema:
+          {{workflow.output_schema_json}}
+          Write output file exactly here:
+          {{workflow.output_paths.plan_doc}}
+          Do not write plan_doc anywhere else.
+        outputs: [plan_doc]
+        output_files:
+          plan_doc: plan/plan_doc__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+        next: plan_review
+
+      - id: plan_review
+        type: agent_review
+        agent: plan_reviewer
+        workspace_mode: run_workspace
+        prompt: |
+          Review this plan and return:
+          decision: approve|reject
+          feedback: actionable changes
+          Return only one [workflow_result] JSON [/workflow_result] block.
+          Required outputs schema:
+          {{workflow.output_schema_json}}
+          Write outputs exactly to:
+          decision -> {{workflow.output_paths.decision}}
+          feedback -> {{workflow.output_paths.feedback}}
+          approved_plan -> {{workflow.output_paths.approved_plan}}
+          Decision file format:
+          - write exactly one word: approve OR reject
+          - no punctuation, no explanation in decision file
+          Put rationale in feedback file.
+          ---
+          {{steps.plan_create.outputs.plan_doc}}
+        outputs: [decision, feedback, approved_plan]
+        output_files:
+          decision: review/decision__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          feedback: review/feedback__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+          approved_plan: review/approved_plan__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+        on_approve: build_create
+        on_reject: plan_create
+        write_state:
+          plan_review_feedback: "{{outputs.feedback}}"
+        limits:
+          max_retries: 3
+
+      - id: build_create
+        type: agent_task
+        agent: builder
+        workspace_mode: run_workspace
+        prompt: |
+          Implement using approved plan:
+          {{steps.plan_review.outputs.approved_plan}}
+          Prior build feedback:
+          {{state.build_review_feedback}}
+          Repository root:
+          {{workflow.run_workspace}}
+          Apply code changes directly in repository files.
+          Run validation commands if available.
+          Return one [workflow_result] JSON [/workflow_result] block.
+          Required outputs schema:
+          {{workflow.output_schema_json}}
+          Include changed_files and test_report fields accurately.
+          Write outputs exactly to:
+          build_result -> {{workflow.output_paths.build_result}}
+          changed_files_summary -> {{workflow.output_paths.changed_files_summary}}
+        outputs: [build_result, changed_files_summary]
+        output_files:
+          build_result: build/build_result__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+          changed_files_summary: build/changed_files_summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+        next: build_review
+
+      - id: build_review
+        type: agent_review
+        agent: build_reviewer
+        workspace_mode: run_workspace
+        prompt: |
+          Review implementation and return:
+          decision: approve|reject
+          feedback: required fixes
+          You may inspect files in:
+          {{workflow.run_workspace}}
+          Return one [workflow_result] JSON [/workflow_result] block.
+          Required outputs schema:
+          {{workflow.output_schema_json}}
+          Write outputs exactly to:
+          decision -> {{workflow.output_paths.decision}}
+          feedback -> {{workflow.output_paths.feedback}}
+          Decision file format:
+          - write exactly one word: approve OR reject
+          - no punctuation, no explanation in decision file
+          Put rationale in feedback file.
+          ---
+          {{steps.build_create.outputs.build_result}}
+        outputs: [decision, feedback]
+        output_files:
+          decision: review/decision__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          feedback: review/feedback__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+        on_approve: create_pull_request
+        on_reject: build_create
+        write_state:
+          build_review_feedback: "{{outputs.feedback}}"
+        limits:
+          max_retries: 3
+
+      - id: create_pull_request
+        type: agent_task
+        agent: default_worker
+        workspace_mode: run_workspace
+        prompt: |
+          Create a pull request for this work.
+          Base branch:
+          {{inputs.base_branch}}
+          Feature branch:
+          {{inputs.feature_branch}}
+          Include implementation summary from:
+          {{steps.build_create.outputs.changed_files_summary}}
+          Return one [workflow_result] JSON [/workflow_result] block.
+        outputs: [pr_url, pr_summary]
+        output_files:
+          pr_url: pr/pr_url__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          pr_summary: pr/pr_summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
+        next: done
+
+workflow_orchestration:
+  max_total_iterations: 12
+  default_run_timeout_seconds: 14400
+  default_step_timeout_seconds: 7200

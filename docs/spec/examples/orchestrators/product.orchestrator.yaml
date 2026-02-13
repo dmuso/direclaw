@@ -1,0 +1,33 @@
+id: product_orchestrator
+selector_agent: workflow_router
+default_workflow: product_default
+selection_max_retries: 2
+
+agents:
+  workflow_router:
+    provider: anthropic
+    model: opus
+    can_orchestrate_workflows: true
+
+  default:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: false
+
+workflows:
+  - id: product_default
+    version: 1
+    inputs:
+      user_message: string
+    steps:
+      - id: answer
+        type: agent_task
+        agent: default
+        prompt: |
+          Handle this product request:
+          {{inputs.user_message}}
+
+workflow_orchestration:
+  max_total_iterations: 12
+  default_run_timeout_seconds: 3600
+  default_step_timeout_seconds: 900
