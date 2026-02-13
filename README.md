@@ -59,17 +59,56 @@ Here's an example workflow to show what DireClaw can do:
 
 ### A Coding Workflow with Built-In Reviews
 
-1. A user messages a Slack bot requesting a new feature build for a codebase.
-2. The codebase is cloned to a local folder within the orchestrator's workspace and a branch is created for the work with a name that reflects the request.
-3. A message is sent via the file queue to a Task Agent to plan the feature via `claude` or `codex`.
-4. The Task Agent starts the CLI tool and provides path references to the input message, clear instructions and prompts for the work requested, and instructions on generating an output message file via a specific path.
-5. This output message file is send to a Review Agent that reviews the work done via `claude` or `codex` and outputs a report to a specific file path with an `approve` or `reject` decision.
-6. If the plan is approved, we move to the next step, if rejected, the feedback is sent back to the "planning agent" for rework and re-review.
-7. Once a plan is approved, the path to the plan document, and clear instructions to build are sent to the build agent, with a specific path to output a summary of work completed.
-8. The path to the output summary file and instructions to review are given to a review agent.
-9. The review agent reviews in the same manner as the plan review, except the instructions are specific to reviewing code that has been generated.
-10. If the review agent approves, we move to the next step, otherwise the review feedback goes back to the build agent for rework and re-review.
-11. Once the work is considered done, the branch is pushed and a pull request is created via the `gh` CLI tool.
+```text
++---------------------------------------------------------------+
+| User sends feature request to Slack bot                       |
++---------------------------------------------------------------+
+                              |
+                              v
++---------------------------------------------------------------+
+| Orchestrator clones repo in workspace and creates work branch |
++---------------------------------------------------------------+
+                              |
+                              v
++---------------------------------------------------------------+
+| Queue message to Planning Task Agent (`claude` or `codex`)    |
++---------------------------------------------------------------+
+                              |
+                              v
++---------------------------------------------------------------+
+| Planning Agent writes plan output file                        |
++---------------------------------------------------------------+
+                              |
+                              v
++---------------------------------------------------------------+
+| Plan Review Agent reviews plan and returns approve/reject     |
++---------------------------------------------------------------+
+                 |                               ^
+           approve                               reject
+                 |                               |
+                 v                               |
++---------------------------------------------------------------+ 
+| Send approved plan + build instructions to Build Agent        | 
++---------------------------------------------------------------+ 
+                 |                               |                
+                 v                               |                
++---------------------------------------------------------------+ 
+| Build Agent writes implementation summary file                | 
++---------------------------------------------------------------+ 
+                 |                               |                
+                 v                               |                
++---------------------------------------------------------------+ 
+| Build Review Agent reviews implementation (approve/reject)    | 
++---------------------------------------------------------------+ 
+                 |                               ^                
+           approve                               reject           
+                 |                               |                
+                 v                               |                
++---------------------------------------------------------------+ 
+| Push branch and create PR via `gh` CLI                        | 
++---------------------------------------------------------------+ 
+
+```
 
 ## Installation
 
