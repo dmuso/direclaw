@@ -1,4 +1,8 @@
 use direclaw::config::{ConfigError, OrchestratorConfig, Settings};
+use direclaw::orchestrator::{
+    enforce_workspace_access, resolve_workspace_access_context, OrchestratorError,
+};
+use std::path::PathBuf;
 
 #[test]
 fn agent_shared_access_is_deny_by_default_without_orchestrator_grant() {
@@ -54,6 +58,48 @@ workflows:
     match err {
         ConfigError::Orchestrator(message) => {
             assert!(message.contains("is not granted to orchestrator"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn pre_execution_workspace_enforcement_isolated_per_orchestrator() {
+    let settings: Settings = serde_yaml::from_str(
+        r#"
+workspace_path: /tmp/workspace
+shared_workspaces:
+  eng: /tmp/shared/eng
+  product: /tmp/shared/product
+orchestrators:
+  alpha:
+    shared_access: [eng]
+  beta:
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+    )
+    .expect("parse settings");
+
+    let alpha = resolve_workspace_access_context(&settings, "alpha").expect("alpha context");
+    let beta = resolve_workspace_access_context(&settings, "beta").expect("beta context");
+
+    enforce_workspace_access(
+        &alpha,
+        &[
+            PathBuf::from("/tmp/workspace/orchestrators/alpha/agents/worker"),
+            PathBuf::from("/tmp/shared/eng/knowledge.md"),
+        ],
+    )
+    .expect("alpha can access private+granted shared");
+
+    let denied = enforce_workspace_access(&beta, &[PathBuf::from("/tmp/shared/eng/knowledge.md")])
+        .expect_err("beta should not access shared workspace without grants");
+    match denied {
+        OrchestratorError::WorkspaceAccessDenied { path, .. } => {
+            assert!(path.contains("/tmp/shared/eng/knowledge.md"));
         }
         other => panic!("unexpected error: {other:?}"),
     }

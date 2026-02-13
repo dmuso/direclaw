@@ -19,7 +19,7 @@ Setup/config must support:
 
 ## Settings Shape Requirements
 
-`settings.yaml` must support:
+Global config `~/.direclaw.yaml` must support:
 
 - `workspace_path`
 - `shared_workspaces` object

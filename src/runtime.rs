@@ -50,7 +50,7 @@ impl StatePaths {
     }
 
     pub fn settings_file(&self) -> PathBuf {
-        self.root.join("settings.yaml")
+        self.root.with_extension("yaml")
     }
 }
 
@@ -62,6 +62,15 @@ pub enum RuntimeError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to resolve home directory for runtime state root")]
+    HomeDirectoryUnavailable,
+}
+
+pub const DEFAULT_STATE_ROOT_DIR: &str = ".direclaw";
+
+pub fn default_state_root_path() -> Result<PathBuf, RuntimeError> {
+    let home = std::env::var_os("HOME").ok_or(RuntimeError::HomeDirectoryUnavailable)?;
+    Ok(PathBuf::from(home).join(DEFAULT_STATE_ROOT_DIR))
 }
 
 pub fn bootstrap_state_root(paths: &StatePaths) -> Result<(), RuntimeError> {
@@ -147,6 +156,28 @@ mod tests {
                 "missing directory: {}",
                 required.display()
             );
+        }
+    }
+
+    #[test]
+    fn settings_file_uses_global_direclaw_yaml_path() {
+        let paths = StatePaths::new("/tmp/.direclaw");
+        assert_eq!(paths.settings_file(), PathBuf::from("/tmp/.direclaw.yaml"));
+    }
+
+    #[test]
+    fn default_state_root_path_uses_home_direclaw() {
+        let dir = tempdir().expect("temp dir");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+
+        let root = default_state_root_path().expect("resolve state root");
+        assert_eq!(root, dir.path().join(".direclaw"));
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
         }
     }
 

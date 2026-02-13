@@ -143,3 +143,46 @@ fn queue_requeue_failure_does_not_clobber_existing_incoming_file() {
     );
     assert_eq!(fs::read_to_string(requeued).expect("read requeued"), raw);
 }
+
+#[test]
+fn complete_success_enforces_send_file_stripping_truncation_and_file_validation() {
+    let dir = tempdir().expect("tempdir");
+    let queue = QueuePaths::from_state_root(dir.path());
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing");
+
+    let incoming = make_incoming("msg-4");
+    fs::write(
+        queue.incoming.join("msg-4.json"),
+        serde_json::to_string(&incoming).expect("serialize"),
+    )
+    .expect("write");
+    let claimed = claim_oldest(&queue).expect("claim").expect("item");
+
+    let sendable = dir.path().join("artifact.txt");
+    fs::write(&sendable, "artifact").expect("write artifact");
+    let long = "a".repeat(4050);
+
+    let mut outgoing = make_outgoing(&claimed.payload);
+    outgoing.message = format!(
+        "{long}[send_file: {}][send_file: relative.txt]",
+        sendable.display()
+    );
+    outgoing.files = vec![
+        sendable.display().to_string(),
+        "relative.txt".to_string(),
+        sendable.display().to_string(),
+    ];
+    let out_path = complete_success(&queue, &claimed, &outgoing).expect("complete success");
+
+    let saved: OutgoingMessage =
+        serde_json::from_str(&fs::read_to_string(&out_path).expect("read")).expect("parse");
+    assert!(!saved.message.contains("[send_file:"));
+    assert!(saved.message.ends_with("\n\n[Response truncated...]"));
+    assert_eq!(saved.files, vec![sendable.display().to_string()]);
+
+    let log_path = dir.path().join("logs/security.log");
+    let log = fs::read_to_string(log_path).expect("read security log");
+    assert!(log.contains("omitted invalid/unreadable files"));
+}

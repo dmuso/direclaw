@@ -21,7 +21,7 @@ Establish state root layout, worker process model, settings/orchestrator config 
 
 - Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
-  - `settings.yaml` required domains and references validate with explicit errors.
+  - `~/.direclaw.yaml` required domains and references validate with explicit errors.
   - `<orchestrator_private_workspace>/orchestrator.yaml` required fields validate.
   - `selector_agent`, `default_workflow`, and non-empty workflow rules are enforced.
 - Automated Test Requirements:

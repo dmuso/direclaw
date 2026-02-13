@@ -54,7 +54,7 @@ Queue worker behavior:
    - Else if `workflowRunId` is present, dispatch to that workflow run.
    - Else dispatch to orchestrator intent-selection phase using `channel` + `channelProfileId` + `conversationId` context.
 4. For new channel messages, orchestrator must:
-   - resolve `orchestrator_id` from `settings.yaml` channel profile mapping
+   - resolve `orchestrator_id` from `~/.direclaw.yaml` channel profile mapping
    - load `<orchestrator_private_workspace>/orchestrator.yaml`
    - write selector request file under `~/.direclaw/orchestrator/select/incoming`
    - run selector agent via provider CLI

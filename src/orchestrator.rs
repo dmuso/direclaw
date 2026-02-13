@@ -1,13 +1,14 @@
 use crate::config::{
-    load_orchestrator_config, ConfigError, OrchestratorConfig, Settings, WorkflowConfig,
-    WorkflowStepConfig,
+    load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, Settings,
+    WorkflowConfig, WorkflowStepConfig,
 };
 use crate::queue::IncomingMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -37,6 +38,19 @@ pub enum OrchestratorError {
     RunTimeout { run_timeout_seconds: u64 },
     #[error("workflow step timed out after {step_timeout_seconds}s")]
     StepTimeout { step_timeout_seconds: u64 },
+    #[error("workspace access denied for orchestrator `{orchestrator_id}` at path `{path}`")]
+    WorkspaceAccessDenied {
+        orchestrator_id: String,
+        path: String,
+    },
+    #[error("workspace path validation failed for `{path}`: {reason}")]
+    WorkspacePathValidation { path: String, reason: String },
+    #[error("output path validation failed for step `{step_id}` template `{template}`: {reason}")]
+    OutputPathValidation {
+        step_id: String,
+        template: String,
+        reason: String,
+    },
     #[error("config error: {0}")]
     Config(String),
     #[error("io error at {path}: {source}")]
@@ -64,6 +78,17 @@ fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
         path: path.display().to_string(),
         source,
     }
+}
+
+fn append_security_log(state_root: &Path, line: &str) {
+    let path = state_root.join("logs/security.log");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let _ = file.write_all(format!("{line}\n").as_bytes());
 }
 
 fn json_error(path: &Path, source: serde_json::Error) -> OrchestratorError {
@@ -904,6 +929,262 @@ pub fn enforce_execution_safety(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceAccessContext {
+    pub orchestrator_id: String,
+    pub private_workspace_root: PathBuf,
+    pub shared_workspace_roots: BTreeMap<String, PathBuf>,
+}
+
+pub fn resolve_workspace_access_context(
+    settings: &Settings,
+    orchestrator_id: &str,
+) -> Result<WorkspaceAccessContext, OrchestratorError> {
+    let private_workspace = canonicalize_absolute_path_if_exists(
+        &settings.resolve_private_workspace(orchestrator_id)?,
+    )?;
+    let orchestrator = settings.orchestrators.get(orchestrator_id).ok_or_else(|| {
+        OrchestratorError::Config(format!(
+            "missing orchestrator `{orchestrator_id}` in settings"
+        ))
+    })?;
+
+    let mut shared_workspace_roots = BTreeMap::new();
+    for grant in &orchestrator.shared_access {
+        let shared = settings.shared_workspaces.get(grant).ok_or_else(|| {
+            OrchestratorError::Config(format!(
+                "orchestrator `{orchestrator_id}` references unknown shared workspace `{grant}`"
+            ))
+        })?;
+        let normalized = canonicalize_absolute_path_if_exists(shared)?;
+        shared_workspace_roots.insert(grant.clone(), normalized);
+    }
+
+    Ok(WorkspaceAccessContext {
+        orchestrator_id: orchestrator_id.to_string(),
+        private_workspace_root: private_workspace,
+        shared_workspace_roots,
+    })
+}
+
+pub fn enforce_workspace_access(
+    context: &WorkspaceAccessContext,
+    requested_paths: &[PathBuf],
+) -> Result<(), OrchestratorError> {
+    for requested in requested_paths {
+        let normalized = canonicalize_absolute_path_if_exists(requested)?;
+        if normalized.starts_with(&context.private_workspace_root) {
+            continue;
+        }
+        if context
+            .shared_workspace_roots
+            .values()
+            .any(|root| normalized.starts_with(root))
+        {
+            continue;
+        }
+        return Err(OrchestratorError::WorkspaceAccessDenied {
+            orchestrator_id: context.orchestrator_id.clone(),
+            path: normalized.display().to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn canonicalize_absolute_path_if_exists(path: &Path) -> Result<PathBuf, OrchestratorError> {
+    match fs::canonicalize(path) {
+        Ok(canonical) => normalize_absolute_path(&canonical),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => normalize_absolute_path(path),
+        Err(err) => Err(io_error(path, err)),
+    }
+}
+
+fn resolve_agent_workspace_root(
+    private_workspace_root: &Path,
+    agent_id: &str,
+    agent: &AgentConfig,
+) -> PathBuf {
+    match &agent.private_workspace {
+        Some(path) if path.is_absolute() => path.clone(),
+        Some(path) => private_workspace_root.join(path),
+        None => private_workspace_root.join("agents").join(agent_id),
+    }
+}
+
+fn collect_orchestrator_requested_paths(
+    context: &WorkspaceAccessContext,
+    settings: &Settings,
+    orchestrator: &OrchestratorConfig,
+) -> Result<Vec<PathBuf>, OrchestratorError> {
+    let mut requested = vec![context.private_workspace_root.clone()];
+    for (agent_id, agent) in &orchestrator.agents {
+        requested.push(resolve_agent_workspace_root(
+            &context.private_workspace_root,
+            agent_id,
+            agent,
+        ));
+        for shared in &agent.shared_access {
+            let path = settings.shared_workspaces.get(shared).ok_or_else(|| {
+                OrchestratorError::Config(format!(
+                    "agent `{agent_id}` references unknown shared workspace `{shared}`"
+                ))
+            })?;
+            requested.push(path.clone());
+        }
+    }
+    Ok(requested)
+}
+
+fn validate_selected_workflow_output_paths(
+    state_root: &Path,
+    run_id: &str,
+    orchestrator: &OrchestratorConfig,
+    workflow_id: &str,
+) -> Result<(), OrchestratorError> {
+    let workflow = orchestrator
+        .workflows
+        .iter()
+        .find(|w| w.id == workflow_id)
+        .ok_or_else(|| {
+            OrchestratorError::SelectorValidation(format!(
+                "workflow `{workflow_id}` is not declared in orchestrator"
+            ))
+        })?;
+    for step in &workflow.steps {
+        let _ = resolve_step_output_paths(state_root, run_id, step, 1)?;
+    }
+    Ok(())
+}
+
+pub fn interpolate_output_template(
+    template: &str,
+    run_id: &str,
+    step_id: &str,
+    attempt: u32,
+) -> String {
+    template
+        .replace("{{workflow.run_id}}", run_id)
+        .replace("{{workflow.step_id}}", step_id)
+        .replace("{{workflow.attempt}}", &attempt.to_string())
+}
+
+pub fn resolve_step_output_paths(
+    state_root: &Path,
+    run_id: &str,
+    step: &WorkflowStepConfig,
+    attempt: u32,
+) -> Result<BTreeMap<String, PathBuf>, OrchestratorError> {
+    let output_root = normalize_absolute_path(
+        &state_root
+            .join("workflows/runs")
+            .join(run_id)
+            .join("steps")
+            .join(&step.id)
+            .join("attempts")
+            .join(attempt.to_string())
+            .join("outputs"),
+    )?;
+
+    let mut output_paths = BTreeMap::new();
+    let Some(templates) = step.output_files.as_ref() else {
+        return Ok(output_paths);
+    };
+
+    for (key, template) in templates {
+        let interpolated = interpolate_output_template(template, run_id, &step.id, attempt);
+        let relative = validate_relative_output_template(&interpolated, &step.id, template)?;
+        let resolved = normalize_absolute_path(&output_root.join(relative))?;
+        if !resolved.starts_with(&output_root) {
+            return Err(OrchestratorError::OutputPathValidation {
+                step_id: step.id.clone(),
+                template: template.clone(),
+                reason: format!(
+                    "resolved path `{}` escapes output root `{}`",
+                    resolved.display(),
+                    output_root.display()
+                ),
+            });
+        }
+        output_paths.insert(key.clone(), resolved);
+    }
+    Ok(output_paths)
+}
+
+fn validate_relative_output_template<'a>(
+    interpolated: &'a str,
+    step_id: &str,
+    template: &str,
+) -> Result<&'a Path, OrchestratorError> {
+    let relative = Path::new(interpolated);
+    if relative.is_absolute() {
+        return Err(OrchestratorError::OutputPathValidation {
+            step_id: step_id.to_string(),
+            template: template.to_string(),
+            reason: "output path template must be relative".to_string(),
+        });
+    }
+
+    let mut has_normal = false;
+    for component in relative.components() {
+        match component {
+            Component::Normal(_) => has_normal = true,
+            Component::CurDir | Component::ParentDir => {
+                return Err(OrchestratorError::OutputPathValidation {
+                    step_id: step_id.to_string(),
+                    template: template.to_string(),
+                    reason: "non-canonical relative segments (`.` or `..`) are not allowed"
+                        .to_string(),
+                })
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(OrchestratorError::OutputPathValidation {
+                    step_id: step_id.to_string(),
+                    template: template.to_string(),
+                    reason: "absolute-style segments are not allowed".to_string(),
+                })
+            }
+        }
+    }
+
+    if !has_normal {
+        return Err(OrchestratorError::OutputPathValidation {
+            step_id: step_id.to_string(),
+            template: template.to_string(),
+            reason: "output template must resolve to a file path".to_string(),
+        });
+    }
+
+    Ok(relative)
+}
+
+fn normalize_absolute_path(path: &Path) -> Result<PathBuf, OrchestratorError> {
+    if !path.is_absolute() {
+        return Err(OrchestratorError::WorkspacePathValidation {
+            path: path.display().to_string(),
+            reason: "path must be absolute".to_string(),
+        });
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(v) => normalized.push(v),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(OrchestratorError::WorkspacePathValidation {
+                        path: path.display().to_string(),
+                        reason: "path escapes filesystem root".to_string(),
+                    });
+                }
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionCall {
     pub function_id: String,
     pub args: Map<String, Value>,
@@ -1124,12 +1405,31 @@ pub fn route_selector_action(
                 .iter()
                 .any(|w| w.id == workflow_id)
             {
-                return Err(OrchestratorError::SelectorValidation(format!(
+                let err = OrchestratorError::SelectorValidation(format!(
                     "workflow `{workflow_id}` is not declared in orchestrator"
-                )));
+                ));
+                append_security_log(
+                    ctx.run_store.state_root(),
+                    &format!("workflow_start denied: {err}"),
+                );
+                return Err(err);
             }
 
             let run_id = format!("run-{}-{}", request.selector_id, ctx.now);
+            if let Err(err) = validate_selected_workflow_output_paths(
+                ctx.run_store.state_root(),
+                &run_id,
+                ctx.orchestrator,
+                &workflow_id,
+            ) {
+                append_security_log(
+                    ctx.run_store.state_root(),
+                    &format!(
+                        "output path validation denied for workflow `{workflow_id}` run `{run_id}`: {err}"
+                    ),
+                );
+                return Err(err);
+            }
             let mut run = ctx.run_store.create_run_with_metadata(
                 run_id.clone(),
                 workflow_id.clone(),
@@ -1388,6 +1688,19 @@ where
 
     let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
     let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
+    let workspace_context = resolve_workspace_access_context(settings, &orchestrator_id)?;
+    let requested_paths =
+        collect_orchestrator_requested_paths(&workspace_context, settings, &orchestrator)?;
+    if let Err(err) = enforce_workspace_access(&workspace_context, &requested_paths) {
+        append_security_log(
+            state_root,
+            &format!(
+                "workspace access denied for orchestrator `{orchestrator_id}` message `{}`: {err}",
+                inbound.message_id
+            ),
+        );
+        return Err(err);
+    }
 
     let request = SelectorRequest {
         selector_id: format!("sel-{}", inbound.message_id),
@@ -1450,6 +1763,8 @@ where
 mod tests {
     use super::*;
     use crate::config::Settings;
+    use std::collections::BTreeMap;
+    use tempfile::tempdir;
 
     #[test]
     fn resolve_orchestrator_id_from_channel_profile() {
@@ -1531,5 +1846,88 @@ ignored
         assert!(RunState::Queued.can_transition_to(RunState::Running));
         assert!(!RunState::Succeeded.can_transition_to(RunState::Running));
         assert!(!RunState::Failed.can_transition_to(RunState::Running));
+    }
+
+    #[test]
+    fn workspace_access_context_and_enforcement_allow_private_and_granted_shared_only() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspace_path: /tmp/workspace
+shared_workspaces:
+  docs: /tmp/shared/docs
+  finance: /tmp/shared/finance
+orchestrators:
+  alpha:
+    shared_access: [docs]
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("settings");
+
+        let context = resolve_workspace_access_context(&settings, "alpha").expect("context");
+        assert_eq!(context.shared_workspace_roots.len(), 1);
+        assert!(context.shared_workspace_roots.contains_key("docs"));
+
+        enforce_workspace_access(
+            &context,
+            &[
+                PathBuf::from("/tmp/workspace/orchestrators/alpha/agents/worker"),
+                PathBuf::from("/tmp/shared/docs/project/readme.md"),
+            ],
+        )
+        .expect("allowed paths");
+
+        let err = enforce_workspace_access(
+            &context,
+            &[PathBuf::from("/tmp/shared/finance/budget.xlsx")],
+        )
+        .expect_err("must deny ungranted shared path");
+        assert!(err.to_string().contains("workspace access denied"));
+    }
+
+    #[test]
+    fn output_path_resolution_interpolates_and_blocks_traversal() {
+        let temp = tempdir().expect("tempdir");
+        let state_root = temp.path().join(".direclaw");
+
+        let step = WorkflowStepConfig {
+            id: "plan".to_string(),
+            step_type: "agent_task".to_string(),
+            agent: "worker".to_string(),
+            prompt: "prompt".to_string(),
+            next: None,
+            on_approve: None,
+            on_reject: None,
+            outputs: Some(vec!["artifact".to_string()]),
+            output_files: Some(BTreeMap::from_iter([(
+                "artifact".to_string(),
+                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.md"
+                    .to_string(),
+            )])),
+            limits: None,
+        };
+
+        let resolved =
+            resolve_step_output_paths(&state_root, "run-123", &step, 2).expect("resolved paths");
+        let artifact = resolved.get("artifact").expect("artifact path");
+        assert!(artifact
+            .starts_with(state_root.join("workflows/runs/run-123/steps/plan/attempts/2/outputs")));
+        assert!(artifact
+            .display()
+            .to_string()
+            .ends_with("artifacts/run-123/plan-2.md"));
+
+        let bad_step = WorkflowStepConfig {
+            output_files: Some(BTreeMap::from_iter([(
+                "artifact".to_string(),
+                "../escape.md".to_string(),
+            )])),
+            ..step
+        };
+        let err =
+            resolve_step_output_paths(&state_root, "run-123", &bad_step, 1).expect_err("blocked");
+        assert!(err.to_string().contains("output path validation failed"));
     }
 }

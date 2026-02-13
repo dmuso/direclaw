@@ -40,7 +40,7 @@ Required filesystem structure:
 - `~/.direclaw/queue/outgoing`
 - `~/.direclaw/files`
 - `~/.direclaw/logs/*.log`
-- `~/.direclaw/settings.yaml`
+- `~/.direclaw.yaml`
 - `~/.direclaw/orchestrator/messages`
 - `~/.direclaw/orchestrator/select/incoming`
 - `~/.direclaw/orchestrator/select/processing`
@@ -55,7 +55,7 @@ Required filesystem structure:
 
 Configuration layering model:
 
-- Global config: `~/.direclaw/settings.yaml`
+- Global config: `~/.direclaw.yaml`
 - Per-orchestrator config: `<orchestrator_private_workspace>/orchestrator.yaml`
 
 ## Workspace Roots
@@ -86,12 +86,12 @@ Validation:
 Shared workspace areas are logical names mapped to absolute paths:
 
 - Example logical names: `shared`, `docs`, `data`
-- Registry source: `settings.yaml` field `shared_workspaces`
+- Registry source: global config field `shared_workspaces`
 
 Rules:
 
 - Shared areas are deny-by-default.
-- Each orchestrator gets shared-area grants in `settings.yaml`:
+- Each orchestrator gets shared-area grants in global config:
   - `orchestrators.<orchestrator_id>.shared_access[]`
 - Agents declared inside an orchestrator can only use shared areas granted to their orchestrator.
 - Shared paths must be absolute and canonicalized.

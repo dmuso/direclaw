@@ -2,9 +2,10 @@ use direclaw::config::{OrchestratorConfig, Settings};
 use direclaw::orchestrator::{
     enforce_execution_safety, evaluate_step_result, parse_and_validate_selector_result,
     process_queued_message, resolve_execution_safety_limits, resolve_selector_with_retries,
-    route_selector_action, ExecutionSafetyLimits, FunctionRegistry, RouteContext,
-    RoutedSelectorAction, RunState, SelectorAction, SelectorArtifactStore, SelectorRequest,
-    SelectorResult, SelectorStatus, StatusResolutionInput, StepAttemptRecord, WorkflowRunStore,
+    resolve_step_output_paths, route_selector_action, ExecutionSafetyLimits, FunctionRegistry,
+    RouteContext, RoutedSelectorAction, RunState, SelectorAction, SelectorArtifactStore,
+    SelectorRequest, SelectorResult, SelectorStatus, StatusResolutionInput, StepAttemptRecord,
+    WorkflowRunStore,
 };
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::{bootstrap_state_root, StatePaths};
@@ -600,4 +601,204 @@ channels: {{}}
         }
         other => panic!("unexpected dispatched route: {other:?}"),
     }
+}
+
+#[test]
+fn malicious_output_file_template_is_blocked_before_step_execution() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let mut orchestrator = sample_orchestrator();
+    let workflow = orchestrator
+        .workflows
+        .iter_mut()
+        .find(|w| w.id == "fix_issue")
+        .expect("workflow");
+    let step = workflow
+        .steps
+        .iter_mut()
+        .find(|s| s.id == "plan")
+        .expect("plan");
+    step.output_files = Some(BTreeMap::from_iter([(
+        "plan".to_string(),
+        "../../escape.md".to_string(),
+    )]));
+
+    let err = resolve_step_output_paths(&state_root, "run-malicious", step, 1)
+        .expect_err("must block traversal");
+    assert!(err.to_string().contains("output path validation failed"));
+}
+
+#[test]
+fn process_queue_denies_ungranted_workspace_access_and_logs() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let orchestrator_ws = dir.path().join("orch");
+    fs::create_dir_all(&orchestrator_ws).expect("create orchestrator ws");
+    fs::write(
+        orchestrator_ws.join("orchestrator.yaml"),
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: engineering_default
+selection_max_retries: 2
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+    private_workspace: /tmp/outside
+workflows:
+  - id: engineering_default
+    version: 1
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+"#,
+    )
+    .expect("write orchestrator");
+
+    let settings: Settings = serde_yaml::from_str(&format!(
+        r#"
+workspace_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  engineering_orchestrator:
+    private_workspace: {orchestrator_ws}
+    shared_access: []
+channel_profiles:
+  engineering:
+    channel: slack
+    orchestrator_id: engineering_orchestrator
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring: {{}}
+channels: {{}}
+"#,
+        workspace = dir.path().display(),
+        orchestrator_ws = orchestrator_ws.display()
+    ))
+    .expect("settings");
+
+    let store = WorkflowRunStore::new(&state_root);
+    let functions = FunctionRegistry::with_run_store(vec!["workflow.status".to_string()], store);
+    let err = process_queued_message(
+        &state_root,
+        &settings,
+        &sample_incoming(),
+        300,
+        &BTreeMap::new(),
+        &functions,
+        |_attempt, _request| None,
+    )
+    .expect_err("workspace check must fail");
+    assert!(err.to_string().contains("workspace access denied"));
+
+    let security_log =
+        fs::read_to_string(state_root.join("logs/security.log")).expect("read security log");
+    assert!(security_log.contains("workspace access denied"));
+}
+
+#[test]
+fn process_queue_blocks_malicious_output_template_and_logs() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let settings_yaml = format!(
+        r#"
+workspace_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  engineering_orchestrator:
+    private_workspace: {orchestrator_ws}
+    shared_access: []
+channel_profiles:
+  engineering:
+    channel: slack
+    orchestrator_id: engineering_orchestrator
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring: {{}}
+channels: {{}}
+"#,
+        workspace = dir.path().display(),
+        orchestrator_ws = dir.path().join("orch").display()
+    );
+    let settings: Settings = serde_yaml::from_str(&settings_yaml).expect("settings");
+
+    let orch_workspace = dir.path().join("orch");
+    fs::create_dir_all(&orch_workspace).expect("orch workspace");
+    fs::write(
+        orch_workspace.join("orchestrator.yaml"),
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: fix_issue
+selection_max_retries: 2
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: fix_issue
+    version: 1
+    steps:
+      - id: plan
+        type: agent_task
+        agent: worker
+        prompt: plan
+        outputs: [plan]
+        output_files:
+          plan: ../../escape.md
+"#,
+    )
+    .expect("write orchestrator");
+
+    let functions = FunctionRegistry::with_run_store(
+        vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ],
+        WorkflowRunStore::new(&state_root),
+    );
+
+    let err = process_queued_message(
+        &state_root,
+        &settings,
+        &sample_incoming(),
+        300,
+        &BTreeMap::new(),
+        &functions,
+        |_attempt, _request| {
+            Some(
+                r#"{
+              "selectorId":"sel-message-1",
+              "status":"selected",
+              "action":"workflow_start",
+              "selectedWorkflow":"fix_issue"
+            }"#
+                .to_string(),
+            )
+        },
+    )
+    .expect_err("malicious output path should fail");
+    assert!(err.to_string().contains("output path validation failed"));
+
+    let security_log =
+        fs::read_to_string(state_root.join("logs/security.log")).expect("read security log");
+    assert!(security_log.contains("output path validation denied"));
 }

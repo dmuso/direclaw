@@ -8,7 +8,7 @@ Enforce workspace isolation and path safety, and implement deterministic inbound
 
 ### P04-T01 Implement pre-execution workspace access enforcement
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Runtime evaluates private + allowed shared workspace context before provider execution.
   - Ungranted shared path access attempts are rejected and logged.
@@ -19,7 +19,7 @@ Enforce workspace isolation and path safety, and implement deterministic inbound
 
 ### P04-T02 Implement output path safety for workflow output files
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Output paths are precomputed from `output_files` templates per attempt.
   - All resolved output paths stay under step output root.
@@ -30,7 +30,7 @@ Enforce workspace isolation and path safety, and implement deterministic inbound
 
 ### P04-T03 Implement file tag parsing, send-file stripping, and truncation contract
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Inbound file tags use absolute paths and are preserved in queue payload semantics.
   - Outbound `[send_file: ...]` tags are extracted to `files[]` and removed from user-visible text.

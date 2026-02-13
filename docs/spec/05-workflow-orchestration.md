@@ -53,7 +53,7 @@ For channel-originated messages without `workflowRunId`, orchestrator must run w
 
 Required config split:
 
-- Global `settings.yaml`:
+- Global `~/.direclaw.yaml`:
   - `channel_profiles.<channel_profile_id>.orchestrator_id`
   - `orchestrators.<orchestrator_id>.private_workspace`
 - Per-orchestrator `<orchestrator_private_workspace>/orchestrator.yaml`:

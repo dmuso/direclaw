@@ -23,7 +23,11 @@ pub enum ConfigError {
     Orchestrator(String),
     #[error("orchestrator `{orchestrator_id}` is not configured in settings")]
     MissingOrchestrator { orchestrator_id: String },
+    #[error("failed to resolve home directory for global config path")]
+    HomeDirectoryUnavailable,
 }
+
+pub const GLOBAL_CONFIG_FILE_NAME: &str = ".direclaw.yaml";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
@@ -418,6 +422,18 @@ pub fn load_orchestrator_config(
     Ok(config)
 }
 
+pub fn default_global_config_path() -> Result<PathBuf, ConfigError> {
+    let home = std::env::var_os("HOME").ok_or(ConfigError::HomeDirectoryUnavailable)?;
+    Ok(PathBuf::from(home).join(GLOBAL_CONFIG_FILE_NAME))
+}
+
+pub fn load_global_settings() -> Result<Settings, ConfigError> {
+    let path = default_global_config_path()?;
+    let settings = Settings::from_path(&path)?;
+    settings.validate(ValidationOptions::default())?;
+    Ok(settings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +593,56 @@ workflows:
                 assert!(message.contains("default_workflow"));
             }
             other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_global_config_path_targets_home_direclaw_yaml() {
+        let temp = tempdir().expect("temp dir");
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+
+        let path = default_global_config_path().expect("resolve global config path");
+        assert_eq!(path, temp.path().join(".direclaw.yaml"));
+
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn load_global_settings_reads_direclaw_yaml() {
+        let temp = tempdir().expect("temp dir");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("create workspace");
+
+        let config_path = temp.path().join(".direclaw.yaml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+workspace_path: {}
+shared_workspaces: {{}}
+orchestrators: {{}}
+channel_profiles: {{}}
+monitoring: {{}}
+channels: {{}}
+"#,
+                workspace.display()
+            ),
+        )
+        .expect("write global config");
+
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", temp.path());
+        let settings = load_global_settings().expect("load global settings");
+        assert_eq!(settings.workspace_path, workspace);
+        if let Some(value) = old_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
         }
     }
 }
