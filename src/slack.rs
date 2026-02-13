@@ -18,6 +18,16 @@ pub enum SlackError {
     NoSlackProfiles,
     #[error("missing required env var `{0}`")]
     MissingEnvVar(String),
+    #[error("missing required env var `{key}` for slack profile `{profile_id}`")]
+    MissingProfileScopedEnvVar { profile_id: String, key: String },
+    #[error(
+        "slack profiles `{profile_a}` and `{profile_b}` resolve to the same `{credential}` token; configure distinct profile-scoped credentials"
+    )]
+    DuplicateProfileCredential {
+        credential: String,
+        profile_a: String,
+        profile_b: String,
+    },
     #[error("invalid conversation id `{0}` for slack outgoing message")]
     InvalidConversationId(String),
     #[error("unknown slack channel profile `{0}` in outgoing message")]
@@ -117,6 +127,8 @@ struct ConversationSummary {
 struct ConversationsHistoryData {
     #[serde(default)]
     messages: Vec<SlackMessage>,
+    #[serde(default)]
+    response_metadata: ResponseMetadata,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,6 +205,10 @@ fn env_var_fallback(profile_key: &str, global_key: &str) -> Option<String> {
         })
 }
 
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
 fn parse_allowlist(value: Option<String>) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
     if let Some(value) = value {
@@ -206,19 +222,40 @@ fn parse_allowlist(value: Option<String>) -> BTreeSet<String> {
     result
 }
 
-fn load_env_config(profile_id: &str) -> Result<EnvConfig, SlackError> {
+fn load_env_config(
+    profile_id: &str,
+    require_profile_scoped_tokens: bool,
+    config_allowlist: &BTreeSet<String>,
+) -> Result<EnvConfig, SlackError> {
     let bot_profile = profile_env_key("SLACK_BOT_TOKEN", profile_id);
     let app_profile = profile_env_key("SLACK_APP_TOKEN", profile_id);
     let allowlist_profile = profile_env_key("SLACK_CHANNEL_ALLOWLIST", profile_id);
 
-    let bot_token = env_var_fallback(&bot_profile, "SLACK_BOT_TOKEN")
-        .ok_or_else(|| SlackError::MissingEnvVar("SLACK_BOT_TOKEN".to_string()))?;
-    let app_token = env_var_fallback(&app_profile, "SLACK_APP_TOKEN")
-        .ok_or_else(|| SlackError::MissingEnvVar("SLACK_APP_TOKEN".to_string()))?;
-    let allowlist = parse_allowlist(env_var_fallback(
+    let bot_token = if require_profile_scoped_tokens {
+        non_empty_env(&bot_profile).ok_or_else(|| SlackError::MissingProfileScopedEnvVar {
+            profile_id: profile_id.to_string(),
+            key: bot_profile.clone(),
+        })?
+    } else {
+        env_var_fallback(&bot_profile, "SLACK_BOT_TOKEN")
+            .ok_or_else(|| SlackError::MissingEnvVar("SLACK_BOT_TOKEN".to_string()))?
+    };
+    let app_token = if require_profile_scoped_tokens {
+        non_empty_env(&app_profile).ok_or_else(|| SlackError::MissingProfileScopedEnvVar {
+            profile_id: profile_id.to_string(),
+            key: app_profile.clone(),
+        })?
+    } else {
+        env_var_fallback(&app_profile, "SLACK_APP_TOKEN")
+            .ok_or_else(|| SlackError::MissingEnvVar("SLACK_APP_TOKEN".to_string()))?
+    };
+
+    let mut allowlist = config_allowlist.clone();
+    let env_allowlist = parse_allowlist(env_var_fallback(
         &allowlist_profile,
         "SLACK_CHANNEL_ALLOWLIST",
     ));
+    allowlist.extend(env_allowlist);
 
     Ok(EnvConfig {
         bot_token,
@@ -346,26 +383,39 @@ impl SlackApiClient {
         conversation_id: &str,
         oldest: Option<&str>,
     ) -> Result<Vec<SlackMessage>, SlackError> {
-        let mut query = vec![
-            ("channel", conversation_id.to_string()),
-            ("inclusive", "false".to_string()),
-            ("limit", "200".to_string()),
-        ];
-        if let Some(oldest) = oldest {
-            if !oldest.trim().is_empty() {
-                query.push(("oldest", oldest.to_string()));
+        let mut all = Vec::new();
+        let mut cursor = String::new();
+        loop {
+            let mut query = vec![
+                ("channel", conversation_id.to_string()),
+                ("inclusive", "false".to_string()),
+                ("limit", "200".to_string()),
+            ];
+            if let Some(oldest) = oldest {
+                if !oldest.trim().is_empty() {
+                    query.push(("oldest", oldest.to_string()));
+                }
+            }
+            if !cursor.is_empty() {
+                query.push(("cursor", cursor.clone()));
+            }
+            let envelope: SlackEnvelope<ConversationsHistoryData> =
+                self.get_with_token("conversations.history", &query, &self.bot_token)?;
+            if !envelope.ok {
+                return Err(SlackError::ApiResponse(
+                    envelope
+                        .error
+                        .unwrap_or_else(|| "conversations.history failed".to_string()),
+                ));
+            }
+            let data = envelope.data;
+            all.extend(data.messages);
+            cursor = data.response_metadata.next_cursor;
+            if cursor.trim().is_empty() {
+                break;
             }
         }
-        let envelope: SlackEnvelope<ConversationsHistoryData> =
-            self.get_with_token("conversations.history", &query, &self.bot_token)?;
-        if !envelope.ok {
-            return Err(SlackError::ApiResponse(
-                envelope
-                    .error
-                    .unwrap_or_else(|| "conversations.history failed".to_string()),
-            ));
-        }
-        Ok(envelope.data.messages)
+        Ok(all)
     }
 
     fn post_message(
@@ -503,13 +553,8 @@ fn should_accept_channel_message(
         .as_ref()
         .map(|id| text.contains(&format!("<@{id}>")))
         .unwrap_or(false);
-    let mentions_required = profile.require_mention_in_channels.unwrap_or(false);
-
-    if mentions_required {
-        in_thread || allowlisted || mentioned
-    } else {
-        allowlisted || in_thread || mentioned || !text.trim().is_empty()
-    }
+    let _mentions_required = profile.require_mention_in_channels.unwrap_or(false);
+    in_thread || allowlisted || mentioned
 }
 
 fn enqueue_incoming(
@@ -526,7 +571,8 @@ fn enqueue_incoming(
         .unwrap_or_else(|| "unknown".to_string());
     let ts = message.ts.clone();
     let message_id = format!(
-        "slack-{}-{}",
+        "slack-{}-{}-{}",
+        sanitize_component(profile_id),
         sanitize_component(conversation_id),
         sanitize_component(&ts)
     );
@@ -672,6 +718,21 @@ fn process_outbound(
     Ok(sent)
 }
 
+fn configured_slack_allowlist(settings: &Settings) -> BTreeSet<String> {
+    settings
+        .channels
+        .get("slack")
+        .map(|cfg| {
+            cfg.allowlisted_channels
+                .iter()
+                .map(|v| v.trim())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncReport, SlackError> {
     let slack_enabled = settings
         .channels
@@ -686,14 +747,38 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
     if profiles.is_empty() {
         return Err(SlackError::NoSlackProfiles);
     }
+    let profile_scoped_tokens_required = profiles.len() > 1;
+    let config_allowlist = configured_slack_allowlist(settings);
 
     let queue_paths = QueuePaths::from_state_root(state_root);
     fs::create_dir_all(&queue_paths.incoming).map_err(|e| io_error(&queue_paths.incoming, e))?;
     fs::create_dir_all(&queue_paths.outgoing).map_err(|e| io_error(&queue_paths.outgoing, e))?;
 
+    let mut bot_token_profile = BTreeMap::<String, String>::new();
+    let mut app_token_profile = BTreeMap::<String, String>::new();
     let mut runtimes = BTreeMap::new();
     for (profile_id, profile) in profiles {
-        let env = load_env_config(&profile_id)?;
+        let env = load_env_config(
+            &profile_id,
+            profile_scoped_tokens_required,
+            &config_allowlist,
+        )?;
+        if let Some(existing) = bot_token_profile.insert(env.bot_token.clone(), profile_id.clone())
+        {
+            return Err(SlackError::DuplicateProfileCredential {
+                credential: "bot".to_string(),
+                profile_a: existing,
+                profile_b: profile_id,
+            });
+        }
+        if let Some(existing) = app_token_profile.insert(env.app_token.clone(), profile_id.clone())
+        {
+            return Err(SlackError::DuplicateProfileCredential {
+                credential: "app".to_string(),
+                profile_a: existing,
+                profile_b: profile_id,
+            });
+        }
         let api = SlackApiClient::new(env.bot_token, env.app_token);
         api.validate_connection()?;
         runtimes.insert(

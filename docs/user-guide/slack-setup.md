@@ -38,6 +38,7 @@ Optional multi-profile overrides:
 
 Where `<PROFILE_ID>` is uppercased and non-alphanumeric characters are replaced with `_`.
 Example: profile `slack-main` maps to `SLACK_BOT_TOKEN_SLACK_MAIN`.
+When you configure multiple Slack profiles, these profile-specific token variables are required.
 
 ## 3. Bootstrap DireClaw and create an orchestrator
 
@@ -54,6 +55,7 @@ Make sure your `~/.direclaw.yaml` has Slack enabled under `channels`:
 channels:
   slack:
     enabled: true
+    allowlisted_channels: [] # optional channel ids, for example ["C12345678"]
 ```
 
 Then create the Slack channel profile mapped to your orchestrator:

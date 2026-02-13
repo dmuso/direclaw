@@ -63,7 +63,7 @@ fn help_text() -> String {
     [
         "direclaw command surface:",
         "  start|stop|restart|status|logs|setup|send|update|attach",
-        "  channels reset|slack sync",
+        "  channels reset|channels slack sync",
         "  auth sync",
         "  provider|model|agent|workflow|orchestrator|orchestrator-agent|channel-profile",
     ]

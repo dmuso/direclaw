@@ -177,6 +177,8 @@ Optional profile-specific overrides are also supported:
 - `SLACK_BOT_TOKEN_<PROFILE_ID>`
 - `SLACK_APP_TOKEN_<PROFILE_ID>`
 
+If multiple Slack profiles are configured, profile-specific token variables are required for each profile.
+
 ## Development
 
 ### Environment

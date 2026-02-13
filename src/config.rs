@@ -69,6 +69,8 @@ pub struct Monitoring {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ChannelConfig {
     pub enabled: bool,
+    #[serde(default)]
+    pub allowlisted_channels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -263,6 +265,16 @@ impl Settings {
                     return Err(ConfigError::Settings(format!(
                         "slack profile `{profile_id}` requires `require_mention_in_channels`"
                     )));
+                }
+            }
+        }
+
+        if let Some(slack_cfg) = self.channels.get("slack") {
+            for channel_id in &slack_cfg.allowlisted_channels {
+                if channel_id.trim().is_empty() {
+                    return Err(ConfigError::Settings(
+                        "channels.slack.allowlisted_channels entries must be non-empty".to_string(),
+                    ));
                 }
             }
         }

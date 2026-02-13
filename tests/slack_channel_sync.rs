@@ -117,7 +117,11 @@ impl MockSlackServer {
     }
 }
 
-fn sample_settings(workspace_path: &Path, require_mention: bool) -> Settings {
+fn sample_settings(
+    workspace_path: &Path,
+    require_mention: bool,
+    allowlisted_channels: Vec<String>,
+) -> Settings {
     let mut orchestrators = BTreeMap::new();
     orchestrators.insert(
         "main".to_string(),
@@ -139,7 +143,13 @@ fn sample_settings(workspace_path: &Path, require_mention: bool) -> Settings {
     );
 
     let mut channels = BTreeMap::new();
-    channels.insert("slack".to_string(), ChannelConfig { enabled: true });
+    channels.insert(
+        "slack".to_string(),
+        ChannelConfig {
+            enabled: true,
+            allowlisted_channels,
+        },
+    );
 
     Settings {
         workspace_path: workspace_path.to_path_buf(),
@@ -157,6 +167,10 @@ fn set_env(base_url: &str) {
     std::env::set_var("SLACK_BOT_TOKEN", "xoxb-test");
     std::env::set_var("SLACK_APP_TOKEN", "xapp-test");
     std::env::remove_var("SLACK_CHANNEL_ALLOWLIST");
+    std::env::remove_var("SLACK_BOT_TOKEN_SLACK_MAIN");
+    std::env::remove_var("SLACK_APP_TOKEN_SLACK_MAIN");
+    std::env::remove_var("SLACK_BOT_TOKEN_SLACK_ALT");
+    std::env::remove_var("SLACK_APP_TOKEN_SLACK_ALT");
 }
 
 #[test]
@@ -170,7 +184,7 @@ fn sync_requires_slack_env_tokens() {
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
     fs::create_dir_all(&state_root).expect("state root");
-    let settings = sample_settings(temp.path(), true);
+    let settings = sample_settings(temp.path(), true, Vec::new());
 
     let err = sync_once(&state_root, &settings).expect_err("missing env should fail");
     assert!(matches!(err, SlackError::MissingEnvVar(_)));
@@ -227,7 +241,7 @@ fn sync_queues_inbound_and_sends_outbound() {
     )
     .expect("write outbound");
 
-    let settings = sample_settings(temp.path(), true);
+    let settings = sample_settings(temp.path(), true, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.profiles_processed, 1);
     assert_eq!(report.inbound_enqueued, 1);
@@ -280,7 +294,7 @@ fn sync_respects_require_mention_for_channels() {
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
 
-    let settings = sample_settings(temp.path(), true);
+    let settings = sample_settings(temp.path(), true, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.inbound_enqueued, 0);
 
@@ -289,4 +303,153 @@ fn sync_respects_require_mention_for_channels() {
         .count();
     assert_eq!(incoming_count, 0);
     let _ = server.finish();
+}
+
+#[test]
+fn sync_requires_allowlist_thread_or_mention_even_when_mentions_not_required() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let server = MockSlackServer::start(4, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"C222","is_im":false}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            return r#"{"ok":true,"messages":[{"ts":"1700000000.1","text":"plain channel note","user":"U123"}]}"#
+                .to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let settings = sample_settings(temp.path(), false, Vec::new());
+    let report = sync_once(&state_root, &settings).expect("sync succeeds");
+    assert_eq!(report.inbound_enqueued, 0);
+    assert_eq!(
+        fs::read_dir(&queue.incoming)
+            .expect("incoming list")
+            .count(),
+        0
+    );
+    let _ = server.finish();
+}
+
+#[test]
+fn sync_uses_configured_allowlisted_channels() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let server = MockSlackServer::start(4, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"C222","is_im":false}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            return r#"{"ok":true,"messages":[{"ts":"1700000000.1","text":"plain channel note","user":"U123"}]}"#
+                .to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let settings = sample_settings(temp.path(), true, vec!["C222".to_string()]);
+    let report = sync_once(&state_root, &settings).expect("sync succeeds");
+    assert_eq!(report.inbound_enqueued, 1);
+    assert_eq!(
+        fs::read_dir(&queue.incoming)
+            .expect("incoming list")
+            .count(),
+        1
+    );
+    let _ = server.finish();
+}
+
+#[test]
+fn sync_pages_conversation_history_before_advancing_cursor() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let server = MockSlackServer::start(5, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"D111","is_im":true}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") && !path.contains("cursor=") {
+            return r#"{"ok":true,"messages":[{"ts":"1700000000.1","text":"first page","user":"U123"}],"response_metadata":{"next_cursor":"cursor-2"}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") && path.contains("cursor=cursor-2") {
+            return r#"{"ok":true,"messages":[{"ts":"1700000000.2","text":"second page","user":"U123"}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let report = sync_once(&state_root, &settings).expect("sync succeeds");
+    assert_eq!(report.inbound_enqueued, 2);
+    assert_eq!(
+        fs::read_dir(&queue.incoming)
+            .expect("incoming list")
+            .count(),
+        2
+    );
+    let _ = server.finish();
+}
+
+#[test]
+fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    std::env::set_var("SLACK_BOT_TOKEN", "xoxb-global");
+    std::env::set_var("SLACK_APP_TOKEN", "xapp-global");
+    std::env::remove_var("SLACK_BOT_TOKEN_SLACK_MAIN");
+    std::env::remove_var("SLACK_APP_TOKEN_SLACK_MAIN");
+    std::env::remove_var("SLACK_BOT_TOKEN_SLACK_ALT");
+    std::env::remove_var("SLACK_APP_TOKEN_SLACK_ALT");
+    std::env::remove_var("DIRECLAW_SLACK_API_BASE");
+    std::env::remove_var("SLACK_CHANNEL_ALLOWLIST");
+
+    let temp = tempdir().expect("tempdir");
+    let mut settings = sample_settings(temp.path(), true, Vec::new());
+    settings.channel_profiles.insert(
+        "slack_alt".to_string(),
+        ChannelProfile {
+            channel: "slack".to_string(),
+            orchestrator_id: "main".to_string(),
+            slack_app_user_id: Some("UAPPALT".to_string()),
+            require_mention_in_channels: Some(true),
+        },
+    );
+
+    let state_root = temp.path().join(".direclaw");
+    fs::create_dir_all(&state_root).expect("state root");
+    let err = sync_once(&state_root, &settings).expect_err("missing scoped env should fail");
+    assert!(matches!(err, SlackError::MissingProfileScopedEnvVar { .. }));
 }
