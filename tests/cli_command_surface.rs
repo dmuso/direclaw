@@ -63,6 +63,7 @@ fn kv_lines(output: &Output) -> BTreeMap<String, String> {
 fn write_settings(home: &Path, include_shared_workspace: bool) {
     let workspace = home.join("workspace");
     fs::create_dir_all(&workspace).expect("create workspace");
+    fs::create_dir_all(home.join(".direclaw")).expect("create config dir");
     let shared_workspace = home.join("shared-workspace");
     fs::create_dir_all(&shared_workspace).expect("create shared workspace");
 
@@ -73,7 +74,7 @@ fn write_settings(home: &Path, include_shared_workspace: bool) {
     };
 
     fs::write(
-        home.join(".direclaw.yaml"),
+        home.join(".direclaw/config.yaml"),
         format!(
             r#"
 workspace_path: {workspace}
@@ -158,8 +159,9 @@ fn doctor_reports_healthy_and_unhealthy_permutations() {
     let temp = tempdir().expect("tempdir");
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).expect("create workspace");
+    fs::create_dir_all(temp.path().join(".direclaw")).expect("create config dir");
     fs::write(
-        temp.path().join(".direclaw.yaml"),
+        temp.path().join(".direclaw/config.yaml"),
         format!(
             r#"
 workspace_path: {workspace}

@@ -57,7 +57,7 @@ direclaw --help
 direclaw setup
 ```
 
-This initializes runtime state under `~/.direclaw` and writes `~/.direclaw.yaml` when absent.
+This initializes runtime state under `~/.direclaw` and writes `~/.direclaw/config.yaml` when absent.
 
 ### 3. Create your first orchestrator
 
@@ -114,7 +114,7 @@ For production service supervision, continue with [Operator Runbook](operator-ru
 |---|---|---|
 | `direclaw: command not found` | Binary not installed on `PATH` | Install to `/usr/local/bin` (or another `PATH` directory) and reopen shell. |
 | `unknown channel profile` | Profile id typo or profile missing | Run `direclaw channel-profile list` and recreate profile with `direclaw channel-profile add ...`. |
-| Slack worker missing in `status` | Slack channel disabled in config | Set `channels.slack.enabled: true` in `~/.direclaw.yaml`, then `direclaw restart`. |
+| Slack worker missing in `status` | Slack channel disabled in config | Set `channels.slack.enabled: true` in `~/.direclaw/config.yaml`, then `direclaw restart`. |
 | `SLACK_*_TOKEN... required` errors | Required Slack token env vars not present in runtime process | Export `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` (plus profile-scoped overrides for multi-profile setups). |
 | `auth sync failed` | `op` CLI missing, token missing, or secret reference invalid | Install `op`, export `OP_SERVICE_ACCOUNT_TOKEN`, and validate each `auth_sync.sources.*.reference`. |
 | No outbound Slack replies | Slack app scopes/mode incomplete or app not reinstalled | Re-check Socket Mode, OAuth scopes, reinstall app, run `direclaw channels slack sync`. |

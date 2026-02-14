@@ -49,7 +49,7 @@ direclaw orchestrator add main
 
 ## 4. Enable Slack channel and add a Slack channel profile
 
-Make sure your `~/.direclaw.yaml` has Slack enabled under `channels`:
+Make sure your `~/.direclaw/config.yaml` has Slack enabled under `channels`:
 
 ```yaml
 channels:
@@ -108,5 +108,5 @@ direclaw logs
 
 - `unknown channel profile ...`: create the profile first or use the correct profile id.
 - Slack profile validation errors: include both `--slack-app-user-id` and `--require-mention-in-channels`.
-- Slack worker not present in `status`: ensure `channels.slack.enabled: true` in `~/.direclaw.yaml`.
+- Slack worker not present in `status`: ensure `channels.slack.enabled: true` in `~/.direclaw/config.yaml`.
 - No Slack events: verify app install, scopes, Socket Mode, and that `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` are set in the process environment.

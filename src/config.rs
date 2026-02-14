@@ -27,7 +27,9 @@ pub enum ConfigError {
     HomeDirectoryUnavailable,
 }
 
-pub const GLOBAL_CONFIG_FILE_NAME: &str = ".direclaw.yaml";
+pub const GLOBAL_STATE_DIR: &str = ".direclaw";
+pub const GLOBAL_SETTINGS_FILE_NAME: &str = "config.yaml";
+pub const GLOBAL_ORCHESTRATORS_FILE_NAME: &str = "config-orchestrators.yaml";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Settings {
@@ -502,16 +504,48 @@ pub fn load_orchestrator_config(
     settings: &Settings,
     orchestrator_id: &str,
 ) -> Result<OrchestratorConfig, ConfigError> {
+    if !settings.orchestrators.contains_key(orchestrator_id) {
+        return Err(ConfigError::MissingOrchestrator {
+            orchestrator_id: orchestrator_id.to_string(),
+        });
+    }
+    let path = default_orchestrators_config_path()?;
+    if path.exists() {
+        let raw = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let registry: BTreeMap<String, OrchestratorConfig> =
+            serde_yaml::from_str(&raw).map_err(|source| ConfigError::Parse {
+                path: path.display().to_string(),
+                source,
+            })?;
+        if let Some(config) = registry.get(orchestrator_id) {
+            config.validate(settings, orchestrator_id)?;
+            return Ok(config.clone());
+        }
+    }
+
+    // Backward-compatible fallback: load from the orchestrator private workspace file.
     let workspace = settings.resolve_private_workspace(orchestrator_id)?;
-    let path = workspace.join("orchestrator.yaml");
-    let config = OrchestratorConfig::from_path(&path)?;
+    let workspace_path = workspace.join("orchestrator.yaml");
+    let config = OrchestratorConfig::from_path(&workspace_path)?;
     config.validate(settings, orchestrator_id)?;
     Ok(config)
 }
 
 pub fn default_global_config_path() -> Result<PathBuf, ConfigError> {
     let home = std::env::var_os("HOME").ok_or(ConfigError::HomeDirectoryUnavailable)?;
-    Ok(PathBuf::from(home).join(GLOBAL_CONFIG_FILE_NAME))
+    Ok(PathBuf::from(home)
+        .join(GLOBAL_STATE_DIR)
+        .join(GLOBAL_SETTINGS_FILE_NAME))
+}
+
+pub fn default_orchestrators_config_path() -> Result<PathBuf, ConfigError> {
+    let home = std::env::var_os("HOME").ok_or(ConfigError::HomeDirectoryUnavailable)?;
+    Ok(PathBuf::from(home)
+        .join(GLOBAL_STATE_DIR)
+        .join(GLOBAL_ORCHESTRATORS_FILE_NAME))
 }
 
 pub fn load_global_settings() -> Result<Settings, ConfigError> {
@@ -735,13 +769,13 @@ workflows:
     }
 
     #[test]
-    fn default_global_config_path_targets_home_direclaw_yaml() {
+    fn default_global_config_path_targets_home_direclaw_config_yaml() {
         let temp = tempdir().expect("temp dir");
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", temp.path());
 
         let path = default_global_config_path().expect("resolve global config path");
-        assert_eq!(path, temp.path().join(".direclaw.yaml"));
+        assert_eq!(path, temp.path().join(".direclaw/config.yaml"));
 
         if let Some(value) = old_home {
             std::env::set_var("HOME", value);
@@ -751,12 +785,13 @@ workflows:
     }
 
     #[test]
-    fn load_global_settings_reads_direclaw_yaml() {
+    fn load_global_settings_reads_direclaw_config_yaml() {
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(temp.path().join(".direclaw")).expect("create config dir");
 
-        let config_path = temp.path().join(".direclaw.yaml");
+        let config_path = temp.path().join(".direclaw/config.yaml");
         fs::write(
             &config_path,
             format!(

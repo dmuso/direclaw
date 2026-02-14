@@ -69,7 +69,7 @@ impl StatePaths {
     }
 
     pub fn settings_file(&self) -> PathBuf {
-        self.root.with_extension("yaml")
+        self.root.join("config.yaml")
     }
 
     pub fn daemon_dir(&self) -> PathBuf {
@@ -1555,9 +1555,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_file_uses_global_direclaw_yaml_path() {
+    fn settings_file_uses_global_direclaw_config_yaml_path() {
         let paths = StatePaths::new("/tmp/.direclaw");
-        assert_eq!(paths.settings_file(), PathBuf::from("/tmp/.direclaw.yaml"));
+        assert_eq!(
+            paths.settings_file(),
+            PathBuf::from("/tmp/.direclaw/config.yaml")
+        );
     }
 
     #[test]

@@ -83,8 +83,9 @@ exit 2
 fn write_settings(home: &Path) {
     let workspace = home.join("workspace");
     fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(home.join(".direclaw")).expect("config dir");
     fs::write(
-        home.join(".direclaw.yaml"),
+        home.join(".direclaw/config.yaml"),
         format!(
             r#"
 workspace_path: {workspace}

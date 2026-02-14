@@ -19,7 +19,7 @@ export OP_SERVICE_ACCOUNT_TOKEN="ops_..."
 
 - A 1Password secret reference for each auth artifact (for example `op://DireClaw/codex-auth/document`)
 
-## 1. Configure `auth_sync` in `~/.direclaw.yaml`
+## 1. Configure `auth_sync` in `~/.direclaw/config.yaml`
 
 Example:
 

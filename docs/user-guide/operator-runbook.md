@@ -111,8 +111,8 @@ find ~/.direclaw/queue -maxdepth 2 -type f | sort
 
 Minimum backup set:
 
-- `~/.direclaw.yaml`
-- `~/.direclaw/orchestrators/**/orchestrator.yaml`
+- `~/.direclaw/config.yaml`
+- `~/.direclaw/config-orchestrators.yaml`
 - `~/.direclaw/channel_profiles/*.yaml`
 - `~/.direclaw/shared_workspaces.yaml`
 
@@ -121,7 +121,7 @@ Suggested backup command:
 ```bash
 STAMP="$(date +%Y%m%d-%H%M%S)"
 tar -czf "direclaw-backup-${STAMP}.tar.gz" \
-  ~/.direclaw.yaml \
+  ~/.direclaw/config.yaml \
   ~/.direclaw/orchestrators \
   ~/.direclaw/channel_profiles \
   ~/.direclaw/shared_workspaces.yaml
@@ -132,7 +132,7 @@ tar -czf "direclaw-backup-${STAMP}.tar.gz" \
 ### Startup failure
 
 1. Run `direclaw doctor`.
-2. Validate config path and syntax (`~/.direclaw.yaml`).
+2. Validate config path and syntax (`~/.direclaw/config.yaml`).
 3. Confirm required environment variables are present in supervisor context.
 4. Run `direclaw status` and `direclaw logs`.
 

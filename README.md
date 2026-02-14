@@ -31,7 +31,7 @@ In Slack, you connect one installed bot to one orchestrator in DireClaw. This al
 Agents exist to separate responsibilities in a workflow into explicit, reusable execution units.
 Instead of one prompt handling everything, each step can call a specific configured agent with a specific role.
 
-Agents are defined per orchestrator in `orchestrator.yaml` and referenced by workflow steps.
+Agents are defined per orchestrator in `~/.direclaw/config-orchestrators.yaml` and referenced by workflow steps.
 
 Each agent is responsible for:
 
@@ -125,7 +125,13 @@ Here's an example workflow to show what DireClaw can do:
 direclaw setup
 ```
 
-This bootstraps runtime state (under `~/.direclaw`) and creates a default global config at `~/.direclaw.yaml` if it does not already exist.
+This bootstraps runtime state (under `~/.direclaw`) and creates a default global config at `~/.direclaw/config.yaml` if it does not already exist.
+On first run in an interactive terminal, setup also asks you to choose:
+- your initial orchestrator id
+- provider/model defaults
+- an example workflow bundle (`minimal`, `engineering`, or `product`)
+
+Setup then creates the first orchestrator config in `~/.direclaw/config-orchestrators.yaml`.
 
 ### Basic lifecycle commands
 
@@ -137,7 +143,7 @@ direclaw stop
 ```
 
 ### Common configuration flow
-1. Create an orchestrator:
+1. If you skipped first-run prompts (for example in non-interactive setup), create an orchestrator:
 
 ```bash
 direclaw orchestrator add main

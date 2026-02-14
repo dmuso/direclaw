@@ -1,7 +1,7 @@
 use crate::config::{
-    default_global_config_path, load_orchestrator_config, AgentConfig, AuthSyncConfig,
-    AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig, Settings,
-    SettingsOrchestrator, ValidationOptions, WorkflowConfig, WorkflowStepConfig,
+    default_global_config_path, default_orchestrators_config_path, load_orchestrator_config,
+    AgentConfig, AuthSyncConfig, AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig,
+    Settings, SettingsOrchestrator, ValidationOptions, WorkflowConfig, WorkflowStepConfig,
 };
 use crate::orchestrator::{RunState, WorkflowRunStore};
 use crate::queue::IncomingMessage;
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -61,9 +62,6 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
 
 fn help_text() -> String {
     [
-        "DireClaw is a file-backed multi-agent orchestration runtime for channel-driven workflows.",
-        "GitHub: https://github.com/dmuso/direclaw",
-        "",
         "Commands:",
         "  setup                                Initialize state/config/runtime directories",
         "  start                                Start the DireClaw supervisor and workers",
@@ -208,11 +206,39 @@ fn save_orchestrator_config(
         .map_err(map_config_err)?;
     fs::create_dir_all(&private_workspace)
         .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
-    let path = private_workspace.join("orchestrator.yaml");
-    let body = serde_yaml::to_string(orchestrator)
-        .map_err(|e| format!("failed to encode orchestrator config: {e}"))?;
+    let path = default_orchestrators_config_path().map_err(map_config_err)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    let mut registry = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        serde_yaml::from_str::<BTreeMap<String, OrchestratorConfig>>(&raw)
+            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?
+    } else {
+        BTreeMap::new()
+    };
+    registry.insert(orchestrator_id.to_string(), orchestrator.clone());
+    let body = serde_yaml::to_string(&registry)
+        .map_err(|e| format!("failed to encode orchestrators: {e}"))?;
     fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+fn remove_orchestrator_config(orchestrator_id: &str) -> Result<(), String> {
+    let path = default_orchestrators_config_path().map_err(map_config_err)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw =
+        fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    let mut registry = serde_yaml::from_str::<BTreeMap<String, OrchestratorConfig>>(&raw)
+        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
+    registry.remove(orchestrator_id);
+    let body = serde_yaml::to_string(&registry)
+        .map_err(|e| format!("failed to encode orchestrators: {e}"))?;
+    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn load_orchestrator_or_err(
@@ -242,30 +268,199 @@ fn cmd_setup() -> Result<String, String> {
         ));
     }
 
-    let workspace_path = paths.root.join("workspace");
-    fs::create_dir_all(&workspace_path).map_err(|e| {
+    let bootstrap = collect_setup_bootstrap(&paths)?;
+    fs::create_dir_all(&bootstrap.workspace_path).map_err(|e| {
         format!(
             "failed to create workspace {}: {e}",
-            workspace_path.display()
+            bootstrap.workspace_path.display()
         )
     })?;
 
     let settings = Settings {
-        workspace_path: workspace_path.clone(),
+        workspace_path: bootstrap.workspace_path.clone(),
         shared_workspaces: BTreeMap::new(),
-        orchestrators: BTreeMap::new(),
+        orchestrators: BTreeMap::from_iter([(
+            bootstrap.orchestrator_id.clone(),
+            SettingsOrchestrator {
+                private_workspace: None,
+                shared_access: Vec::new(),
+            },
+        )]),
         channel_profiles: BTreeMap::new(),
         monitoring: Default::default(),
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
     };
     let path = save_settings(&settings)?;
+    let orchestrator = initial_orchestrator_config(
+        &bootstrap.orchestrator_id,
+        &bootstrap.provider,
+        &bootstrap.model,
+        bootstrap.bundle,
+    );
+    let orchestrator_path =
+        save_orchestrator_config(&settings, &bootstrap.orchestrator_id, &orchestrator)?;
+    let prefs = RuntimePreferences {
+        provider: Some(bootstrap.provider.clone()),
+        model: Some(bootstrap.model.clone()),
+    };
+    save_preferences(&paths, &prefs)?;
     Ok(format!(
-        "setup complete\nconfig={}\nstate_root={}\nworkspace={}",
+        "setup complete\nconfig={}\nstate_root={}\nworkspace={}\norchestrator={}\nworkflow_bundle={}\nprovider={}\nmodel={}\norchestrator_config={}",
         path.display(),
         paths.root.display(),
-        workspace_path.display()
+        bootstrap.workspace_path.display(),
+        bootstrap.orchestrator_id,
+        bootstrap.bundle.as_str(),
+        bootstrap.provider,
+        bootstrap.model,
+        orchestrator_path.display()
     ))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SetupWorkflowBundle {
+    Minimal,
+    Engineering,
+    Product,
+}
+
+impl SetupWorkflowBundle {
+    fn as_str(self) -> &'static str {
+        match self {
+            SetupWorkflowBundle::Minimal => "minimal",
+            SetupWorkflowBundle::Engineering => "engineering",
+            SetupWorkflowBundle::Product => "product",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SetupBootstrap {
+    workspace_path: PathBuf,
+    orchestrator_id: String,
+    provider: String,
+    model: String,
+    bundle: SetupWorkflowBundle,
+}
+
+fn is_interactive_setup() -> bool {
+    io::stdin().is_terminal() && io::stdout().is_terminal()
+}
+
+fn prompt_with_default(prompt: &str, default: &str) -> Result<String, String> {
+    print!("{prompt} [{default}]: ");
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("failed to flush prompt: {e}"))?;
+    let mut line = String::new();
+    let read = io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| format!("failed to read prompt input: {e}"))?;
+    if read == 0 {
+        return Ok(default.to_string());
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+fn prompt_until_valid<F>(prompt: &str, default: &str, mut validate: F) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<(), String>,
+{
+    loop {
+        let value = prompt_with_default(prompt, default)?;
+        match validate(&value) {
+            Ok(_) => return Ok(value),
+            Err(err) => {
+                println!("{err}");
+            }
+        }
+    }
+}
+
+fn default_model_for_provider(provider: &str) -> &'static str {
+    if provider == "openai" {
+        "gpt-5.3-codex"
+    } else {
+        "sonnet"
+    }
+}
+
+fn parse_provider(value: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized == "anthropic" || normalized == "openai" {
+        return Ok(normalized);
+    }
+    Err("provider must be one of: anthropic, openai".to_string())
+}
+
+fn parse_workflow_bundle(value: &str) -> Result<SetupWorkflowBundle, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "minimal" => Ok(SetupWorkflowBundle::Minimal),
+        "engineering" => Ok(SetupWorkflowBundle::Engineering),
+        "product" => Ok(SetupWorkflowBundle::Product),
+        _ => Err("workflow bundle must be one of: minimal, engineering, product".to_string()),
+    }
+}
+
+fn collect_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
+    let default_workspace = paths.root.join("workspace");
+    if !is_interactive_setup() {
+        return Ok(SetupBootstrap {
+            workspace_path: default_workspace,
+            orchestrator_id: "main".to_string(),
+            provider: "anthropic".to_string(),
+            model: "sonnet".to_string(),
+            bundle: SetupWorkflowBundle::Minimal,
+        });
+    }
+
+    println!("DireClaw first-run setup");
+    let workspace_path = PathBuf::from(prompt_until_valid(
+        "Workspace root path",
+        default_workspace.to_string_lossy().as_ref(),
+        |value| {
+            if Path::new(value).is_absolute() {
+                return Ok(());
+            }
+            Err("workspace path must be absolute".to_string())
+        },
+    )?);
+    let orchestrator_id = prompt_until_valid("First orchestrator id", "main", |value| {
+        if value.trim().is_empty() {
+            return Err("orchestrator id must be non-empty".to_string());
+        }
+        Ok(())
+    })?;
+    let provider = parse_provider(&prompt_until_valid(
+        "Provider (anthropic|openai)",
+        "anthropic",
+        |value| parse_provider(value).map(|_| ()),
+    )?)?;
+    let model = prompt_until_valid("Model", default_model_for_provider(&provider), |value| {
+        if value.trim().is_empty() {
+            return Err("model must be non-empty".to_string());
+        }
+        Ok(())
+    })?;
+    let bundle = parse_workflow_bundle(&prompt_until_valid(
+        "Workflow bundle (minimal|engineering|product)",
+        "minimal",
+        |value| parse_workflow_bundle(value).map(|_| ()),
+    )?)?;
+
+    Ok(SetupBootstrap {
+        workspace_path,
+        orchestrator_id,
+        provider,
+        model,
+        bundle,
+    })
 }
 
 fn cmd_start() -> Result<String, String> {
@@ -992,7 +1187,7 @@ fn cmd_doctor() -> Result<String, String> {
                 "config.parse",
                 false,
                 format!("settings load failed: {err}"),
-                "fix ~/.direclaw.yaml and retry `direclaw doctor`",
+                "fix ~/.direclaw/config.yaml and retry `direclaw doctor`",
             ));
             None
         }
@@ -1031,9 +1226,22 @@ fn cmd_doctor() -> Result<String, String> {
                 "workspace.root",
                 false,
                 err,
-                "grant write permission to workspace_path in ~/.direclaw.yaml",
+                "grant write permission to workspace_path in ~/.direclaw/config.yaml",
             ),
         });
+        let orchestrators_config_path =
+            default_orchestrators_config_path().map_err(map_config_err)?;
+        let orchestrator_registry_required = !settings.orchestrators.is_empty();
+        findings.push(doctor_finding(
+            "config.orchestrators.path",
+            !orchestrator_registry_required || orchestrators_config_path.exists(),
+            format!(
+                "path={} required={}",
+                orchestrators_config_path.display(),
+                orchestrator_registry_required
+            ),
+            "run `direclaw setup` or create ~/.direclaw/config-orchestrators.yaml",
+        ));
 
         for orchestrator_id in settings.orchestrators.keys() {
             match settings.resolve_private_workspace(orchestrator_id) {
@@ -1054,13 +1262,12 @@ fn cmd_doctor() -> Result<String, String> {
                             ),
                         ),
                     });
-                    let orchestrator_path = private_workspace.join("orchestrator.yaml");
                     findings.push(doctor_finding(
                         format!("config.orchestrator.{orchestrator_id}"),
-                        orchestrator_path.exists(),
-                        format!("path={}", orchestrator_path.display()),
+                        load_orchestrator_or_err(settings, orchestrator_id).is_ok(),
+                        format!("source={}", orchestrators_config_path.display()),
                         format!(
-                            "run `direclaw orchestrator add {orchestrator_id}` or create orchestrator.yaml"
+                            "run `direclaw orchestrator add {orchestrator_id}` or add `{orchestrator_id}` in ~/.direclaw/config-orchestrators.yaml"
                         ),
                     ));
                 }
@@ -1281,6 +1488,7 @@ fn cmd_orchestrator(args: &[String]) -> Result<String, String> {
                 return Err(format!("unknown orchestrator `{id}`"));
             }
             save_settings(&settings)?;
+            remove_orchestrator_config(&id)?;
             Ok(format!("orchestrator removed\nid={id}"))
         }
         "set-private-workspace" => {
@@ -1303,21 +1511,7 @@ fn cmd_orchestrator(args: &[String]) -> Result<String, String> {
                 .ok_or_else(|| format!("unknown orchestrator `{id}`"))?;
             entry.private_workspace = Some(path.clone());
             save_settings(&settings)?;
-            if let Some(old_workspace) = old_private_workspace {
-                let old_config = old_workspace.join("orchestrator.yaml");
-                if old_config.exists() {
-                    fs::create_dir_all(&path)
-                        .map_err(|e| format!("failed to create {}: {e}", path.display()))?;
-                    let new_config = path.join("orchestrator.yaml");
-                    fs::copy(&old_config, &new_config).map_err(|e| {
-                        format!(
-                            "failed to copy {} to {}: {e}",
-                            old_config.display(),
-                            new_config.display()
-                        )
-                    })?;
-                }
-            }
+            let _ = old_private_workspace;
             Ok(format!(
                 "orchestrator updated\nid={}\nprivate_workspace={}",
                 id,
@@ -1908,45 +2102,208 @@ fn parse_bool(raw: &str) -> Result<bool, String> {
     }
 }
 
-fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
-    let selector = "selector".to_string();
-    let workflow_id = "default".to_string();
-    let steps = vec![WorkflowStepConfig {
-        id: "step_1".to_string(),
-        step_type: "agent_task".to_string(),
-        agent: selector.clone(),
-        prompt: "You are the default workflow step.".to_string(),
+fn workflow_step(id: &str, step_type: &str, agent: &str, prompt: &str) -> WorkflowStepConfig {
+    WorkflowStepConfig {
+        id: id.to_string(),
+        step_type: step_type.to_string(),
+        agent: agent.to_string(),
+        prompt: prompt.to_string(),
         next: None,
         on_approve: None,
         on_reject: None,
         outputs: None,
         output_files: None,
         limits: None,
-    }];
+    }
+}
+
+fn agent_config(
+    provider: &str,
+    model: &str,
+    private_workspace: &str,
+    can_orchestrate_workflows: bool,
+) -> AgentConfig {
+    AgentConfig {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        private_workspace: Some(Path::new(private_workspace).to_path_buf()),
+        can_orchestrate_workflows,
+        shared_access: Vec::new(),
+    }
+}
+
+fn initial_orchestrator_config(
+    id: &str,
+    provider: &str,
+    model: &str,
+    bundle: SetupWorkflowBundle,
+) -> OrchestratorConfig {
+    let selector = "selector".to_string();
+    let mut agents = BTreeMap::from_iter([(
+        selector.clone(),
+        agent_config(provider, model, "agents/selector", true),
+    )]);
+    let (default_workflow, workflows) = match bundle {
+        SetupWorkflowBundle::Minimal => {
+            let workflow_id = "default".to_string();
+            let steps = vec![workflow_step(
+                "step_1",
+                "agent_task",
+                &selector,
+                "You are the default workflow step.",
+            )];
+            (
+                workflow_id.clone(),
+                vec![WorkflowConfig {
+                    id: workflow_id,
+                    version: 1,
+                    inputs: serde_yaml::Value::Sequence(Vec::new()),
+                    limits: None,
+                    steps,
+                }],
+            )
+        }
+        SetupWorkflowBundle::Engineering => {
+            agents.insert(
+                "planner".to_string(),
+                agent_config(provider, model, "agents/planner", false),
+            );
+            agents.insert(
+                "builder".to_string(),
+                agent_config(provider, model, "agents/builder", false),
+            );
+            agents.insert(
+                "reviewer".to_string(),
+                agent_config(provider, model, "agents/reviewer", false),
+            );
+
+            let mut review = workflow_step(
+                "review",
+                "agent_review",
+                "reviewer",
+                "Review implementation and return approve or reject with concrete feedback.",
+            );
+            review.on_approve = Some("done".to_string());
+            review.on_reject = Some("implement".to_string());
+
+            let mut implement = workflow_step(
+                "implement",
+                "agent_task",
+                "builder",
+                "Implement the approved plan and summarize changed files and test impact.",
+            );
+            implement.next = Some("review".to_string());
+
+            (
+                "feature_delivery".to_string(),
+                vec![
+                    WorkflowConfig {
+                        id: "feature_delivery".to_string(),
+                        version: 1,
+                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        limits: None,
+                        steps: vec![
+                            {
+                                let mut plan = workflow_step(
+                                    "plan",
+                                    "agent_task",
+                                    "planner",
+                                    "Draft an implementation plan with risks and test strategy.",
+                                );
+                                plan.next = Some("implement".to_string());
+                                plan
+                            },
+                            implement,
+                            review,
+                            workflow_step(
+                                "done",
+                                "agent_task",
+                                "planner",
+                                "Summarize final outcome and recommended follow-up actions.",
+                            ),
+                        ],
+                    },
+                    WorkflowConfig {
+                        id: "quick_answer".to_string(),
+                        version: 1,
+                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        limits: None,
+                        steps: vec![workflow_step(
+                            "answer",
+                            "agent_task",
+                            "planner",
+                            "Answer the user request directly and concisely.",
+                        )],
+                    },
+                ],
+            )
+        }
+        SetupWorkflowBundle::Product => {
+            agents.insert(
+                "researcher".to_string(),
+                agent_config(provider, model, "agents/researcher", false),
+            );
+            agents.insert(
+                "writer".to_string(),
+                agent_config(provider, model, "agents/writer", false),
+            );
+
+            (
+                "prd_draft".to_string(),
+                vec![
+                    WorkflowConfig {
+                        id: "prd_draft".to_string(),
+                        version: 1,
+                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        limits: None,
+                        steps: vec![
+                            {
+                                let mut research = workflow_step(
+                                    "research",
+                                    "agent_task",
+                                    "researcher",
+                                    "Collect constraints, requirements, and user goals from provided context.",
+                                );
+                                research.next = Some("draft".to_string());
+                                research
+                            },
+                            workflow_step(
+                                "draft",
+                                "agent_task",
+                                "writer",
+                                "Write a concise PRD with problem, goals, scope, and milestones.",
+                            ),
+                        ],
+                    },
+                    WorkflowConfig {
+                        id: "release_notes".to_string(),
+                        version: 1,
+                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        limits: None,
+                        steps: vec![workflow_step(
+                            "compose",
+                            "agent_task",
+                            "writer",
+                            "Write release notes grouped by user impact and breaking changes.",
+                        )],
+                    },
+                ],
+            )
+        }
+    };
 
     OrchestratorConfig {
         id: id.to_string(),
-        selector_agent: selector.clone(),
-        default_workflow: workflow_id.clone(),
+        selector_agent: selector,
+        default_workflow,
         selection_max_retries: 1,
         selector_timeout_seconds: 30,
-        agents: BTreeMap::from_iter([(
-            selector,
-            AgentConfig {
-                provider: "anthropic".to_string(),
-                model: "sonnet".to_string(),
-                private_workspace: Some(Path::new("agents/selector").to_path_buf()),
-                can_orchestrate_workflows: true,
-                shared_access: Vec::new(),
-            },
-        )]),
-        workflows: vec![WorkflowConfig {
-            id: workflow_id,
-            version: 1,
-            inputs: serde_yaml::Value::Sequence(Vec::new()),
-            limits: None,
-            steps,
-        }],
+        agents,
+        workflows,
         workflow_orchestration: None,
     }
+}
+
+fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
+    initial_orchestrator_config(id, "anthropic", "sonnet", SetupWorkflowBundle::Minimal)
 }
