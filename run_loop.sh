@@ -4,8 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-TASK_DIR="docs/tasks"
-SPEC_DIR="./docs/spec"
+TASK_DIR="docs/build/tasks"
+SPEC="docs/build/release-readiness-plan.md"
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "Error: 'codex' CLI is not installed or not in PATH." >&2
@@ -43,10 +43,13 @@ for x in "${task_files[@]}"; do
 
   echo "=== Processing task: $x ==="
 
+  echo "  implement tasks from '$x'"
   codex exec "Implement all tasks described in file '$x'."
 
-  codex exec "Review the uncommitted work from task file '$x' against the spec docs in '$SPEC_DIR'. Write a report to '$y'."
+  echo "  review work '$x', output report to '$y'"
+  codex exec "Review the uncommitted work (or the last commit if there are no uncommitted changes) from task file '$x' against the spec doc in '$SPEC'. Write a review for anything that needs actioning to '$y'."
 
+  echo "  action the review items from '$y'"
   codex exec "Rectify all issues identified in review doc '$y' and then commit all uncommitted work."
 
   echo "=== Completed task: $x ==="
