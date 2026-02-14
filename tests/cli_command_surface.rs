@@ -105,6 +105,7 @@ fn daemon_command_surface_works() {
 
     assert_ok(&run(temp.path(), &["stop"]));
     assert_ok(&run(temp.path(), &["restart"]));
+    assert_ok(&run(temp.path(), &["stop"]));
 }
 
 #[test]

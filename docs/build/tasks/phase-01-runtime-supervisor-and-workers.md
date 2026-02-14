@@ -13,7 +13,7 @@ Primary reference:
 
 ### P01-T01 Implement supervisor runtime and process ownership model
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Add a supervisor entrypoint that starts/stops worker loops.
   - Persist runtime metadata (PID, start time, worker states) in a deterministic state file.
@@ -29,7 +29,7 @@ Primary reference:
 
 ### P01-T02 Implement worker lifecycle manager
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Define worker contract (initialize, run loop, shutdown signal, health snapshot).
   - Register workers: queue processor, orchestrator dispatcher, Slack worker (if enabled), heartbeat (if enabled).
@@ -43,7 +43,7 @@ Primary reference:
 
 ### P01-T03 Implement graceful shutdown and restart semantics
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Implement shutdown signal propagation to worker loops.
   - Add timeout + forced termination fallback with explicit logging.
@@ -54,10 +54,11 @@ Primary reference:
 - Automated Test Requirements:
   - Integration tests for graceful stop behavior and restart correctness.
   - Fault-injection test for slow worker shutdown.
+  - Implemented in `tests/runtime_supervisor.rs` (`slow_shutdown_fault_injection_reports_timeout_state_and_log`).
 
 ### P01-T04 Upgrade `status` and `logs` to operationally useful output
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Ensure `status` includes per-worker state, last health timestamp, and error summary.
   - Ensure `logs` can show recent structured events from runtime log files.
@@ -66,4 +67,4 @@ Primary reference:
   - Operators can identify unhealthy worker and reason from `status` + `logs` alone.
 - Automated Test Requirements:
   - Integration tests with snapshot assertions for key status/log fields.
-
+  - Implemented in `tests/runtime_supervisor.rs` (`status_and_logs_expose_stable_operational_fields`).

@@ -5,25 +5,23 @@ use crate::config::{
 };
 use crate::orchestrator::{RunState, WorkflowRunStore};
 use crate::queue::IncomingMessage;
-use crate::runtime::{bootstrap_state_root, default_state_root_path, StatePaths};
+use crate::runtime::{
+    append_runtime_log, bootstrap_state_root, cleanup_stale_supervisor, default_state_root_path,
+    load_supervisor_state, reserve_start_lock, run_supervisor, save_supervisor_state,
+    spawn_supervisor_process, stop_active_supervisor, supervisor_ownership_state, OwnershipState,
+    StatePaths,
+};
 use crate::slack;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct DaemonState {
-    running: bool,
-    started_at: Option<i64>,
-    workers: Vec<String>,
-    channel_profiles: BTreeMap<String, String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RuntimePreferences {
@@ -55,6 +53,7 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
         "workflow" => cmd_workflow(&args[1..]),
         "channel-profile" => cmd_channel_profile(&args[1..]),
         "auth" => cmd_auth(&args[1..]),
+        "__supervisor" => cmd_supervisor(&args[1..]),
         other => Err(format!("unknown command `{other}`")),
     }
 }
@@ -122,33 +121,8 @@ fn ensure_runtime_root() -> Result<StatePaths, String> {
     Ok(paths)
 }
 
-fn daemon_state_path(paths: &StatePaths) -> PathBuf {
-    paths.root.join("daemon/status.json")
-}
-
 fn preferences_path(paths: &StatePaths) -> PathBuf {
     paths.root.join("runtime/preferences.yaml")
-}
-
-fn load_daemon_state(paths: &StatePaths) -> Result<DaemonState, String> {
-    let path = daemon_state_path(paths);
-    if !path.exists() {
-        return Ok(DaemonState::default());
-    }
-    let raw =
-        fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
-}
-
-fn save_daemon_state(paths: &StatePaths, state: &DaemonState) -> Result<(), String> {
-    let path = daemon_state_path(paths);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let body = serde_json::to_vec_pretty(state)
-        .map_err(|e| format!("failed to encode daemon state: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn load_preferences(paths: &StatePaths) -> Result<RuntimePreferences, String> {
@@ -281,74 +255,101 @@ fn cmd_start() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
     let settings = load_settings()?;
     let auth_sync = sync_auth_sources(&settings)?;
-
-    let mut workers = vec!["queue_processor".to_string(), "orchestrator".to_string()];
-    if settings.monitoring.heartbeat_interval.unwrap_or(0) > 0 {
-        workers.push("heartbeat".to_string());
-    }
-    for (channel, cfg) in &settings.channels {
-        if cfg.enabled {
-            workers.push(format!("channel:{channel}"));
+    match supervisor_ownership_state(&paths).map_err(|e| e.to_string())? {
+        OwnershipState::Running { pid } => {
+            return Err(format!("supervisor already running (pid={pid})"))
         }
+        OwnershipState::Stale => cleanup_stale_supervisor(&paths).map_err(|e| e.to_string())?,
+        OwnershipState::NotRunning => {}
     }
 
-    let enabled_channels: BTreeSet<String> = settings
-        .channels
-        .iter()
-        .filter_map(|(k, v)| if v.enabled { Some(k.clone()) } else { None })
-        .collect();
-
-    let mut profile_health = BTreeMap::new();
-    for (id, profile) in &settings.channel_profiles {
-        let healthy = enabled_channels.contains(&profile.channel);
-        profile_health.insert(
-            id.clone(),
-            if healthy {
-                "ready".to_string()
-            } else {
-                "channel_disabled".to_string()
-            },
-        );
-    }
-
-    let state = DaemonState {
-        running: true,
-        started_at: Some(now_secs()),
-        workers,
-        channel_profiles: profile_health,
+    reserve_start_lock(&paths).map_err(|e| e.to_string())?;
+    let pid = match spawn_supervisor_process(&paths.root).and_then(|pid| {
+        crate::runtime::write_supervisor_lock_pid(&paths, pid)?;
+        Ok(pid)
+    }) {
+        Ok(pid) => pid,
+        Err(err) => {
+            crate::runtime::clear_start_lock(&paths);
+            return Err(err.to_string());
+        }
     };
-    save_daemon_state(&paths, &state)?;
+
+    append_runtime_log(
+        &paths,
+        "info",
+        "supervisor.start.requested",
+        &format!("pid={pid}"),
+    );
 
     Ok(format!(
-        "started\nstate_root={}\nworkers={}\n{}",
+        "started\nstate_root={}\npid={}\n{}",
         paths.root.display(),
-        state.workers.join(","),
+        pid,
         render_auth_sync_result(&auth_sync, false)
     ))
 }
 
 fn cmd_stop() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
-    let mut state = load_daemon_state(&paths)?;
-    state.running = false;
-    state.workers.clear();
-    for value in state.channel_profiles.values_mut() {
-        *value = "stopped".to_string();
+    match stop_active_supervisor(&paths, Duration::from_secs(5)) {
+        Ok(result) => {
+            if result.forced {
+                Ok(format!("stopped\npid={}\nforced=true", result.pid))
+            } else {
+                Ok(format!("stopped\npid={}\nforced=false", result.pid))
+            }
+        }
+        Err(crate::runtime::RuntimeError::NotRunning) => Ok("stopped\nrunning=false".to_string()),
+        Err(err) => Err(err.to_string()),
     }
-    save_daemon_state(&paths, &state)?;
-    Ok("stopped".to_string())
 }
 
 fn cmd_restart() -> Result<String, String> {
-    cmd_stop()?;
-    cmd_start()
+    let stop = cmd_stop()?;
+    let start = cmd_start()?;
+    Ok(format!("restart complete\n{stop}\n{start}"))
 }
 
 fn cmd_status() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
-    let state = load_daemon_state(&paths)?;
+    let mut state = load_supervisor_state(&paths).map_err(|e| e.to_string())?;
+    let mut ownership = "not_running".to_string();
+    match supervisor_ownership_state(&paths).map_err(|e| e.to_string())? {
+        OwnershipState::Running { pid } => {
+            ownership = "running".to_string();
+            if !state.running || state.pid != Some(pid) {
+                state.running = true;
+                state.pid = Some(pid);
+                if state.started_at.is_none() {
+                    state.started_at = Some(now_secs());
+                }
+                state.stopped_at = None;
+                save_supervisor_state(&paths, &state).map_err(|e| e.to_string())?;
+            }
+        }
+        OwnershipState::Stale => {
+            ownership = "stale".to_string();
+            cleanup_stale_supervisor(&paths).map_err(|e| e.to_string())?;
+            state = load_supervisor_state(&paths).map_err(|e| e.to_string())?;
+        }
+        OwnershipState::NotRunning => {
+            if state.running || state.pid.is_some() {
+                cleanup_stale_supervisor(&paths).map_err(|e| e.to_string())?;
+                state = load_supervisor_state(&paths).map_err(|e| e.to_string())?;
+            }
+        }
+    }
     let mut lines = Vec::new();
+    lines.push(format!("ownership={ownership}"));
     lines.push(format!("running={}", state.running));
+    lines.push(format!(
+        "pid={}",
+        state
+            .pid
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    ));
     lines.push(format!(
         "started_at={}",
         state
@@ -356,9 +357,36 @@ fn cmd_status() -> Result<String, String> {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "none".to_string())
     ));
-    lines.push(format!("workers={}", state.workers.join(",")));
-    for (id, status) in &state.channel_profiles {
-        lines.push(format!("channel_profile:{id}={status}"));
+    lines.push(format!(
+        "stopped_at={}",
+        state
+            .stopped_at
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    ));
+    lines.push(format!(
+        "last_error={}",
+        state
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "none".to_string())
+    ));
+    for (id, worker) in &state.workers {
+        lines.push(format!("worker:{id}.state={:?}", worker.state).to_lowercase());
+        lines.push(format!(
+            "worker:{id}.last_heartbeat={}",
+            worker
+                .last_heartbeat
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ));
+        lines.push(format!(
+            "worker:{id}.last_error={}",
+            worker
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "none".to_string())
+        ));
     }
     Ok(lines.join("\n"))
 }
@@ -388,10 +416,27 @@ fn cmd_logs() -> Result<String, String> {
     let mut out = Vec::new();
     for path in entries {
         let raw = fs::read_to_string(&path).unwrap_or_default();
-        let last_line = raw.lines().last().unwrap_or("");
-        out.push(format!("{}: {}", path.display(), last_line));
+        let mut recent = raw.lines().rev().take(3).collect::<Vec<_>>();
+        recent.reverse();
+        for line in recent {
+            out.push(format!("{}: {}", path.display(), line));
+        }
     }
     Ok(out.join("\n"))
+}
+
+fn cmd_supervisor(args: &[String]) -> Result<String, String> {
+    let state_root = parse_supervisor_state_root(args)?;
+    let settings = load_settings()?;
+    run_supervisor(&state_root, settings).map_err(|e| e.to_string())?;
+    Ok("supervisor exited".to_string())
+}
+
+fn parse_supervisor_state_root(args: &[String]) -> Result<PathBuf, String> {
+    if args.len() == 2 && args[0] == "--state-root" {
+        return Ok(PathBuf::from(&args[1]));
+    }
+    Err("usage: __supervisor --state-root <path>".to_string())
 }
 
 fn cmd_send(args: &[String]) -> Result<String, String> {
@@ -606,9 +651,9 @@ fn cmd_update(args: &[String]) -> Result<String, String> {
 
 fn cmd_attach() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
-    let state = load_daemon_state(&paths)?;
+    let state = load_supervisor_state(&paths).map_err(|e| e.to_string())?;
     if state.running {
-        return Ok("attached=false\nsummary=running without external supervisor".to_string());
+        return Ok("attached=true\nsummary=connected to supervisor runtime".to_string());
     }
 
     let runs_dir = paths.root.join("workflows/runs");
