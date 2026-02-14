@@ -1,4 +1,19 @@
-use super::*;
+use crate::cli::{
+    ensure_runtime_root, load_settings, map_config_err, save_orchestrator_registry,
+    save_preferences, save_settings, RuntimePreferences,
+};
+use crate::config::{
+    agent_editable_fields, default_global_config_path, AgentConfig, AgentEditableField,
+    AuthSyncConfig, ChannelKind, ChannelProfile, ConfigProviderKind, OrchestratorConfig, OutputKey,
+    PathTemplate, Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions,
+    WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig, WorkflowOrchestrationConfig,
+    WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+};
+use crate::runtime::StatePaths;
+use crate::workflow::{
+    default_step_output_contract, default_step_output_files, default_step_scaffold,
+    initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate,
+};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -17,7 +32,7 @@ use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub(super) fn cmd_setup() -> Result<String, String> {
+pub(crate) fn cmd_setup() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
     let config_exists = default_global_config_path()
         .map_err(map_config_err)?
@@ -64,23 +79,6 @@ pub(super) fn cmd_setup() -> Result<String, String> {
         state.model,
         orchestrator_path.display()
     ))
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum SetupWorkflowTemplate {
-    Minimal,
-    Engineering,
-    Product,
-}
-
-impl SetupWorkflowTemplate {
-    fn as_str(self) -> &'static str {
-        match self {
-            SetupWorkflowTemplate::Minimal => "minimal",
-            SetupWorkflowTemplate::Engineering => "engineering",
-            SetupWorkflowTemplate::Product => "product",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1233,8 +1231,19 @@ fn default_model_for_provider(provider: &str) -> &'static str {
     }
 }
 
-fn parse_provider(value: &str) -> Result<String, String> {
-    Ok(ConfigProviderKind::parse(value)?.to_string())
+const PROVIDER_OPTIONS: [ConfigProviderKind; 2] =
+    [ConfigProviderKind::Anthropic, ConfigProviderKind::OpenAi];
+
+fn provider_options() -> &'static [ConfigProviderKind] {
+    &PROVIDER_OPTIONS
+}
+
+fn model_options_for_provider(provider: ConfigProviderKind) -> &'static [&'static str] {
+    if provider == ConfigProviderKind::OpenAi {
+        &["gpt-5.2", "gpt-5.3-codex"]
+    } else {
+        &["sonnet", "opus", "claude-sonnet-4-5", "claude-opus-4-6"]
+    }
 }
 
 fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
@@ -3765,7 +3774,7 @@ fn run_agent_detail_tui(
     let mut selected = 0usize;
     let mut status = "Enter to edit selected option. Esc back.".to_string();
     loop {
-        let rows = agent_detail_menu_rows(bootstrap, orchestrator_id, agent_id);
+        let rows = project_agent_detail_rows(bootstrap, orchestrator_id, agent_id);
         draw_field_screen(
             terminal,
             &format!("Setup > Orchestrators > {orchestrator_id} > Agents > {agent_id}"),
@@ -3786,186 +3795,314 @@ fn run_agent_detail_tui(
             KeyCode::Esc => return Ok(Some("Closed agent view.".to_string())),
             KeyCode::Up => selected = selected.saturating_sub(1),
             KeyCode::Down => selected = std::cmp::min(selected + 1, rows.len().saturating_sub(1)),
-            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => match selected {
-                0 => {
-                    let current = bootstrap
-                        .orchestrator_configs
-                        .get(orchestrator_id)
-                        .and_then(|cfg| cfg.agents.get(agent_id))
-                        .map(|a| a.provider.to_string())
-                        .unwrap_or_else(|| "anthropic".to_string());
-                    if let Some(value) = prompt_line_tui(
-                        terminal,
-                        "Agent Provider",
-                        "provider (anthropic|openai):",
-                        &current,
-                    )? {
-                        match parse_provider(value.trim()) {
-                            Ok(provider) => {
-                                match bootstrap.set_agent_provider(
-                                    orchestrator_id,
-                                    agent_id,
-                                    &provider,
-                                ) {
-                                    Ok(_) => status = "agent provider updated".to_string(),
-                                    Err(err) => status = err,
-                                }
-                            }
-                            Err(_) => status = "provider must be anthropic or openai".to_string(),
-                        }
-                    }
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                let descriptors = agent_detail_descriptors();
+                let action = descriptors
+                    .get(selected)
+                    .map(|descriptor| descriptor.action)
+                    .unwrap_or(AgentDetailAction::SetAsSelectorAgent);
+                if let Some(message) = apply_agent_detail_field_edit(
+                    terminal,
+                    bootstrap,
+                    config_exists,
+                    orchestrator_id,
+                    agent_id,
+                    action,
+                )? {
+                    status = message;
                 }
-                1 => {
-                    let current = bootstrap
-                        .orchestrator_configs
-                        .get(orchestrator_id)
-                        .and_then(|cfg| cfg.agents.get(agent_id))
-                        .map(|a| a.model.clone())
-                        .unwrap_or_else(|| bootstrap.model.clone());
-                    if let Some(value) =
-                        prompt_line_tui(terminal, "Agent Model", "model:", &current)?
-                    {
-                        if value.trim().is_empty() {
-                            status = "model must be non-empty".to_string();
-                        } else {
-                            match bootstrap.set_agent_model(orchestrator_id, agent_id, value.trim())
-                            {
-                                Ok(_) => status = "agent model updated".to_string(),
-                                Err(err) => status = err,
-                            }
-                        }
-                    }
-                }
-                2 => {
-                    let current = bootstrap
-                        .orchestrator_configs
-                        .get(orchestrator_id)
-                        .and_then(|cfg| cfg.agents.get(agent_id))
-                        .and_then(|a| a.private_workspace.as_ref())
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
-                    if let Some(value) = prompt_line_tui(
-                        terminal,
-                        "Agent Private Workspace",
-                        "private workspace (empty clears):",
-                        &current,
-                    )? {
-                        let workspace = if value.trim().is_empty() {
-                            None
-                        } else {
-                            Some(PathBuf::from(value.trim()))
-                        };
-                        match bootstrap.set_agent_private_workspace(
-                            orchestrator_id,
-                            agent_id,
-                            workspace,
-                        ) {
-                            Ok(_) => status = "agent private workspace updated".to_string(),
-                            Err(err) => status = err,
-                        }
-                    }
-                }
-                3 => {
-                    let current = bootstrap
-                        .orchestrator_configs
-                        .get(orchestrator_id)
-                        .and_then(|cfg| cfg.agents.get(agent_id))
-                        .map(|a| a.shared_access.join(","))
-                        .unwrap_or_default();
-                    if let Some(value) = prompt_line_tui(
-                        terminal,
-                        "Agent Shared Access",
-                        "Comma-separated shared workspace keys:",
-                        &current,
-                    )? {
-                        let shared_access = value
-                            .split(',')
-                            .map(|v| v.trim().to_string())
-                            .filter(|v| !v.is_empty())
-                            .collect();
-                        match bootstrap.set_agent_shared_access(
-                            orchestrator_id,
-                            agent_id,
-                            shared_access,
-                        ) {
-                            Ok(_) => status = "agent shared_access updated".to_string(),
-                            Err(err) => status = err,
-                        }
-                    }
-                }
-                4 => {
-                    match bootstrap.toggle_agent_orchestration_capability(orchestrator_id, agent_id)
-                    {
-                        Ok(_) => status = "agent orchestration capability toggled".to_string(),
-                        Err(err) => status = err,
-                    }
-                }
-                _ => match bootstrap.set_selector_agent(orchestrator_id, agent_id) {
-                    Ok(_) => status = "selector agent updated".to_string(),
-                    Err(err) => status = err,
-                },
-            },
+            }
             _ => {}
         }
     }
 }
 
-fn agent_detail_menu_rows(
+#[derive(Debug, Clone, Copy)]
+enum AgentDetailAction {
+    ConfigField(AgentEditableField),
+    SetAsSelectorAgent,
+}
+
+struct AgentDetailFieldDescriptor {
+    action: AgentDetailAction,
+    label: String,
+}
+
+fn agent_detail_descriptors() -> Vec<AgentDetailFieldDescriptor> {
+    let mut descriptors: Vec<AgentDetailFieldDescriptor> = agent_editable_fields()
+        .iter()
+        .map(|field| AgentDetailFieldDescriptor {
+            action: AgentDetailAction::ConfigField(*field),
+            label: field.label().to_string(),
+        })
+        .collect();
+    descriptors.push(AgentDetailFieldDescriptor {
+        action: AgentDetailAction::SetAsSelectorAgent,
+        label: "Set As Selector Agent".to_string(),
+    });
+    descriptors
+}
+
+fn project_agent_detail_rows(
     bootstrap: &SetupState,
     orchestrator_id: &str,
     agent_id: &str,
 ) -> Vec<SetupFieldRow> {
-    let (provider, model, private_workspace, shared_access, can_orchestrate, is_selector) =
-        bootstrap
-            .orchestrator_configs
-            .get(orchestrator_id)
-            .and_then(|cfg| {
-                cfg.agents.get(agent_id).map(|agent| {
-                    (
-                        agent.provider.to_string(),
-                        agent.model.clone(),
-                        agent
-                            .private_workspace
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "<none>".to_string()),
-                        if agent.shared_access.is_empty() {
-                            "<none>".to_string()
-                        } else {
-                            agent.shared_access.join(",")
-                        },
-                        if agent.can_orchestrate_workflows {
-                            "yes".to_string()
-                        } else {
-                            "no".to_string()
-                        },
-                        if cfg.selector_agent == agent_id {
-                            "yes".to_string()
-                        } else {
-                            "no".to_string()
-                        },
-                    )
-                })
-            })
-            .unwrap_or_else(|| {
-                (
-                    "<missing>".to_string(),
-                    "<missing>".to_string(),
-                    "<none>".to_string(),
-                    "<none>".to_string(),
-                    "no".to_string(),
-                    "no".to_string(),
-                )
-            });
+    let descriptors = agent_detail_descriptors();
+    descriptors
+        .iter()
+        .map(|descriptor| {
+            field_row(
+                &descriptor.label,
+                Some(agent_detail_field_value(
+                    bootstrap,
+                    orchestrator_id,
+                    agent_id,
+                    descriptor.action,
+                )),
+            )
+        })
+        .collect()
+}
 
-    vec![
-        field_row("Provider", Some(provider)),
-        field_row("Model", Some(model)),
-        field_row("Private Workspace", Some(private_workspace)),
-        field_row("Shared Access", Some(shared_access)),
-        field_row("Can Orchestrate Workflows", Some(can_orchestrate)),
-        field_row("Set As Selector Agent", Some(is_selector)),
-    ]
+fn agent_detail_field_value(
+    bootstrap: &SetupState,
+    orchestrator_id: &str,
+    agent_id: &str,
+    action: AgentDetailAction,
+) -> String {
+    let resolved = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id).map(|agent| (cfg, agent)));
+    match action {
+        AgentDetailAction::ConfigField(field) => resolved
+            .map(|(_, agent)| agent.display_value_for_field(field))
+            .unwrap_or_else(|| "<missing>".to_string()),
+        AgentDetailAction::SetAsSelectorAgent => resolved
+            .map(|(cfg, _)| {
+                if cfg.selector_agent == agent_id {
+                    "yes".to_string()
+                } else {
+                    "no".to_string()
+                }
+            })
+            .unwrap_or_else(|| "no".to_string()),
+    }
+}
+
+fn apply_agent_detail_field_edit(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupState,
+    config_exists: bool,
+    orchestrator_id: &str,
+    agent_id: &str,
+    action: AgentDetailAction,
+) -> Result<Option<String>, String> {
+    match action {
+        AgentDetailAction::ConfigField(AgentEditableField::Provider) => edit_agent_provider_field(
+            terminal,
+            bootstrap,
+            config_exists,
+            orchestrator_id,
+            agent_id,
+        ),
+        AgentDetailAction::ConfigField(AgentEditableField::Model) => edit_agent_model_field(
+            terminal,
+            bootstrap,
+            config_exists,
+            orchestrator_id,
+            agent_id,
+        ),
+        AgentDetailAction::ConfigField(AgentEditableField::PrivateWorkspace) => {
+            edit_agent_private_workspace_field(terminal, bootstrap, orchestrator_id, agent_id)
+        }
+        AgentDetailAction::ConfigField(AgentEditableField::SharedAccess) => {
+            edit_agent_shared_access_field(terminal, bootstrap, orchestrator_id, agent_id)
+        }
+        AgentDetailAction::ConfigField(AgentEditableField::CanOrchestrateWorkflows) => {
+            match bootstrap.toggle_agent_orchestration_capability(orchestrator_id, agent_id) {
+                Ok(_) => Ok(Some("agent orchestration capability toggled".to_string())),
+                Err(err) => Ok(Some(err)),
+            }
+        }
+        AgentDetailAction::SetAsSelectorAgent => {
+            match bootstrap.set_selector_agent(orchestrator_id, agent_id) {
+                Ok(_) => Ok(Some("selector agent updated".to_string())),
+                Err(err) => Ok(Some(err)),
+            }
+        }
+    }
+}
+
+fn edit_agent_provider_field(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupState,
+    config_exists: bool,
+    orchestrator_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, String> {
+    let current_provider = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id))
+        .map(|a| a.provider)
+        .unwrap_or(ConfigProviderKind::Anthropic);
+    let current_model = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id))
+        .map(|a| a.model.clone())
+        .unwrap_or_else(|| default_model_for_provider(current_provider.as_str()).to_string());
+    let provider_labels: Vec<String> = provider_options()
+        .iter()
+        .map(|provider| provider.to_string())
+        .collect();
+    let selected_provider_index = provider_options()
+        .iter()
+        .position(|provider| *provider == current_provider)
+        .unwrap_or(0);
+    let Some(selected_index) = prompt_select_index_tui(
+        terminal,
+        config_exists,
+        "Agent Provider",
+        "Select provider. Enter applies selection. Esc cancels.",
+        "Up/Down move | Enter apply | Esc cancel",
+        &provider_labels,
+        selected_provider_index,
+    )?
+    else {
+        return Ok(None);
+    };
+    let provider = provider_options()[selected_index];
+    match bootstrap.set_agent_provider(orchestrator_id, agent_id, provider.as_str()) {
+        Ok(_) => {
+            if !model_options_for_provider(provider).contains(&current_model.as_str()) {
+                let fallback_model = default_model_for_provider(provider.as_str());
+                match bootstrap.set_agent_model(orchestrator_id, agent_id, fallback_model) {
+                    Ok(_) => Ok(Some(format!(
+                        "agent provider updated; model set to {fallback_model}"
+                    ))),
+                    Err(err) => Ok(Some(err)),
+                }
+            } else {
+                Ok(Some("agent provider updated".to_string()))
+            }
+        }
+        Err(err) => Ok(Some(err)),
+    }
+}
+
+fn edit_agent_model_field(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupState,
+    config_exists: bool,
+    orchestrator_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, String> {
+    let provider = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id))
+        .map(|a| a.provider)
+        .unwrap_or(ConfigProviderKind::Anthropic);
+    let current = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id))
+        .map(|a| a.model.clone())
+        .unwrap_or_else(|| default_model_for_provider(provider.as_str()).to_string());
+    let model_options = model_options_for_provider(provider);
+    let model_labels: Vec<String> = model_options
+        .iter()
+        .map(|model| (*model).to_string())
+        .collect();
+    let selected_model_index = model_options
+        .iter()
+        .position(|model| *model == current)
+        .unwrap_or(0);
+    let Some(selected_index) = prompt_select_index_tui(
+        terminal,
+        config_exists,
+        "Agent Model",
+        "Select model valid for current provider. Enter applies selection. Esc cancels.",
+        "Up/Down move | Enter apply | Esc cancel",
+        &model_labels,
+        selected_model_index,
+    )?
+    else {
+        return Ok(None);
+    };
+    let model = model_options[selected_index];
+    match bootstrap.set_agent_model(orchestrator_id, agent_id, model) {
+        Ok(_) => Ok(Some("agent model updated".to_string())),
+        Err(err) => Ok(Some(err)),
+    }
+}
+
+fn edit_agent_private_workspace_field(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupState,
+    orchestrator_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, String> {
+    let current = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id))
+        .and_then(|a| a.private_workspace.as_ref())
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let Some(value) = prompt_line_tui(
+        terminal,
+        "Agent Private Workspace",
+        "private workspace (empty clears):",
+        &current,
+    )?
+    else {
+        return Ok(None);
+    };
+    let workspace = if value.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value.trim()))
+    };
+    match bootstrap.set_agent_private_workspace(orchestrator_id, agent_id, workspace) {
+        Ok(_) => Ok(Some("agent private workspace updated".to_string())),
+        Err(err) => Ok(Some(err)),
+    }
+}
+
+fn edit_agent_shared_access_field(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupState,
+    orchestrator_id: &str,
+    agent_id: &str,
+) -> Result<Option<String>, String> {
+    let current = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.agents.get(agent_id))
+        .map(|a| a.shared_access.join(","))
+        .unwrap_or_default();
+    let Some(value) = prompt_line_tui(
+        terminal,
+        "Agent Shared Access",
+        "Comma-separated shared workspace keys:",
+        &current,
+    )?
+    else {
+        return Ok(None);
+    };
+    let shared_access = value
+        .split(',')
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect();
+    match bootstrap.set_agent_shared_access(orchestrator_id, agent_id, shared_access) {
+        Ok(_) => Ok(Some("agent shared_access updated".to_string())),
+        Err(err) => Ok(Some(err)),
+    }
 }
 
 fn draw_field_screen(
@@ -4101,6 +4238,47 @@ fn prompt_line_tui(
                 value.pop();
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => value.push(ch),
+            _ => {}
+        }
+    }
+}
+
+fn prompt_select_index_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config_exists: bool,
+    title: &str,
+    status: &str,
+    hint: &str,
+    options: &[String],
+    initial_selected: usize,
+) -> Result<Option<usize>, String> {
+    let mut selected = initial_selected.min(options.len().saturating_sub(1));
+    loop {
+        draw_list_screen(
+            terminal,
+            title,
+            config_exists,
+            options,
+            selected,
+            status,
+            hint,
+        )?;
+        let ev = event::read().map_err(|e| format!("failed to read selection input: {e}"))?;
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => return Ok(None),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => {
+                selected = std::cmp::min(selected + 1, options.len().saturating_sub(1))
+            }
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                return Ok(Some(selected))
+            }
             _ => {}
         }
     }
@@ -4558,6 +4736,35 @@ mod tests {
         };
 
         validate_setup_bootstrap(&settings, &bootstrap).expect("valid setup bootstrap");
+    }
+
+    #[test]
+    fn provider_and_model_options_match_supported_variants() {
+        assert_eq!(
+            provider_options(),
+            &[ConfigProviderKind::Anthropic, ConfigProviderKind::OpenAi]
+        );
+        assert_eq!(
+            model_options_for_provider(ConfigProviderKind::Anthropic),
+            &["sonnet", "opus", "claude-sonnet-4-5", "claude-opus-4-6"]
+        );
+        assert_eq!(
+            model_options_for_provider(ConfigProviderKind::OpenAi),
+            &["gpt-5.2", "gpt-5.3-codex"]
+        );
+    }
+
+    #[test]
+    fn agent_detail_projection_uses_typed_descriptors() {
+        let state = test_setup_state();
+        let descriptors = agent_detail_descriptors();
+        assert_eq!(descriptors.len(), 6);
+        let rows = project_agent_detail_rows(&state, "main", "default");
+        assert_eq!(rows.len(), descriptors.len());
+        assert_eq!(rows[0].field, "Provider");
+        assert_eq!(rows[1].field, "Model");
+        assert_eq!(rows[0].value.as_deref(), Some("anthropic"));
+        assert_eq!(rows[1].value.as_deref(), Some("sonnet"));
     }
 
     fn test_setup_state() -> SetupState {

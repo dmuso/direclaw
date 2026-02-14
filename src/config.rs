@@ -533,6 +533,67 @@ pub struct AgentConfig {
     pub shared_access: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentEditableField {
+    Provider,
+    Model,
+    PrivateWorkspace,
+    SharedAccess,
+    CanOrchestrateWorkflows,
+}
+
+const AGENT_EDITABLE_FIELDS: [AgentEditableField; 5] = [
+    AgentEditableField::Provider,
+    AgentEditableField::Model,
+    AgentEditableField::PrivateWorkspace,
+    AgentEditableField::SharedAccess,
+    AgentEditableField::CanOrchestrateWorkflows,
+];
+
+pub fn agent_editable_fields() -> &'static [AgentEditableField] {
+    &AGENT_EDITABLE_FIELDS
+}
+
+impl AgentEditableField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Provider => "Provider",
+            Self::Model => "Model",
+            Self::PrivateWorkspace => "Private Workspace",
+            Self::SharedAccess => "Shared Access",
+            Self::CanOrchestrateWorkflows => "Can Orchestrate Workflows",
+        }
+    }
+}
+
+impl AgentConfig {
+    pub fn display_value_for_field(&self, field: AgentEditableField) -> String {
+        match field {
+            AgentEditableField::Provider => self.provider.to_string(),
+            AgentEditableField::Model => self.model.clone(),
+            AgentEditableField::PrivateWorkspace => self
+                .private_workspace
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            AgentEditableField::SharedAccess => {
+                if self.shared_access.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    self.shared_access.join(",")
+                }
+            }
+            AgentEditableField::CanOrchestrateWorkflows => {
+                if self.can_orchestrate_workflows {
+                    "yes".to_string()
+                } else {
+                    "no".to_string()
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkflowConfig {
     pub id: String,
