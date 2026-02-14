@@ -1,5 +1,8 @@
 # AGENTS
 
+## Project Status
+This project is in beta stage. We do not support backwards compatibility or migration support for older config files or contracts. Therefore any code for backwards compatibility or migration is not needed.
+
 ## Project Overview
 DireClaw is a Rust-based, file-backed multi-agent orchestration runtime. It processes channel events through a queue, routes execution through an orchestrator, and runs provider-backed agents with strict workspace and configuration controls.
 
