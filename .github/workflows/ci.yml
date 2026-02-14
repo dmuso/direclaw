@@ -26,9 +26,6 @@ jobs:
       - name: Test Suite
         run: nix-shell --run 'cargo test --all'
 
-      - name: Docs Readiness Check
-        run: nix-shell --run 'cargo test --test docs_operator_and_install_readiness'
-
       - name: Docs Clean Install Smoke
         run: |
           nix-shell --run 'cargo build --locked'
