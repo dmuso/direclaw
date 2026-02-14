@@ -40,7 +40,8 @@ Required filesystem structure:
 - `~/.direclaw/queue/outgoing`
 - `~/.direclaw/files`
 - `~/.direclaw/logs/*.log`
-- `~/.direclaw.yaml`
+- `~/.direclaw/config.yaml`
+- `~/.direclaw/config-orchestrators.yaml`
 - `~/.direclaw/orchestrator/messages`
 - `~/.direclaw/orchestrator/select/incoming`
 - `~/.direclaw/orchestrator/select/processing`
@@ -55,7 +56,8 @@ Required filesystem structure:
 
 Configuration layering model:
 
-- Global config: `~/.direclaw.yaml`
+- Global config: `~/.direclaw/config.yaml`
+- Orchestrator registry: `~/.direclaw/config-orchestrators.yaml`
 - Per-orchestrator config: `<orchestrator_private_workspace>/orchestrator.yaml`
 
 ## Workspace Roots

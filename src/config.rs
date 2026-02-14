@@ -180,19 +180,8 @@ impl<'de> Deserialize<'de> for WorkflowInputs {
                 }
                 Self::parse_keys(keys).map_err(D::Error::custom)
             }
-            // Transitional support: legacy untyped object inputs can still load by key names.
-            serde_yaml::Value::Mapping(values) => {
-                let mut keys = Vec::new();
-                for (key, _) in values {
-                    let raw = key.as_str().ok_or_else(|| {
-                        D::Error::custom("legacy workflow input objects must have string keys only")
-                    })?;
-                    keys.push(raw.to_string());
-                }
-                Self::parse_keys(keys).map_err(D::Error::custom)
-            }
             _ => Err(D::Error::custom(
-                "workflow inputs must be a sequence of keys or a legacy object",
+                "workflow inputs must be a sequence of string keys",
             )),
         }
     }
@@ -1419,8 +1408,8 @@ steps:
     }
 
     #[test]
-    fn workflow_inputs_support_legacy_mapping_shape() {
-        let workflow: WorkflowConfig = serde_yaml::from_str(
+    fn workflow_inputs_reject_legacy_mapping_shape() {
+        let err = serde_yaml::from_str::<WorkflowConfig>(
             r#"
 id: triage
 version: 1
@@ -1437,16 +1426,8 @@ steps:
       summary: outputs/summary.txt
 "#,
         )
-        .expect("parse workflow");
-        let keys = workflow
-            .inputs
-            .as_slice()
-            .iter()
-            .map(|key| key.as_str().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(keys.len(), 2);
-        assert!(keys.contains(&"ticket".to_string()));
-        assert!(keys.contains(&"priority".to_string()));
+        .expect_err("legacy mapping inputs should fail");
+        assert!(err.to_string().contains("sequence of string keys"));
     }
 
     #[test]

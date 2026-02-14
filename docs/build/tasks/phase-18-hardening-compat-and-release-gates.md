@@ -8,7 +8,7 @@ Harden the typed config + typed setup architecture, remove transitional debt, an
 
 ### P18-T01 Complete compatibility audit and docs updates
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Spec example configs and user guide references match implemented config surface.
   - Any retained compatibility shims are documented with removal criteria.
@@ -19,7 +19,7 @@ Harden the typed config + typed setup architecture, remove transitional debt, an
 
 ### P18-T02 Remove dead code and consolidate typed helpers
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Legacy parsing/mutation helpers superseded by typed model are removed.
   - Setup/config modules avoid duplicate validation and conversion logic.
@@ -30,7 +30,7 @@ Harden the typed config + typed setup architecture, remove transitional debt, an
 
 ### P18-T03 Execute full release-quality validation from nix shell
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `cargo fmt --all` passes.
   - `cargo clippy --all-targets --all-features -- -D warnings` passes.
@@ -39,3 +39,6 @@ Harden the typed config + typed setup architecture, remove transitional debt, an
 - Automated Test Requirements:
   - CI-equivalent local run of format/lint/test commands from `nix-shell`.
   - Targeted integration run for setup + workflow execution paths.
+
+## Scope Notes
+- 2026-02-14: Removed legacy typed-config compatibility shims (`workflow.inputs` mapping object parsing and run metadata `run.json` mirror/fallback), aligned spec/docs references to `~/.direclaw/config.yaml` surfaces, and added docs command/path integrity tests.

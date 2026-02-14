@@ -17,8 +17,7 @@ agents:
 workflows:
   - id: product_default
     version: 1
-    inputs:
-      user_message: string
+    inputs: [user_message]
     steps:
       - id: answer
         type: agent_task

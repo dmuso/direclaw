@@ -78,35 +78,13 @@ fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
         }
     }
 
-    for (orchestrator_file, expect_legacy_output_contract_migration) in [
-        (
-            "docs/build/spec/examples/orchestrators/minimal.orchestrator.yaml",
-            false,
-        ),
-        (
-            "docs/build/spec/examples/orchestrators/engineering.orchestrator.yaml",
-            false,
-        ),
-        (
-            "docs/build/spec/examples/orchestrators/product.orchestrator.yaml",
-            false,
-        ),
+    for orchestrator_file in [
+        "docs/build/spec/examples/orchestrators/minimal.orchestrator.yaml",
+        "docs/build/spec/examples/orchestrators/engineering.orchestrator.yaml",
+        "docs/build/spec/examples/orchestrators/product.orchestrator.yaml",
     ] {
         let path = project_root().join(orchestrator_file);
-        let orchestrator = match OrchestratorConfig::from_path(&path) {
-            Ok(orchestrator) => orchestrator,
-            Err(err) if expect_legacy_output_contract_migration => {
-                let message = err.to_string();
-                assert!(
-                    message.contains("outputs")
-                        && message.contains("output_files")
-                        && message.contains("migrate"),
-                    "expected migration guidance for `{orchestrator_file}`, got: {message}",
-                );
-                continue;
-            }
-            Err(err) => panic!("parse orchestrator: {err:?}"),
-        };
+        let orchestrator = OrchestratorConfig::from_path(&path).expect("parse orchestrator");
         let settings = settings_by_orchestrator
             .get(&orchestrator.id)
             .unwrap_or_else(|| {
@@ -120,19 +98,9 @@ fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
                 ConfigProviderKind::Anthropic | ConfigProviderKind::OpenAi => {}
             }
         }
-        let validation = orchestrator.validate(settings, &orchestrator.id);
-        if expect_legacy_output_contract_migration {
-            let err = validation.expect_err("legacy spec example should fail typed validation");
-            let message = err.to_string();
-            assert!(
-                message.contains("outputs") && message.contains("output_files"),
-                "expected migration guidance for `{}`, got: {}",
-                orchestrator.id,
-                message
-            );
-        } else {
-            validation.expect("orchestrator validate");
-        }
+        orchestrator
+            .validate(settings, &orchestrator.id)
+            .expect("orchestrator validate");
     }
 }
 

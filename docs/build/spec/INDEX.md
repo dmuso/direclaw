@@ -71,5 +71,5 @@ These feature specs collectively cover:
 - Provider execution through local CLIs (`claude`, `codex`)
 - Heartbeat automation
 - Daemonized runtime operations
-- Compatibility and migration requirements
+- Compatibility posture and reliability requirements
 - Test strategy and release milestones

@@ -2,7 +2,7 @@
 
 ## Scope
 
-Defines non-functional reliability requirements, migration compatibility constraints, and required test strategy.
+Defines non-functional reliability requirements, compatibility posture, and required test strategy.
 
 DireClaw v1 channel scope is Slack-only.
 Discord, Telegram, and WhatsApp compatibility and adapter testing are deferred after v1.
@@ -25,16 +25,15 @@ System must guarantee:
 - Slack workflow threads receive periodic orchestrator progress posts every 15 minutes until terminal run state.
 - Diagnostics investigations use bounded retrieval, strict scope enforcement, and persisted audit artifacts.
 
-## Compatibility and Migration
+## Compatibility Posture
 
-First stable release must support migration from legacy queue/config layouts.
+Current beta releases do not support backward compatibility or migration from older config/queue layouts.
 
 Requirements:
 
-- Existing queue payload formats remain valid.
-- Existing file-tag conventions remain valid.
-- Provide `direclaw migrate` command for schema/path evolution.
-- Legacy isolated-workspace configs migrate cleanly with zero shared-area grants by default.
+- Enforce the documented typed config shape at parse/validation time.
+- Reject legacy/unknown config shapes with explicit validation errors.
+- Persist workflow-run records only at canonical paths.
 
 ## Test Strategy
 
@@ -104,12 +103,12 @@ Requirements:
 6. Workflow orchestrator runtime
 7. Heartbeat worker
 8. Daemon operations
-9. Installer/updater and migration tooling
-10. Hardening, workspace/workflow security, compatibility, and release readiness
+9. Installer/updater and release tooling
+10. Hardening, workspace/workflow security, compatibility posture, and release readiness
 11. Post-v1 channel adapters (Discord/Telegram/WhatsApp)
 
 ## Acceptance Criteria
 
 - Reliability requirements are testable and mapped to automated test coverage.
-- Migration path exists and is validated against legacy sample data.
+- Compatibility posture is explicit and enforced by automated validation tests.
 - Milestone sequence is executable without circular dependencies.

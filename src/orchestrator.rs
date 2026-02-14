@@ -710,14 +710,7 @@ impl WorkflowRunStore {
 
     pub fn load_run(&self, run_id: &str) -> Result<WorkflowRunRecord, OrchestratorError> {
         let path = self.run_metadata_path(run_id);
-        let raw = match fs::read_to_string(&path) {
-            Ok(raw) => raw,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let legacy = self.run_dir(run_id).join("run.json");
-                fs::read_to_string(&legacy).map_err(|e| io_error(&legacy, e))?
-            }
-            Err(err) => return Err(io_error(&path, err)),
-        };
+        let raw = fs::read_to_string(&path).map_err(|err| io_error(&path, err))?;
         serde_json::from_str(&raw).map_err(|e| json_error(&path, e))
     }
 
@@ -727,14 +720,7 @@ impl WorkflowRunStore {
             fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
         }
         let body = serde_json::to_vec_pretty(run).map_err(|e| json_error(&path, e))?;
-        fs::write(&path, &body).map_err(|e| io_error(&path, e))?;
-
-        // Keep a mirrored run record in run directory for compatibility.
-        let legacy_path = self.run_dir(&run.run_id).join("run.json");
-        if let Some(parent) = legacy_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
-        }
-        fs::write(&legacy_path, body).map_err(|e| io_error(&legacy_path, e))
+        fs::write(&path, &body).map_err(|e| io_error(&path, e))
     }
 
     pub fn transition_state(
@@ -4417,7 +4403,7 @@ ignored
     }
 
     #[test]
-    fn workflow_run_record_inputs_round_trip_and_backward_compat() {
+    fn workflow_run_record_inputs_round_trip_and_stable_deserialize() {
         let run = WorkflowRunRecord {
             run_id: "run-inputs".to_string(),
             workflow_id: "wf".to_string(),
@@ -4441,7 +4427,7 @@ ignored
             Some(&Value::String("123".to_string()))
         );
 
-        let legacy = r#"{
+        let minimal = r#"{
           "runId":"legacy-run",
           "workflowId":"wf",
           "state":"queued",
@@ -4449,8 +4435,8 @@ ignored
           "updatedAt":1,
           "totalIterations":0
         }"#;
-        let legacy_decoded: WorkflowRunRecord = serde_json::from_str(legacy).expect("legacy");
-        assert!(legacy_decoded.inputs.is_empty());
+        let decoded_minimal: WorkflowRunRecord = serde_json::from_str(minimal).expect("minimal");
+        assert!(decoded_minimal.inputs.is_empty());
     }
 
     #[test]

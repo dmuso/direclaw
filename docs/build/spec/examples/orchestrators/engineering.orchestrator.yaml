@@ -128,8 +128,6 @@ workflows:
           approved_plan: review/approved_plan__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         on_approve: build_create
         on_reject: plan_create
-        write_state:
-          plan_review_feedback: "{{outputs.feedback}}"
         limits:
           max_retries: 3
 
@@ -187,8 +185,6 @@ workflows:
           feedback: review/feedback__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         on_approve: create_pull_request
         on_reject: build_create
-        write_state:
-          build_review_feedback: "{{outputs.feedback}}"
         limits:
           max_retries: 3
 

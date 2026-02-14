@@ -4,6 +4,11 @@
 
 Defines required configuration surface and command interfaces for agent, workflow, provider, and model management.
 
+Canonical config files:
+
+- Global settings: `~/.direclaw/config.yaml`
+- Orchestrator registry snapshot: `~/.direclaw/config-orchestrators.yaml`
+
 ## Required Configuration Domains
 
 Setup/config must support:
@@ -19,7 +24,7 @@ Setup/config must support:
 
 ## Settings Shape Requirements
 
-Global config `~/.direclaw.yaml` must support:
+Global config `~/.direclaw/config.yaml` must support:
 
 - `workspaces_path`
 - `shared_workspaces` object
