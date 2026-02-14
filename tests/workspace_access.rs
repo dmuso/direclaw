@@ -8,7 +8,7 @@ use std::path::PathBuf;
 fn agent_shared_access_is_deny_by_default_without_orchestrator_grant() {
     let settings: Settings = serde_yaml::from_str(
         r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces:
   common: /tmp/shared/common
 orchestrators:
@@ -67,7 +67,7 @@ workflows:
 fn pre_execution_workspace_enforcement_isolated_per_orchestrator() {
     let settings: Settings = serde_yaml::from_str(
         r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces:
   eng: /tmp/shared/eng
   product: /tmp/shared/product
@@ -89,7 +89,7 @@ channels: {}
     enforce_workspace_access(
         &alpha,
         &[
-            PathBuf::from("/tmp/workspace/orchestrators/alpha/agents/worker"),
+            PathBuf::from("/tmp/workspace/alpha/agents/worker"),
             PathBuf::from("/tmp/shared/eng/knowledge.md"),
         ],
     )

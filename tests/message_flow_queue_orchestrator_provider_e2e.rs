@@ -83,7 +83,7 @@ workflows:
 
     serde_yaml::from_str(&format!(
         r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators:
   eng_orchestrator:
@@ -170,7 +170,7 @@ fn queue_failures_requeue_without_payload_loss_for_unknown_profile() {
 
     let settings: Settings = serde_yaml::from_str(&format!(
         r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}
@@ -313,7 +313,7 @@ fn malformed_queue_payload_is_requeued_not_dropped() {
 
     let settings: Settings = serde_yaml::from_str(&format!(
         r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}

@@ -62,17 +62,17 @@ Configuration layering model:
 
 Config field:
 
-- `workspace_path` (default `~/direclaw-workspace`)
+- `workspaces_path` (default `~/.direclaw/workspaces`)
 
 Private workspace root per orchestrator:
 
-- Default: `<workspace_path>/orchestrators/<orchestrator_id>`
+- Default: `<workspaces_path>/<orchestrator_id>`
 - Optional override: `orchestrators.<orchestrator_id>.private_workspace`
 
 Resolution rule:
 
 1. If `orchestrators.<orchestrator_id>.private_workspace` is set, use it.
-2. Otherwise use `<workspace_path>/orchestrators/<orchestrator_id>`.
+2. Otherwise use `<workspaces_path>/<orchestrator_id>`.
 
 Validation:
 

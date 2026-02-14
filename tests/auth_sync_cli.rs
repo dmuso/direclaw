@@ -88,7 +88,7 @@ fn write_settings(home: &Path) {
         home.join(".direclaw/config.yaml"),
         format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}

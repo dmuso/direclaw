@@ -1701,7 +1701,7 @@ workflows:
 
         serde_yaml::from_str(&format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators:
   eng_orchestrator:

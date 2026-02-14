@@ -33,7 +33,8 @@ pub const GLOBAL_ORCHESTRATORS_FILE_NAME: &str = "config-orchestrators.yaml";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Settings {
-    pub workspace_path: PathBuf,
+    #[serde(alias = "workspace_path")]
+    pub workspaces_path: PathBuf,
     #[serde(default)]
     pub shared_workspaces: BTreeMap<String, PathBuf>,
     #[serde(default)]
@@ -212,9 +213,9 @@ impl Settings {
     }
 
     pub fn validate(&self, options: ValidationOptions) -> Result<(), ConfigError> {
-        if !self.workspace_path.is_absolute() {
+        if !self.workspaces_path.is_absolute() {
             return Err(ConfigError::Settings(
-                "`workspace_path` must be an absolute path".to_string(),
+                "`workspaces_path` must be an absolute path".to_string(),
             ));
         }
 
@@ -341,9 +342,7 @@ impl Settings {
         let resolved = if let Some(override_path) = &orchestrator.private_workspace {
             override_path.clone()
         } else {
-            self.workspace_path
-                .join("orchestrators")
-                .join(orchestrator_id)
+            self.workspaces_path.join(orchestrator_id)
         };
 
         if !resolved.is_absolute() {
@@ -528,8 +527,8 @@ pub fn load_orchestrator_config(
 
     // Backward-compatible fallback: load from the orchestrator private workspace file.
     let workspace = settings.resolve_private_workspace(orchestrator_id)?;
-    let workspace_path = workspace.join("orchestrator.yaml");
-    let config = OrchestratorConfig::from_path(&workspace_path)?;
+    let workspaces_path = workspace.join("orchestrator.yaml");
+    let config = OrchestratorConfig::from_path(&workspaces_path)?;
     config.validate(settings, orchestrator_id)?;
     Ok(config)
 }
@@ -564,7 +563,7 @@ mod tests {
     fn private_workspace_override_wins() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces: {}
 orchestrators:
   alpha:
@@ -587,7 +586,7 @@ channels: {}
     fn private_workspace_falls_back_to_default_rule() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces: {}
 orchestrators:
   alpha:
@@ -602,17 +601,14 @@ channels: {}
         let resolved = settings
             .resolve_private_workspace("alpha")
             .expect("resolve workspace");
-        assert_eq!(
-            resolved,
-            PathBuf::from("/tmp/workspace/orchestrators/alpha")
-        );
+        assert_eq!(resolved, PathBuf::from("/tmp/workspace/alpha"));
     }
 
     #[test]
     fn settings_validation_fails_for_unknown_shared_grant() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces:
   docs: /tmp/docs
 orchestrators:
@@ -646,7 +642,7 @@ channels: {}
 
         let yaml = format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces:
   docs: {docs}
 orchestrators:
@@ -670,7 +666,7 @@ channels: {{}}
     fn orchestrator_validation_enforces_selector_default_and_workflows() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces: {}
 orchestrators:
   alpha:
@@ -721,7 +717,7 @@ workflows:
     fn orchestrator_validation_rejects_zero_selector_timeout_seconds() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces: {}
 orchestrators:
   alpha:
@@ -796,7 +792,7 @@ workflows:
             &config_path,
             format!(
                 r#"
-workspace_path: {}
+workspaces_path: {}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}
@@ -811,7 +807,7 @@ channels: {{}}
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", temp.path());
         let settings = load_global_settings().expect("load global settings");
-        assert_eq!(settings.workspace_path, workspace);
+        assert_eq!(settings.workspaces_path, workspace);
         if let Some(value) = old_home {
             std::env::set_var("HOME", value);
         } else {

@@ -8,13 +8,13 @@ Defines orchestrator and agent workspace guarantees, shared workspace allowlists
 
 Every orchestrator always has a private workspace:
 
-- Default: `<workspace_path>/orchestrators/<orchestrator_id>`
+- Default: `<workspaces_path>/<orchestrator_id>`
 - Optional override: `orchestrators.<orchestrator_id>.private_workspace`
 
 Private workspace resolution is deterministic:
 
 1. Use `orchestrators.<orchestrator_id>.private_workspace` when configured.
-2. Else use `<workspace_path>/orchestrators/<orchestrator_id>`.
+2. Else use `<workspaces_path>/<orchestrator_id>`.
 
 This private workspace is always available to the orchestrator.
 

@@ -13,7 +13,7 @@ fn binary_loads_global_config_and_bootstraps_default_state_root() {
         home.join(".direclaw/config.yaml"),
         format!(
             r#"
-workspace_path: {}
+workspaces_path: {}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}
@@ -61,8 +61,8 @@ fn setup_defaults_workspace_under_state_root_when_config_is_missing() {
 
     let settings = direclaw::config::Settings::from_path(&home.join(".direclaw/config.yaml"))
         .expect("load generated config");
-    let expected_workspace = home.join(".direclaw/workspace");
-    assert_eq!(settings.workspace_path, expected_workspace);
+    let expected_workspace = home.join(".direclaw/workspaces");
+    assert_eq!(settings.workspaces_path, expected_workspace);
     assert!(expected_workspace.is_dir());
     assert!(settings.orchestrators.contains_key("main"));
 

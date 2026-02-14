@@ -21,11 +21,11 @@ Setup/config must support:
 
 Global config `~/.direclaw.yaml` must support:
 
-- `workspace_path`
+- `workspaces_path`
 - `shared_workspaces` object
 - `orchestrators` object keyed by orchestrator id
   - each orchestrator:
-    - `private_workspace` (optional override; default `<workspace_path>/orchestrators/<orchestrator_id>`)
+    - `private_workspace` (optional override; default `<workspaces_path>/<orchestrator_id>`)
     - `shared_access[]` (logical names from `shared_workspaces`)
 - `channel_profiles` object keyed by channel profile id
   - each profile: `channel`, channel credentials/settings, `orchestrator_id`
@@ -67,7 +67,7 @@ Reference examples:
 
 ## Example Workspace Resolution
 
-Given `workspace_path` = `/Users/example/direclaw-workspace` and the example shared registry:
+Given `workspaces_path` = `/Users/example/.direclaw/workspaces` and the example shared registry:
 
 - `shared` -> `/Users/example/direclaw-shared`
 - `docs` -> `/Users/example/company-docs`
@@ -75,9 +75,9 @@ Given `workspace_path` = `/Users/example/direclaw-workspace` and the example sha
 
 Resolved orchestrator workspace examples:
 
-- `engineering_orchestrator` private workspace: `/Users/example/direclaw-workspace/orchestrators/engineering_orchestrator`
+- `engineering_orchestrator` private workspace: `/Users/example/.direclaw/workspaces/engineering_orchestrator`
 - `engineering_orchestrator` shared access: `/Users/example/direclaw-shared`, `/Users/example/company-docs`
-- `product_orchestrator` private workspace: `/Users/example/direclaw-workspace/orchestrators/product_orchestrator`
+- `product_orchestrator` private workspace: `/Users/example/.direclaw/workspaces/product_orchestrator`
 - `product_orchestrator` shared access: `/Users/example/company-docs`
 
 ## Orchestrator Commands

@@ -468,7 +468,7 @@ fn diagnostics_and_queue_dispatch_paths_are_supported() {
 
     let settings_yaml = format!(
         r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators:
   engineering_orchestrator:
@@ -710,7 +710,7 @@ workflows:
 
     let settings: Settings = serde_yaml::from_str(&format!(
         r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators:
   engineering_orchestrator:
@@ -757,7 +757,7 @@ fn process_queue_blocks_malicious_output_template_and_logs() {
 
     let settings_yaml = format!(
         r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators:
   engineering_orchestrator:

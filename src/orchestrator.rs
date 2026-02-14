@@ -2954,7 +2954,7 @@ mod tests {
     fn resolve_orchestrator_id_from_channel_profile() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces: {}
 orchestrators:
   eng:
@@ -3037,7 +3037,7 @@ ignored
     fn workspace_access_context_and_enforcement_allow_private_and_granted_shared_only() {
         let settings: Settings = serde_yaml::from_str(
             r#"
-workspace_path: /tmp/workspace
+workspaces_path: /tmp/workspace
 shared_workspaces:
   docs: /tmp/shared/docs
   finance: /tmp/shared/finance
@@ -3058,7 +3058,7 @@ channels: {}
         enforce_workspace_access(
             &context,
             &[
-                PathBuf::from("/tmp/workspace/orchestrators/alpha/agents/worker"),
+                PathBuf::from("/tmp/workspace/alpha/agents/worker"),
                 PathBuf::from("/tmp/shared/docs/project/readme.md"),
             ],
         )

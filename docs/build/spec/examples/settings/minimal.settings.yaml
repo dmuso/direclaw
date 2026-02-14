@@ -1,5 +1,5 @@
 # Root workspace path used to derive default per-orchestrator private workspaces.
-workspace_path: /Users/example/direclaw-workspace
+workspaces_path: /Users/example/.direclaw/workspaces
 
 # Named shared workspace registry. Empty means no shared areas are defined.
 shared_workspaces: {}
@@ -7,7 +7,7 @@ shared_workspaces: {}
 # Orchestrator registry. Each orchestrator has its own private workspace and config file.
 orchestrators:
   default_orchestrator:
-    private_workspace: /Users/example/direclaw-workspace/orchestrators/default_orchestrator
+    private_workspace: /Users/example/.direclaw/workspaces/default_orchestrator
     shared_access: []
 
 # Channel profiles are external-facing integration identities.

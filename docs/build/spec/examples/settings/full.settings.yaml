@@ -1,5 +1,5 @@
 # Root workspace path used to derive default per-orchestrator private workspaces.
-workspace_path: /Users/example/direclaw-workspace
+workspaces_path: /Users/example/.direclaw/workspaces
 
 # Named shared workspace registry. Keys are logical names used in orchestrator shared_access lists.
 shared_workspaces:
@@ -10,11 +10,11 @@ shared_workspaces:
 # Orchestrator registry. Each orchestrator owns agents/workflows in its private workspace.
 orchestrators:
   engineering_orchestrator:
-    private_workspace: /Users/example/direclaw-workspace/orchestrators/engineering_orchestrator
+    private_workspace: /Users/example/.direclaw/workspaces/engineering_orchestrator
     shared_access: [shared, docs, data]
 
   product_orchestrator:
-    private_workspace: /Users/example/direclaw-workspace/orchestrators/product_orchestrator
+    private_workspace: /Users/example/.direclaw/workspaces/product_orchestrator
     shared_access: [docs]
 
 # Channel profiles are external-facing integration identities.

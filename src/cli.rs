@@ -254,30 +254,30 @@ fn cmd_setup() -> Result<String, String> {
 
     if config_path.exists() {
         let settings = load_settings()?;
-        fs::create_dir_all(&settings.workspace_path).map_err(|e| {
+        fs::create_dir_all(&settings.workspaces_path).map_err(|e| {
             format!(
                 "failed to create workspace {}: {e}",
-                settings.workspace_path.display()
+                settings.workspaces_path.display()
             )
         })?;
         return Ok(format!(
             "setup complete\nconfig={}\nstate_root={}\nworkspace={}",
             config_path.display(),
             paths.root.display(),
-            settings.workspace_path.display()
+            settings.workspaces_path.display()
         ));
     }
 
     let bootstrap = collect_setup_bootstrap(&paths)?;
-    fs::create_dir_all(&bootstrap.workspace_path).map_err(|e| {
+    fs::create_dir_all(&bootstrap.workspaces_path).map_err(|e| {
         format!(
             "failed to create workspace {}: {e}",
-            bootstrap.workspace_path.display()
+            bootstrap.workspaces_path.display()
         )
     })?;
 
     let settings = Settings {
-        workspace_path: bootstrap.workspace_path.clone(),
+        workspaces_path: bootstrap.workspaces_path.clone(),
         shared_workspaces: BTreeMap::new(),
         orchestrators: BTreeMap::from_iter([(
             bootstrap.orchestrator_id.clone(),
@@ -309,7 +309,7 @@ fn cmd_setup() -> Result<String, String> {
         "setup complete\nconfig={}\nstate_root={}\nworkspace={}\norchestrator={}\nworkflow_bundle={}\nprovider={}\nmodel={}\norchestrator_config={}",
         path.display(),
         paths.root.display(),
-        bootstrap.workspace_path.display(),
+        bootstrap.workspaces_path.display(),
         bootstrap.orchestrator_id,
         bootstrap.bundle.as_str(),
         bootstrap.provider,
@@ -337,7 +337,7 @@ impl SetupWorkflowBundle {
 
 #[derive(Debug, Clone)]
 struct SetupBootstrap {
-    workspace_path: PathBuf,
+    workspaces_path: PathBuf,
     orchestrator_id: String,
     provider: String,
     model: String,
@@ -409,10 +409,10 @@ fn parse_workflow_bundle(value: &str) -> Result<SetupWorkflowBundle, String> {
 }
 
 fn collect_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
-    let default_workspace = paths.root.join("workspace");
+    let default_workspace = paths.root.join("workspaces");
     if !is_interactive_setup() {
         return Ok(SetupBootstrap {
-            workspace_path: default_workspace,
+            workspaces_path: default_workspace,
             orchestrator_id: "main".to_string(),
             provider: "anthropic".to_string(),
             model: "sonnet".to_string(),
@@ -421,16 +421,6 @@ fn collect_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String>
     }
 
     println!("DireClaw first-run setup");
-    let workspace_path = PathBuf::from(prompt_until_valid(
-        "Workspace root path",
-        default_workspace.to_string_lossy().as_ref(),
-        |value| {
-            if Path::new(value).is_absolute() {
-                return Ok(());
-            }
-            Err("workspace path must be absolute".to_string())
-        },
-    )?);
     let orchestrator_id = prompt_until_valid("First orchestrator id", "main", |value| {
         if value.trim().is_empty() {
             return Err("orchestrator id must be non-empty".to_string());
@@ -455,7 +445,7 @@ fn collect_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String>
     )?)?;
 
     Ok(SetupBootstrap {
-        workspace_path,
+        workspaces_path: default_workspace,
         orchestrator_id,
         provider,
         model,
@@ -1215,18 +1205,18 @@ fn cmd_doctor() -> Result<String, String> {
     ));
 
     if let Some(settings) = settings.as_ref() {
-        findings.push(match can_write_directory(&settings.workspace_path) {
+        findings.push(match can_write_directory(&settings.workspaces_path) {
             Ok(_) => doctor_finding(
                 "workspace.root",
                 true,
-                format!("writable={}", settings.workspace_path.display()),
+                format!("writable={}", settings.workspaces_path.display()),
                 "none",
             ),
             Err(err) => doctor_finding(
                 "workspace.root",
                 false,
                 err,
-                "grant write permission to workspace_path in ~/.direclaw/config.yaml",
+                "grant write permission to workspaces_path in ~/.direclaw/config.yaml",
             ),
         });
         let orchestrators_config_path =

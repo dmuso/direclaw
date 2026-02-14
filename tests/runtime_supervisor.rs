@@ -58,7 +58,7 @@ fn write_settings(home: &Path) {
         home.join(".direclaw/config.yaml"),
         format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}
@@ -82,7 +82,7 @@ fn write_slack_settings(home: &Path, slack_enabled: bool) {
         home.join(".direclaw/config.yaml"),
         format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators:
   main:

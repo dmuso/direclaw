@@ -118,7 +118,7 @@ impl MockSlackServer {
 }
 
 fn sample_settings(
-    workspace_path: &Path,
+    workspaces_path: &Path,
     require_mention: bool,
     allowlisted_channels: Vec<String>,
 ) -> Settings {
@@ -152,7 +152,7 @@ fn sample_settings(
     );
 
     Settings {
-        workspace_path: workspace_path.to_path_buf(),
+        workspaces_path: workspaces_path.to_path_buf(),
         shared_workspaces: BTreeMap::new(),
         orchestrators,
         channel_profiles,

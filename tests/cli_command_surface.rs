@@ -77,7 +77,7 @@ fn write_settings(home: &Path, include_shared_workspace: bool) {
         home.join(".direclaw/config.yaml"),
         format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces:
 {shared}
 orchestrators: {{}}
@@ -164,7 +164,7 @@ fn doctor_reports_healthy_and_unhealthy_permutations() {
         temp.path().join(".direclaw/config.yaml"),
         format!(
             r#"
-workspace_path: {workspace}
+workspaces_path: {workspace}
 shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}
