@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Padding, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
@@ -22,107 +22,41 @@ pub(super) fn cmd_setup() -> Result<String, String> {
     let config_exists = default_global_config_path()
         .map_err(map_config_err)?
         .exists();
-    let mut bootstrap = load_setup_bootstrap(&paths)?;
+    let mut state = load_setup_bootstrap(&paths)?;
     if is_interactive_setup() {
-        match run_setup_tui(&mut bootstrap, config_exists)? {
+        match run_setup_tui(&mut state, config_exists)? {
             SetupExit::Save => {}
             SetupExit::Cancel => return Ok("setup canceled".to_string()),
         }
     }
-    fs::create_dir_all(&bootstrap.workspaces_path).map_err(|e| {
+    fs::create_dir_all(&state.workspaces_path).map_err(|e| {
         format!(
             "failed to create workspace {}: {e}",
-            bootstrap.workspaces_path.display()
+            state.workspaces_path.display()
         )
     })?;
-
-    let mut settings = if config_exists {
-        load_settings()?
-    } else {
-        Settings {
-            workspaces_path: bootstrap.workspaces_path.clone(),
-            shared_workspaces: BTreeMap::new(),
-            orchestrators: bootstrap.orchestrators.clone(),
-            channel_profiles: BTreeMap::new(),
-            monitoring: Default::default(),
-            channels: BTreeMap::new(),
-            auth_sync: AuthSyncConfig::default(),
-        }
-    };
-    settings.workspaces_path = bootstrap.workspaces_path.clone();
-    settings.orchestrators = bootstrap.orchestrators.clone();
-    settings
-        .orchestrators
-        .entry(bootstrap.orchestrator_id.clone())
-        .or_insert(SettingsOrchestrator {
-            private_workspace: None,
-            shared_access: Vec::new(),
-        });
-    bootstrap.orchestrators = settings.orchestrators.clone();
-    bootstrap
-        .orchestrator_configs
-        .entry(bootstrap.orchestrator_id.clone())
-        .or_insert_with(|| {
-            initial_orchestrator_config(
-                &bootstrap.orchestrator_id,
-                &bootstrap.provider,
-                &bootstrap.model,
-                bootstrap.workflow_template,
-            )
-        });
-    if settings.channel_profiles.is_empty() {
-        settings.channel_profiles.insert(
-            "local-default".to_string(),
-            ChannelProfile {
-                channel: ChannelKind::Local,
-                orchestrator_id: bootstrap.orchestrator_id.clone(),
-                slack_app_user_id: None,
-                require_mention_in_channels: None,
-            },
-        );
-    }
-    let has_primary_profile = settings
-        .channel_profiles
-        .values()
-        .any(|profile| profile.orchestrator_id == bootstrap.orchestrator_id);
-    if !has_primary_profile {
-        settings.channel_profiles.insert(
-            format!("{}-local", bootstrap.orchestrator_id),
-            ChannelProfile {
-                channel: ChannelKind::Local,
-                orchestrator_id: bootstrap.orchestrator_id.clone(),
-                slack_app_user_id: None,
-                require_mention_in_channels: None,
-            },
-        );
-    }
-    settings
-        .validate(ValidationOptions {
-            require_shared_paths_exist: false,
-        })
-        .map_err(map_config_err)?;
-    validate_setup_bootstrap(&settings, &bootstrap)?;
+    let settings = state.normalize_for_save(config_exists)?;
 
     let path = save_settings(&settings)?;
-    save_orchestrator_registry(&settings, &bootstrap.orchestrator_configs)?;
+    save_orchestrator_registry(&settings, &state.orchestrator_configs)?;
     let orchestrator_path = settings
-        .resolve_private_workspace(&bootstrap.orchestrator_id)
+        .resolve_private_workspace(&state.orchestrator_id)
         .map_err(map_config_err)?
         .join("orchestrator.yaml");
     let prefs = RuntimePreferences {
-        provider: Some(bootstrap.provider.clone()),
-        model: Some(bootstrap.model.clone()),
+        provider: Some(state.provider.clone()),
+        model: Some(state.model.clone()),
     };
     save_preferences(&paths, &prefs)?;
     Ok(format!(
         "setup complete\nconfig={}\nstate_root={}\nworkspace={}\norchestrator={}\nnew_workflow_template={}\nprovider={}\nmodel={}\norchestrator_config={}",
         path.display(),
         paths.root.display(),
-        bootstrap.workspaces_path.display(),
-        bootstrap.orchestrator_id,
-        bootstrap.workflow_template.as_str(),
-        bootstrap.provider,
-        bootstrap.model,
+        state.workspaces_path.display(),
+        state.orchestrator_id,
+        state.workflow_template.as_str(),
+        state.provider,
+        state.model,
         orchestrator_path.display()
     ))
 }
@@ -145,7 +79,7 @@ impl SetupWorkflowTemplate {
 }
 
 #[derive(Debug, Clone)]
-struct SetupBootstrap {
+struct SetupState {
     workspaces_path: PathBuf,
     orchestrator_id: String,
     provider: String,
@@ -153,6 +87,1096 @@ struct SetupBootstrap {
     workflow_template: SetupWorkflowTemplate,
     orchestrators: BTreeMap<String, SettingsOrchestrator>,
     orchestrator_configs: BTreeMap<String, OrchestratorConfig>,
+}
+
+enum OrchestrationLimitField {
+    MaxTotalIterations,
+    DefaultRunTimeoutSeconds,
+    DefaultStepTimeoutSeconds,
+    MaxStepTimeoutSeconds,
+}
+
+impl SetupState {
+    fn set_workspaces_path(&mut self, value: PathBuf) {
+        self.workspaces_path = value;
+    }
+
+    fn set_default_provider(&mut self, provider: String) {
+        self.provider = provider;
+    }
+
+    fn set_default_model(&mut self, model: String) {
+        self.model = model;
+    }
+
+    fn set_default_workflow_template(&mut self, template: SetupWorkflowTemplate) {
+        self.workflow_template = template;
+    }
+
+    fn set_primary_orchestrator(&mut self, orchestrator_id: &str) -> Result<(), String> {
+        if !self.orchestrators.contains_key(orchestrator_id) {
+            return Err(format!("orchestrator `{orchestrator_id}` does not exist"));
+        }
+        self.orchestrator_id = orchestrator_id.to_string();
+        Ok(())
+    }
+
+    fn ensure_minimum_orchestrator(&mut self) {
+        if self.orchestrators.is_empty() {
+            let id = "main".to_string();
+            self.orchestrators.insert(
+                id.clone(),
+                SettingsOrchestrator {
+                    private_workspace: None,
+                    shared_access: Vec::new(),
+                },
+            );
+            self.orchestrator_configs.insert(
+                id.clone(),
+                initial_orchestrator_config(
+                    &id,
+                    &self.provider,
+                    &self.model,
+                    self.workflow_template,
+                ),
+            );
+            self.orchestrator_id = id;
+        }
+    }
+
+    fn add_orchestrator(&mut self, orchestrator_id: &str) -> Result<(), String> {
+        validate_identifier("orchestrator id", orchestrator_id)?;
+        if self.orchestrators.contains_key(orchestrator_id) {
+            return Err("orchestrator id already exists".to_string());
+        }
+        self.orchestrators.insert(
+            orchestrator_id.to_string(),
+            SettingsOrchestrator {
+                private_workspace: None,
+                shared_access: Vec::new(),
+            },
+        );
+        self.orchestrator_configs.insert(
+            orchestrator_id.to_string(),
+            initial_orchestrator_config(
+                orchestrator_id,
+                &self.provider,
+                &self.model,
+                self.workflow_template,
+            ),
+        );
+        self.orchestrator_id = orchestrator_id.to_string();
+        Ok(())
+    }
+
+    fn remove_orchestrator(&mut self, orchestrator_id: &str) -> Result<(), String> {
+        if !self.orchestrators.contains_key(orchestrator_id) {
+            return Err(format!("orchestrator `{orchestrator_id}` does not exist"));
+        }
+        if self.orchestrators.len() <= 1 {
+            return Err("at least one orchestrator must remain".to_string());
+        }
+        self.orchestrators.remove(orchestrator_id);
+        self.orchestrator_configs.remove(orchestrator_id);
+        if self.orchestrator_id == orchestrator_id {
+            if let Some(next_id) = self.orchestrators.keys().next() {
+                self.orchestrator_id = next_id.clone();
+            }
+        }
+        Ok(())
+    }
+
+    fn set_orchestrator_private_workspace(
+        &mut self,
+        orchestrator_id: &str,
+        value: Option<PathBuf>,
+    ) -> Result<(), String> {
+        let entry = self
+            .orchestrators
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        entry.private_workspace = value;
+        Ok(())
+    }
+
+    fn set_orchestrator_shared_access(
+        &mut self,
+        orchestrator_id: &str,
+        shared_access: Vec<String>,
+    ) -> Result<(), String> {
+        let entry = self
+            .orchestrators
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        entry.shared_access = shared_access;
+        Ok(())
+    }
+
+    fn set_orchestrator_default_workflow(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+    ) -> Result<(), String> {
+        validate_identifier("workflow id", workflow_id)?;
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        if !cfg
+            .workflows
+            .iter()
+            .any(|workflow| workflow.id == workflow_id)
+        {
+            return Err(format!("workflow `{workflow_id}` not found"));
+        }
+        cfg.default_workflow = workflow_id.to_string();
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn set_orchestrator_selection_max_retries(
+        &mut self,
+        orchestrator_id: &str,
+        value: u32,
+    ) -> Result<(), String> {
+        if value < 1 {
+            return Err("selection_max_retries must be >= 1".to_string());
+        }
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        cfg.selection_max_retries = value;
+        Ok(())
+    }
+
+    fn set_orchestrator_selector_timeout_seconds(
+        &mut self,
+        orchestrator_id: &str,
+        value: u64,
+    ) -> Result<(), String> {
+        if value < 1 {
+            return Err("selector_timeout_seconds must be >= 1".to_string());
+        }
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        cfg.selector_timeout_seconds = value;
+        Ok(())
+    }
+
+    fn set_orchestrator_workflow_orchestration_limit(
+        &mut self,
+        orchestrator_id: &str,
+        field: OrchestrationLimitField,
+        value: Option<u64>,
+    ) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        if let Some(parsed) = value {
+            if parsed < 1 {
+                return Err("value must be >= 1".to_string());
+            }
+            let orchestration =
+                cfg.workflow_orchestration
+                    .get_or_insert(WorkflowOrchestrationConfig {
+                        max_total_iterations: None,
+                        default_run_timeout_seconds: None,
+                        default_step_timeout_seconds: None,
+                        max_step_timeout_seconds: None,
+                    });
+            match field {
+                OrchestrationLimitField::MaxTotalIterations => {
+                    if parsed > u32::MAX as u64 {
+                        return Err("max_total_iterations exceeds u32 range".to_string());
+                    }
+                    orchestration.max_total_iterations = Some(parsed as u32);
+                }
+                OrchestrationLimitField::DefaultRunTimeoutSeconds => {
+                    orchestration.default_run_timeout_seconds = Some(parsed);
+                }
+                OrchestrationLimitField::DefaultStepTimeoutSeconds => {
+                    orchestration.default_step_timeout_seconds = Some(parsed);
+                }
+                OrchestrationLimitField::MaxStepTimeoutSeconds => {
+                    orchestration.max_step_timeout_seconds = Some(parsed);
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(orchestration) = cfg.workflow_orchestration.as_mut() {
+            match field {
+                OrchestrationLimitField::MaxTotalIterations => {
+                    orchestration.max_total_iterations = None
+                }
+                OrchestrationLimitField::DefaultRunTimeoutSeconds => {
+                    orchestration.default_run_timeout_seconds = None
+                }
+                OrchestrationLimitField::DefaultStepTimeoutSeconds => {
+                    orchestration.default_step_timeout_seconds = None
+                }
+                OrchestrationLimitField::MaxStepTimeoutSeconds => {
+                    orchestration.max_step_timeout_seconds = None
+                }
+            }
+            if orchestration.max_total_iterations.is_none()
+                && orchestration.default_run_timeout_seconds.is_none()
+                && orchestration.default_step_timeout_seconds.is_none()
+                && orchestration.max_step_timeout_seconds.is_none()
+            {
+                cfg.workflow_orchestration = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_workflow_template_to_orchestrator(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_template: SetupWorkflowTemplate,
+    ) -> Result<(), String> {
+        let (provider, model) = provider_model_for_orchestrator(self, orchestrator_id);
+        let template =
+            initial_orchestrator_config(orchestrator_id, &provider, &model, workflow_template);
+        let target = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+
+        for (agent_id, agent_cfg) in template.agents {
+            target.agents.entry(agent_id).or_insert(agent_cfg);
+        }
+
+        let mut existing_workflows = BTreeMap::from_iter(
+            target
+                .workflows
+                .iter()
+                .map(|wf| (wf.id.clone(), wf.clone())),
+        );
+        let mut new_default_workflow = None::<String>;
+        for mut workflow in template.workflows {
+            let original_id = workflow.id.clone();
+            let mapped_id = unique_workflow_id(&existing_workflows, &workflow.id);
+            workflow.id = mapped_id.clone();
+            if original_id == template.default_workflow {
+                new_default_workflow = Some(mapped_id.clone());
+            }
+            existing_workflows.insert(mapped_id, workflow);
+        }
+        target.workflows = existing_workflows.into_values().collect();
+        if let Some(workflow_id) = new_default_workflow {
+            target.default_workflow = workflow_id;
+        }
+        Self::validate_orchestrator_invariants(target)
+    }
+
+    fn add_workflow(&mut self, orchestrator_id: &str, workflow_id: &str) -> Result<(), String> {
+        validate_identifier("workflow id", workflow_id)?;
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if cfg
+            .workflows
+            .iter()
+            .any(|workflow| workflow.id == workflow_id)
+        {
+            return Err("workflow id already exists".to_string());
+        }
+        let selector_agent = cfg.selector_agent.clone();
+        cfg.workflows.push(WorkflowConfig {
+            id: workflow_id.to_string(),
+            version: 1,
+            inputs: WorkflowInputs::default(),
+            limits: None,
+            steps: vec![WorkflowStepConfig {
+                id: "step_1".to_string(),
+                step_type: WorkflowStepType::AgentTask,
+                agent: selector_agent,
+                prompt: default_step_scaffold("agent_task"),
+                workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
+                next: None,
+                on_approve: None,
+                on_reject: None,
+                outputs: default_step_output_contract("agent_task"),
+                output_files: default_step_output_files("agent_task"),
+                limits: None,
+            }],
+        });
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn remove_workflow(&mut self, orchestrator_id: &str, workflow_id: &str) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if !cfg
+            .workflows
+            .iter()
+            .any(|workflow| workflow.id == workflow_id)
+        {
+            return Err(format!("workflow `{workflow_id}` does not exist"));
+        }
+        if cfg.workflows.len() <= 1 {
+            return Err("at least one workflow must remain".to_string());
+        }
+        cfg.workflows.retain(|workflow| workflow.id != workflow_id);
+        if cfg.default_workflow == workflow_id {
+            if let Some(next) = cfg.workflows.first() {
+                cfg.default_workflow = next.id.clone();
+            }
+        }
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn rename_workflow(
+        &mut self,
+        orchestrator_id: &str,
+        current_id: &str,
+        next_id: &str,
+    ) -> Result<(), String> {
+        validate_identifier("workflow id", next_id)?;
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if cfg
+            .workflows
+            .iter()
+            .any(|workflow| workflow.id == next_id && workflow.id != current_id)
+        {
+            return Err("workflow id already exists".to_string());
+        }
+        let workflow = cfg
+            .workflows
+            .iter_mut()
+            .find(|workflow| workflow.id == current_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        workflow.id = next_id.to_string();
+        if cfg.default_workflow == current_id {
+            cfg.default_workflow = next_id.to_string();
+        }
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn set_workflow_version(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        version: u32,
+    ) -> Result<(), String> {
+        if version < 1 {
+            return Err("version must be >= 1".to_string());
+        }
+        let workflow = self
+            .workflow_mut(orchestrator_id, workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        workflow.version = version;
+        Ok(())
+    }
+
+    fn set_workflow_inputs(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        keys: Vec<String>,
+    ) -> Result<(), String> {
+        let parsed = WorkflowInputs::parse_keys(keys)?;
+        let workflow = self
+            .workflow_mut(orchestrator_id, workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        workflow.inputs = parsed;
+        Ok(())
+    }
+
+    fn set_workflow_max_total_iterations(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        value: Option<u32>,
+    ) -> Result<(), String> {
+        let workflow = self
+            .workflow_mut(orchestrator_id, workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        if let Some(parsed) = value {
+            if parsed < 1 {
+                return Err("max_total_iterations must be >= 1".to_string());
+            }
+            let limits = workflow.limits.get_or_insert(WorkflowLimitsConfig {
+                max_total_iterations: None,
+                run_timeout_seconds: None,
+            });
+            limits.max_total_iterations = Some(parsed);
+        } else if let Some(limits) = workflow.limits.as_mut() {
+            limits.max_total_iterations = None;
+            if limits.run_timeout_seconds.is_none() {
+                workflow.limits = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_workflow_run_timeout_seconds(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        value: Option<u64>,
+    ) -> Result<(), String> {
+        let workflow = self
+            .workflow_mut(orchestrator_id, workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        if let Some(parsed) = value {
+            if parsed < 1 {
+                return Err("run_timeout_seconds must be >= 1".to_string());
+            }
+            let limits = workflow.limits.get_or_insert(WorkflowLimitsConfig {
+                max_total_iterations: None,
+                run_timeout_seconds: None,
+            });
+            limits.run_timeout_seconds = Some(parsed);
+        } else if let Some(limits) = workflow.limits.as_mut() {
+            limits.run_timeout_seconds = None;
+            if limits.max_total_iterations.is_none() {
+                workflow.limits = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn add_step(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+    ) -> Result<(), String> {
+        validate_identifier("step id", step_id)?;
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let selector_agent = cfg.selector_agent.clone();
+        let workflow = cfg
+            .workflows
+            .iter_mut()
+            .find(|workflow| workflow.id == workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        if workflow.steps.iter().any(|step| step.id == step_id) {
+            return Err("step id already exists".to_string());
+        }
+        workflow.steps.push(WorkflowStepConfig {
+            id: step_id.to_string(),
+            step_type: WorkflowStepType::AgentTask,
+            agent: selector_agent,
+            prompt: default_step_scaffold("agent_task"),
+            workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
+            next: None,
+            on_approve: None,
+            on_reject: None,
+            outputs: default_step_output_contract("agent_task"),
+            output_files: default_step_output_files("agent_task"),
+            limits: None,
+        });
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn remove_step(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+    ) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let workflow = cfg
+            .workflows
+            .iter_mut()
+            .find(|workflow| workflow.id == workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        if !workflow.steps.iter().any(|step| step.id == step_id) {
+            return Err(format!("step `{step_id}` does not exist"));
+        }
+        if workflow.steps.len() <= 1 {
+            return Err("at least one step must remain".to_string());
+        }
+        workflow.steps.retain(|step| step.id != step_id);
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn rename_step(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        current_id: &str,
+        next_id: &str,
+    ) -> Result<(), String> {
+        validate_identifier("step id", next_id)?;
+        let workflow = self
+            .workflow_mut(orchestrator_id, workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        if workflow
+            .steps
+            .iter()
+            .any(|step| step.id == next_id && step.id != current_id)
+        {
+            return Err("step id already exists".to_string());
+        }
+        let step = workflow
+            .steps
+            .iter_mut()
+            .find(|step| step.id == current_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.id = next_id.to_string();
+        Ok(())
+    }
+
+    fn toggle_step_type(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+    ) -> Result<(), String> {
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.step_type = if step.step_type == WorkflowStepType::AgentTask {
+            WorkflowStepType::AgentReview
+        } else {
+            WorkflowStepType::AgentTask
+        };
+        step.prompt = default_step_scaffold(step.step_type.as_str());
+        step.outputs = default_step_output_contract(step.step_type.as_str());
+        step.output_files = default_step_output_files(step.step_type.as_str());
+        Ok(())
+    }
+
+    fn set_step_agent(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String> {
+        if agent_id.trim().is_empty() {
+            return Err("agent must be non-empty".to_string());
+        }
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if !cfg.agents.contains_key(agent_id) {
+            return Err(format!("agent `{agent_id}` does not exist"));
+        }
+        let workflow = cfg
+            .workflows
+            .iter_mut()
+            .find(|workflow| workflow.id == workflow_id)
+            .ok_or_else(|| "workflow no longer exists".to_string())?;
+        let step = workflow
+            .steps
+            .iter_mut()
+            .find(|step| step.id == step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.agent = agent_id.to_string();
+        Ok(())
+    }
+
+    fn set_step_prompt(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        prompt: &str,
+    ) -> Result<(), String> {
+        if prompt.trim().is_empty() {
+            return Err("prompt must be non-empty".to_string());
+        }
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.prompt = prompt.to_string();
+        Ok(())
+    }
+
+    fn toggle_step_workspace_mode(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+    ) -> Result<(), String> {
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.workspace_mode = match step.workspace_mode {
+            WorkflowStepWorkspaceMode::OrchestratorWorkspace => {
+                WorkflowStepWorkspaceMode::RunWorkspace
+            }
+            WorkflowStepWorkspaceMode::RunWorkspace => WorkflowStepWorkspaceMode::AgentWorkspace,
+            WorkflowStepWorkspaceMode::AgentWorkspace => {
+                WorkflowStepWorkspaceMode::OrchestratorWorkspace
+            }
+        };
+        Ok(())
+    }
+
+    fn set_step_next(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        next: Option<String>,
+    ) -> Result<(), String> {
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.next = next;
+        Ok(())
+    }
+
+    fn set_step_on_approve(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        on_approve: Option<String>,
+    ) -> Result<(), String> {
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.on_approve = on_approve;
+        Ok(())
+    }
+
+    fn set_step_on_reject(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        on_reject: Option<String>,
+    ) -> Result<(), String> {
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        step.on_reject = on_reject;
+        Ok(())
+    }
+
+    fn set_step_outputs(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        outputs: Vec<OutputKey>,
+    ) -> Result<(), String> {
+        if outputs.is_empty() {
+            return Err("outputs must be non-empty".to_string());
+        }
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        if let Some(missing) = outputs
+            .iter()
+            .find(|key| !step.output_files.contains_key(key.as_str()))
+        {
+            return Err(format!(
+                "output_files must include mapping for output `{}`",
+                missing
+            ));
+        }
+        step.outputs = outputs;
+        Ok(())
+    }
+
+    fn set_step_output_files(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        output_files: BTreeMap<OutputKey, PathTemplate>,
+    ) -> Result<(), String> {
+        if output_files.is_empty() {
+            return Err("output_files must be non-empty".to_string());
+        }
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        if let Some(missing) = step
+            .outputs
+            .iter()
+            .find(|key| !output_files.contains_key(key.as_str()))
+        {
+            return Err(format!(
+                "output_files must include mapping for output `{}`",
+                missing
+            ));
+        }
+        step.output_files = output_files;
+        Ok(())
+    }
+
+    fn set_step_max_retries(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+        max_retries: Option<u32>,
+    ) -> Result<(), String> {
+        let step = self
+            .step_mut(orchestrator_id, workflow_id, step_id)
+            .ok_or_else(|| "step no longer exists".to_string())?;
+        if let Some(parsed) = max_retries {
+            if parsed < 1 {
+                return Err("max_retries must be >= 1".to_string());
+            }
+            let limits = step
+                .limits
+                .get_or_insert(StepLimitsConfig { max_retries: None });
+            limits.max_retries = Some(parsed);
+        } else {
+            step.limits = None;
+        }
+        Ok(())
+    }
+
+    fn add_agent(&mut self, orchestrator_id: &str, agent_id: &str) -> Result<(), String> {
+        validate_identifier("agent id", agent_id)?;
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if cfg.agents.contains_key(agent_id) {
+            return Err("agent id already exists".to_string());
+        }
+        cfg.agents.insert(
+            agent_id.to_string(),
+            AgentConfig {
+                provider: ConfigProviderKind::parse(&self.provider)
+                    .expect("setup provider remains valid"),
+                model: self.model.clone(),
+                private_workspace: Some(PathBuf::from(format!("agents/{agent_id}"))),
+                can_orchestrate_workflows: false,
+                shared_access: Vec::new(),
+            },
+        );
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn remove_agent(&mut self, orchestrator_id: &str, agent_id: &str) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if !cfg.agents.contains_key(agent_id) {
+            return Err(format!("agent `{agent_id}` does not exist"));
+        }
+        if cfg.agents.len() <= 1 {
+            return Err("at least one agent must remain".to_string());
+        }
+        cfg.agents.remove(agent_id);
+        if cfg.selector_agent == agent_id {
+            if let Some(next) = cfg.agents.keys().next() {
+                cfg.selector_agent = next.clone();
+            }
+        }
+        Self::validate_orchestrator_invariants(cfg)
+    }
+
+    fn set_agent_provider(
+        &mut self,
+        orchestrator_id: &str,
+        agent_id: &str,
+        provider: &str,
+    ) -> Result<(), String> {
+        let parsed = ConfigProviderKind::parse(provider)?;
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let agent = cfg
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| "agent no longer exists".to_string())?;
+        agent.provider = parsed;
+        Ok(())
+    }
+
+    fn set_agent_model(
+        &mut self,
+        orchestrator_id: &str,
+        agent_id: &str,
+        model: &str,
+    ) -> Result<(), String> {
+        if model.trim().is_empty() {
+            return Err("model must be non-empty".to_string());
+        }
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let agent = cfg
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| "agent no longer exists".to_string())?;
+        agent.model = model.to_string();
+        Ok(())
+    }
+
+    fn set_agent_private_workspace(
+        &mut self,
+        orchestrator_id: &str,
+        agent_id: &str,
+        workspace: Option<PathBuf>,
+    ) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let agent = cfg
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| "agent no longer exists".to_string())?;
+        agent.private_workspace = workspace;
+        Ok(())
+    }
+
+    fn set_agent_shared_access(
+        &mut self,
+        orchestrator_id: &str,
+        agent_id: &str,
+        shared_access: Vec<String>,
+    ) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let agent = cfg
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| "agent no longer exists".to_string())?;
+        agent.shared_access = shared_access;
+        Ok(())
+    }
+
+    fn toggle_agent_orchestration_capability(
+        &mut self,
+        orchestrator_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let is_selector = cfg.selector_agent == agent_id;
+        let current = cfg
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| "agent no longer exists".to_string())?
+            .can_orchestrate_workflows;
+        if is_selector && current {
+            return Err("selector agent must keep orchestration capability enabled".to_string());
+        }
+        let agent = cfg
+            .agents
+            .get_mut(agent_id)
+            .ok_or_else(|| "agent no longer exists".to_string())?;
+        agent.can_orchestrate_workflows = !current;
+        Ok(())
+    }
+
+    fn set_selector_agent(&mut self, orchestrator_id: &str, agent_id: &str) -> Result<(), String> {
+        let cfg = self
+            .orchestrator_configs
+            .get_mut(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        if !cfg.agents.contains_key(agent_id) {
+            return Err("agent no longer exists".to_string());
+        }
+        cfg.selector_agent = agent_id.to_string();
+        if let Some(agent) = cfg.agents.get_mut(agent_id) {
+            agent.can_orchestrate_workflows = true;
+        }
+        Ok(())
+    }
+
+    fn normalize_for_save(&mut self, config_exists: bool) -> Result<Settings, String> {
+        self.ensure_minimum_orchestrator();
+        self.orchestrators
+            .entry(self.orchestrator_id.clone())
+            .or_insert(SettingsOrchestrator {
+                private_workspace: None,
+                shared_access: Vec::new(),
+            });
+        self.orchestrator_configs
+            .entry(self.orchestrator_id.clone())
+            .or_insert_with(|| {
+                initial_orchestrator_config(
+                    &self.orchestrator_id,
+                    &self.provider,
+                    &self.model,
+                    self.workflow_template,
+                )
+            });
+        let mut settings = if config_exists {
+            load_settings()?
+        } else {
+            Settings {
+                workspaces_path: self.workspaces_path.clone(),
+                shared_workspaces: BTreeMap::new(),
+                orchestrators: self.orchestrators.clone(),
+                channel_profiles: BTreeMap::new(),
+                monitoring: Default::default(),
+                channels: BTreeMap::new(),
+                auth_sync: AuthSyncConfig::default(),
+            }
+        };
+        settings.workspaces_path = self.workspaces_path.clone();
+        settings.orchestrators = self.orchestrators.clone();
+        if settings.channel_profiles.is_empty() {
+            settings.channel_profiles.insert(
+                "local-default".to_string(),
+                ChannelProfile {
+                    channel: ChannelKind::Local,
+                    orchestrator_id: self.orchestrator_id.clone(),
+                    slack_app_user_id: None,
+                    require_mention_in_channels: None,
+                },
+            );
+        }
+        let has_primary_profile = settings
+            .channel_profiles
+            .values()
+            .any(|profile| profile.orchestrator_id == self.orchestrator_id);
+        if !has_primary_profile {
+            settings.channel_profiles.insert(
+                format!("{}-local", self.orchestrator_id),
+                ChannelProfile {
+                    channel: ChannelKind::Local,
+                    orchestrator_id: self.orchestrator_id.clone(),
+                    slack_app_user_id: None,
+                    require_mention_in_channels: None,
+                },
+            );
+        }
+        settings
+            .validate(ValidationOptions {
+                require_shared_paths_exist: false,
+            })
+            .map_err(map_config_err)?;
+        validate_setup_bootstrap(&settings, self)?;
+        Ok(settings)
+    }
+
+    fn workflow_mut(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+    ) -> Option<&mut WorkflowConfig> {
+        self.orchestrator_configs
+            .get_mut(orchestrator_id)?
+            .workflows
+            .iter_mut()
+            .find(|workflow| workflow.id == workflow_id)
+    }
+
+    fn step_mut(
+        &mut self,
+        orchestrator_id: &str,
+        workflow_id: &str,
+        step_id: &str,
+    ) -> Option<&mut WorkflowStepConfig> {
+        self.workflow_mut(orchestrator_id, workflow_id)?
+            .steps
+            .iter_mut()
+            .find(|step| step.id == step_id)
+    }
+
+    fn validate_orchestrator_invariants(cfg: &OrchestratorConfig) -> Result<(), String> {
+        if cfg.workflows.is_empty() {
+            return Err("at least one workflow must remain".to_string());
+        }
+        if !cfg
+            .workflows
+            .iter()
+            .any(|workflow| workflow.id == cfg.default_workflow)
+        {
+            return Err(format!(
+                "default workflow `{}` does not exist",
+                cfg.default_workflow
+            ));
+        }
+        let mut workflow_ids = BTreeSet::new();
+        for workflow in &cfg.workflows {
+            if !workflow_ids.insert(workflow.id.clone()) {
+                return Err(format!("workflow id `{}` already exists", workflow.id));
+            }
+            if workflow.steps.is_empty() {
+                return Err(format!(
+                    "workflow `{}` must include at least one step",
+                    workflow.id
+                ));
+            }
+            let mut step_ids = BTreeSet::new();
+            for step in &workflow.steps {
+                if !step_ids.insert(step.id.clone()) {
+                    return Err(format!(
+                        "step id `{}` already exists in workflow `{}`",
+                        step.id, workflow.id
+                    ));
+                }
+                if !cfg.agents.contains_key(&step.agent) {
+                    return Err(format!(
+                        "workflow `{}` step `{}` references unknown agent `{}`",
+                        workflow.id, step.id, step.agent
+                    ));
+                }
+                if step.outputs.is_empty() {
+                    return Err(format!(
+                        "workflow `{}` step `{}` requires non-empty outputs",
+                        workflow.id, step.id
+                    ));
+                }
+                if step.output_files.is_empty() {
+                    return Err(format!(
+                        "workflow `{}` step `{}` requires non-empty output_files",
+                        workflow.id, step.id
+                    ));
+                }
+                if let Some(missing) = step
+                    .outputs
+                    .iter()
+                    .find(|key| !step.output_files.contains_key(key.as_str()))
+                {
+                    return Err(format!(
+                        "workflow `{}` step `{}` missing output_files mapping for `{}`",
+                        workflow.id, step.id, missing
+                    ));
+                }
+            }
+        }
+        if cfg.agents.is_empty() {
+            return Err("at least one agent must remain".to_string());
+        }
+        if !cfg.agents.contains_key(&cfg.selector_agent) {
+            return Err(format!(
+                "selector agent `{}` does not exist",
+                cfg.selector_agent
+            ));
+        }
+        if let Some(selector) = cfg.agents.get(&cfg.selector_agent) {
+            if !selector.can_orchestrate_workflows {
+                return Err(format!(
+                    "selector agent `{}` must keep orchestration enabled",
+                    cfg.selector_agent
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 enum SetupExit {
@@ -186,7 +1210,7 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
     }
 }
 
-fn validate_setup_bootstrap(settings: &Settings, bootstrap: &SetupBootstrap) -> Result<(), String> {
+fn validate_setup_bootstrap(settings: &Settings, bootstrap: &SetupState) -> Result<(), String> {
     if bootstrap.orchestrators.is_empty() {
         return Err("at least one orchestrator must be configured".to_string());
     }
@@ -236,9 +1260,9 @@ fn infer_workflow_template(orchestrator: &OrchestratorConfig) -> SetupWorkflowTe
     SetupWorkflowTemplate::Minimal
 }
 
-fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
+fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupState, String> {
     let default_workspace = paths.root.join("workspaces");
-    let mut bootstrap = SetupBootstrap {
+    let mut bootstrap = SetupState {
         workspaces_path: default_workspace,
         orchestrator_id: "main".to_string(),
         provider: "anthropic".to_string(),
@@ -320,7 +1344,7 @@ const SETUP_MENU_ITEMS: [&str; 5] = [
     "Cancel",
 ];
 
-fn run_setup_tui(bootstrap: &mut SetupBootstrap, config_exists: bool) -> Result<SetupExit, String> {
+fn run_setup_tui(bootstrap: &mut SetupState, config_exists: bool) -> Result<SetupExit, String> {
     let mut stdout = io::stdout();
     enable_raw_mode().map_err(|e| format!("failed to enable raw mode: {e}"))?;
     execute!(stdout, EnterAlternateScreen, Hide)
@@ -336,7 +1360,7 @@ fn run_setup_tui(bootstrap: &mut SetupBootstrap, config_exists: bool) -> Result<
 }
 
 fn run_setup_tui_loop(
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<SetupExit, String> {
@@ -397,7 +1421,7 @@ fn run_setup_tui_loop(
 
 fn run_workspaces_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
 ) -> Result<Option<String>, String> {
     let mut status = "Enter to edit workspace path. Esc back.".to_string();
@@ -434,7 +1458,7 @@ fn run_workspaces_tui(
                     if value.trim().is_empty() {
                         status = "workspace path must be non-empty".to_string();
                     } else {
-                        bootstrap.workspaces_path = PathBuf::from(value.trim());
+                        bootstrap.set_workspaces_path(PathBuf::from(value.trim()));
                         status = "workspace path updated".to_string();
                     }
                 }
@@ -446,7 +1470,7 @@ fn run_workspaces_tui(
 
 fn run_initial_defaults_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
 ) -> Result<Option<String>, String> {
     let mut selected = 0usize;
@@ -478,14 +1502,16 @@ fn run_initial_defaults_tui(
             KeyCode::Down => selected = std::cmp::min(selected + 1, 1),
             KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
                 if selected == 0 {
-                    bootstrap.provider = if bootstrap.provider == "anthropic" {
+                    let next_provider = if bootstrap.provider == "anthropic" {
                         "openai".to_string()
                     } else {
                         "anthropic".to_string()
                     };
+                    bootstrap.set_default_provider(next_provider);
                     if bootstrap.model == "sonnet" || bootstrap.model == "gpt-5.3-codex" {
-                        bootstrap.model =
-                            default_model_for_provider(&bootstrap.provider).to_string();
+                        bootstrap.set_default_model(
+                            default_model_for_provider(&bootstrap.provider).to_string(),
+                        );
                     }
                     status = format!("provider set to {}", bootstrap.provider);
                 } else if let Some(value) =
@@ -494,7 +1520,7 @@ fn run_initial_defaults_tui(
                     if value.trim().is_empty() {
                         status = "model must be non-empty".to_string();
                     } else {
-                        bootstrap.model = value.trim().to_string();
+                        bootstrap.set_default_model(value.trim().to_string());
                         status = "model updated".to_string();
                     }
                 }
@@ -579,7 +1605,7 @@ fn run_template_picker_tui(
 
 fn run_new_workflow_template_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
 ) -> Result<Option<String>, String> {
     let (selection, message) = run_template_picker_tui(
@@ -596,41 +1622,21 @@ fn run_new_workflow_template_tui(
         config_exists,
     )?;
     if let Some(template) = selection {
-        bootstrap.workflow_template = template;
+        bootstrap.set_default_workflow_template(template);
     }
     Ok(Some(message))
 }
 
 fn run_orchestrator_manager_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
 ) -> Result<Option<String>, String> {
     let mut selected = 0usize;
     let mut status = "Enter open orchestrator. a add, d delete, e set primary, t set default workflow template. Esc back.".to_string();
     loop {
-        let mut ids: Vec<String> = bootstrap.orchestrators.keys().cloned().collect();
-        if ids.is_empty() {
-            let id = "main".to_string();
-            bootstrap.orchestrators.insert(
-                id.clone(),
-                SettingsOrchestrator {
-                    private_workspace: None,
-                    shared_access: Vec::new(),
-                },
-            );
-            bootstrap.orchestrator_configs.insert(
-                id.clone(),
-                initial_orchestrator_config(
-                    &id,
-                    &bootstrap.provider,
-                    &bootstrap.model,
-                    bootstrap.workflow_template,
-                ),
-            );
-            bootstrap.orchestrator_id = id.clone();
-            ids.push(id);
-        }
+        bootstrap.ensure_minimum_orchestrator();
+        let ids: Vec<String> = bootstrap.orchestrators.keys().cloned().collect();
         selected = selected.min(ids.len().saturating_sub(1));
         let selected_id = ids[selected].clone();
 
@@ -681,10 +1687,10 @@ fn run_orchestrator_manager_tui(
                     status = message;
                 }
             }
-            KeyCode::Char('e') => {
-                bootstrap.orchestrator_id = selected_id.clone();
-                status = "Primary orchestrator updated.".to_string();
-            }
+            KeyCode::Char('e') => match bootstrap.set_primary_orchestrator(&selected_id) {
+                Ok(_) => status = "Primary orchestrator updated.".to_string(),
+                Err(err) => status = err,
+            },
             KeyCode::Char('t') => {
                 if let Some(message) =
                     run_new_workflow_template_tui(terminal, bootstrap, config_exists)?
@@ -702,50 +1708,28 @@ fn run_orchestrator_manager_tui(
                     let id = id.trim().to_string();
                     if id.is_empty() {
                         status = "orchestrator id must be non-empty".to_string();
-                    } else if let Err(err) = validate_identifier("orchestrator id", &id) {
-                        status = err;
-                    } else if bootstrap.orchestrators.contains_key(&id) {
-                        status = "orchestrator id already exists".to_string();
                     } else {
-                        bootstrap.orchestrators.insert(
-                            id.clone(),
-                            SettingsOrchestrator {
-                                private_workspace: None,
-                                shared_access: Vec::new(),
-                            },
-                        );
-                        bootstrap.orchestrator_configs.insert(
-                            id.clone(),
-                            initial_orchestrator_config(
-                                &id,
-                                &bootstrap.provider,
-                                &bootstrap.model,
-                                bootstrap.workflow_template,
-                            ),
-                        );
-                        bootstrap.orchestrator_id = id.clone();
-                        if let Some(pos) = bootstrap.orchestrators.keys().position(|v| v == &id) {
-                            selected = pos;
+                        match bootstrap.add_orchestrator(&id) {
+                            Ok(_) => {
+                                if let Some(pos) =
+                                    bootstrap.orchestrators.keys().position(|v| v == &id)
+                                {
+                                    selected = pos;
+                                }
+                                status = "orchestrator created".to_string();
+                            }
+                            Err(err) => status = err,
                         }
-                        status = "orchestrator created".to_string();
                     }
                 }
             }
-            KeyCode::Char('d') => {
-                if bootstrap.orchestrators.len() <= 1 {
-                    status = "at least one orchestrator must remain".to_string();
-                } else {
-                    bootstrap.orchestrators.remove(&selected_id);
-                    bootstrap.orchestrator_configs.remove(&selected_id);
-                    if bootstrap.orchestrator_id == selected_id {
-                        if let Some(next_id) = bootstrap.orchestrators.keys().next() {
-                            bootstrap.orchestrator_id = next_id.clone();
-                        }
-                    }
+            KeyCode::Char('d') => match bootstrap.remove_orchestrator(&selected_id) {
+                Ok(_) => {
                     selected = selected.saturating_sub(1);
                     status = "orchestrator removed".to_string();
                 }
-            }
+                Err(err) => status = err,
+            },
             _ => {}
         }
     }
@@ -753,7 +1737,7 @@ fn run_orchestrator_manager_tui(
 
 fn run_orchestrator_detail_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
 ) -> Result<Option<String>, String> {
@@ -783,10 +1767,10 @@ fn run_orchestrator_detail_tui(
             KeyCode::Up => selected = selected.saturating_sub(1),
             KeyCode::Down => selected = std::cmp::min(selected + 1, rows.len().saturating_sub(1)),
             KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => match selected {
-                0 => {
-                    bootstrap.orchestrator_id = orchestrator_id.to_string();
-                    status = "primary orchestrator updated".to_string();
-                }
+                0 => match bootstrap.set_primary_orchestrator(orchestrator_id) {
+                    Ok(_) => status = "primary orchestrator updated".to_string(),
+                    Err(err) => status = err,
+                },
                 1 => {
                     let current = bootstrap
                         .orchestrators
@@ -800,13 +1784,14 @@ fn run_orchestrator_detail_tui(
                         "Set private workspace (empty clears):",
                         &current,
                     )? {
-                        if let Some(entry) = bootstrap.orchestrators.get_mut(orchestrator_id) {
-                            if value.trim().is_empty() {
-                                entry.private_workspace = None;
-                            } else {
-                                entry.private_workspace = Some(PathBuf::from(value.trim()));
-                            }
-                            status = "private workspace updated".to_string();
+                        let next = if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(PathBuf::from(value.trim()))
+                        };
+                        match bootstrap.set_orchestrator_private_workspace(orchestrator_id, next) {
+                            Ok(_) => status = "private workspace updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -822,13 +1807,16 @@ fn run_orchestrator_detail_tui(
                         "Comma-separated shared workspace keys:",
                         &current,
                     )? {
-                        if let Some(entry) = bootstrap.orchestrators.get_mut(orchestrator_id) {
-                            entry.shared_access = value
-                                .split(',')
-                                .map(|v| v.trim().to_string())
-                                .filter(|v| !v.is_empty())
-                                .collect();
-                            status = "shared_access updated".to_string();
+                        let shared_access = value
+                            .split(',')
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty())
+                            .collect();
+                        match bootstrap
+                            .set_orchestrator_shared_access(orchestrator_id, shared_access)
+                        {
+                            Ok(_) => status = "shared_access updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -846,11 +1834,13 @@ fn run_orchestrator_detail_tui(
                     )? {
                         if value.trim().is_empty() {
                             status = "default_workflow must be non-empty".to_string();
-                        } else if let Some(cfg) =
-                            bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                        {
-                            cfg.default_workflow = value.trim().to_string();
-                            status = "default_workflow updated".to_string();
+                        } else {
+                            match bootstrap
+                                .set_orchestrator_default_workflow(orchestrator_id, value.trim())
+                            {
+                                Ok(_) => status = "default_workflow updated".to_string(),
+                                Err(err) => status = err,
+                            }
                         }
                     }
                 }
@@ -878,11 +1868,8 @@ fn run_orchestrator_detail_tui(
                         config_exists,
                     )?;
                     if let Some(template) = selection {
-                        apply_workflow_template_to_orchestrator(
-                            bootstrap,
-                            orchestrator_id,
-                            template,
-                        )?;
+                        bootstrap
+                            .apply_workflow_template_to_orchestrator(orchestrator_id, template)?;
                     }
                     status = message;
                 }
@@ -899,14 +1886,12 @@ fn run_orchestrator_detail_tui(
                         &current,
                     )? {
                         match value.trim().parse::<u32>() {
-                            Ok(v) if v >= 1 => {
-                                if let Some(cfg) =
-                                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                                {
-                                    cfg.selection_max_retries = v;
-                                    status = "selection_max_retries updated".to_string();
-                                }
-                            }
+                            Ok(v) => match bootstrap
+                                .set_orchestrator_selection_max_retries(orchestrator_id, v)
+                            {
+                                Ok(_) => status = "selection_max_retries updated".to_string(),
+                                Err(err) => status = err,
+                            },
                             _ => status = "selection_max_retries must be >= 1".to_string(),
                         }
                     }
@@ -924,14 +1909,12 @@ fn run_orchestrator_detail_tui(
                         &current,
                     )? {
                         match value.trim().parse::<u64>() {
-                            Ok(v) if v >= 1 => {
-                                if let Some(cfg) =
-                                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                                {
-                                    cfg.selector_timeout_seconds = v;
-                                    status = "selector_timeout_seconds updated".to_string();
-                                }
-                            }
+                            Ok(v) => match bootstrap
+                                .set_orchestrator_selector_timeout_seconds(orchestrator_id, v)
+                            {
+                                Ok(_) => status = "selector_timeout_seconds updated".to_string(),
+                                Err(err) => status = err,
+                            },
                             _ => status = "selector_timeout_seconds must be >= 1".to_string(),
                         }
                     }
@@ -970,7 +1953,7 @@ fn run_orchestrator_detail_tui(
 }
 
 fn provider_model_for_orchestrator(
-    bootstrap: &SetupBootstrap,
+    bootstrap: &SetupState,
     orchestrator_id: &str,
 ) -> (String, String) {
     if let Some(cfg) = bootstrap.orchestrator_configs.get(orchestrator_id) {
@@ -998,46 +1981,6 @@ fn unique_workflow_id(existing: &BTreeMap<String, WorkflowConfig>, base: &str) -
     }
 }
 
-fn apply_workflow_template_to_orchestrator(
-    bootstrap: &mut SetupBootstrap,
-    orchestrator_id: &str,
-    workflow_template: SetupWorkflowTemplate,
-) -> Result<(), String> {
-    let (provider, model) = provider_model_for_orchestrator(bootstrap, orchestrator_id);
-    let template =
-        initial_orchestrator_config(orchestrator_id, &provider, &model, workflow_template);
-    let target = bootstrap
-        .orchestrator_configs
-        .get_mut(orchestrator_id)
-        .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
-
-    for (agent_id, agent_cfg) in template.agents {
-        target.agents.entry(agent_id).or_insert(agent_cfg);
-    }
-
-    let mut existing_workflows = BTreeMap::from_iter(
-        target
-            .workflows
-            .iter()
-            .map(|wf| (wf.id.clone(), wf.clone())),
-    );
-    let mut new_default_workflow = None::<String>;
-    for mut workflow in template.workflows {
-        let original_id = workflow.id.clone();
-        let mapped_id = unique_workflow_id(&existing_workflows, &workflow.id);
-        workflow.id = mapped_id.clone();
-        if original_id == template.default_workflow {
-            new_default_workflow = Some(mapped_id.clone());
-        }
-        existing_workflows.insert(mapped_id, workflow);
-    }
-    target.workflows = existing_workflows.into_values().collect();
-    if let Some(workflow_id) = new_default_workflow {
-        target.default_workflow = workflow_id;
-    }
-    Ok(())
-}
-
 struct SetupFieldRow {
     field: String,
     value: Option<String>,
@@ -1051,7 +1994,7 @@ fn field_row(field: &str, value: Option<String>) -> SetupFieldRow {
 }
 
 fn orchestrator_detail_menu_rows(
-    bootstrap: &SetupBootstrap,
+    bootstrap: &SetupState,
     orchestrator_id: &str,
 ) -> Vec<SetupFieldRow> {
     let private_workspace = bootstrap
@@ -1118,7 +2061,7 @@ fn orchestrator_detail_menu_rows(
 }
 
 fn workflow_orchestration_menu_rows(
-    bootstrap: &SetupBootstrap,
+    bootstrap: &SetupState,
     orchestrator_id: &str,
 ) -> Vec<SetupFieldRow> {
     let orchestration = bootstrap
@@ -1167,7 +2110,7 @@ fn workflow_orchestration_menu_rows(
 
 fn run_workflow_orchestration_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
 ) -> Result<Option<String>, String> {
@@ -1221,57 +2164,38 @@ fn run_workflow_orchestration_tui(
                     .unwrap_or_default();
                 let initial = if current == "<none>" { "" } else { &current };
                 if let Some(value) = prompt_line_tui(terminal, label, prompt, initial)? {
-                    let cfg = bootstrap
-                        .orchestrator_configs
-                        .get_mut(orchestrator_id)
-                        .ok_or_else(|| "orchestrator missing".to_string())?;
+                    let field = match selected {
+                        0 => OrchestrationLimitField::MaxTotalIterations,
+                        1 => OrchestrationLimitField::DefaultRunTimeoutSeconds,
+                        2 => OrchestrationLimitField::DefaultStepTimeoutSeconds,
+                        _ => OrchestrationLimitField::MaxStepTimeoutSeconds,
+                    };
                     if value.trim().is_empty() {
-                        if let Some(orchestration) = cfg.workflow_orchestration.as_mut() {
-                            match selected {
-                                0 => orchestration.max_total_iterations = None,
-                                1 => orchestration.default_run_timeout_seconds = None,
-                                2 => orchestration.default_step_timeout_seconds = None,
-                                _ => orchestration.max_step_timeout_seconds = None,
-                            }
-                            if orchestration.max_total_iterations.is_none()
-                                && orchestration.default_run_timeout_seconds.is_none()
-                                && orchestration.default_step_timeout_seconds.is_none()
-                                && orchestration.max_step_timeout_seconds.is_none()
-                            {
-                                cfg.workflow_orchestration = None;
-                            }
+                        match bootstrap.set_orchestrator_workflow_orchestration_limit(
+                            orchestrator_id,
+                            field,
+                            None,
+                        ) {
+                            Ok(_) => status = "workflow orchestration limit cleared".to_string(),
+                            Err(err) => status = err,
                         }
-                        status = "workflow orchestration limit cleared".to_string();
                         continue;
                     }
                     let parsed = match value.trim().parse::<u64>() {
-                        Ok(v) if v >= 1 => v,
+                        Ok(v) => v,
                         _ => {
                             status = "value must be >= 1".to_string();
                             continue;
                         }
                     };
-                    let orchestration =
-                        cfg.workflow_orchestration
-                            .get_or_insert(WorkflowOrchestrationConfig {
-                                max_total_iterations: None,
-                                default_run_timeout_seconds: None,
-                                default_step_timeout_seconds: None,
-                                max_step_timeout_seconds: None,
-                            });
-                    match selected {
-                        0 => {
-                            if parsed > u32::MAX as u64 {
-                                status = "max_total_iterations exceeds u32 range".to_string();
-                                continue;
-                            }
-                            orchestration.max_total_iterations = Some(parsed as u32);
-                        }
-                        1 => orchestration.default_run_timeout_seconds = Some(parsed),
-                        2 => orchestration.default_step_timeout_seconds = Some(parsed),
-                        _ => orchestration.max_step_timeout_seconds = Some(parsed),
+                    match bootstrap.set_orchestrator_workflow_orchestration_limit(
+                        orchestrator_id,
+                        field,
+                        Some(parsed),
+                    ) {
+                        Ok(_) => status = "workflow orchestration limit updated".to_string(),
+                        Err(err) => status = err,
                     }
-                    status = "workflow orchestration limit updated".to_string();
                 }
             }
             _ => {}
@@ -1281,7 +2205,7 @@ fn run_workflow_orchestration_tui(
 
 fn run_workflow_manager_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
 ) -> Result<Option<String>, String> {
@@ -1357,11 +2281,13 @@ fn run_workflow_manager_tui(
             KeyCode::Char('f') => {
                 if workflow_ids.is_empty() {
                     status = "no workflows configured".to_string();
-                } else if let Some(orchestrator) =
-                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                {
-                    orchestrator.default_workflow = selected_workflow;
-                    status = "default workflow updated".to_string();
+                } else {
+                    match bootstrap
+                        .set_orchestrator_default_workflow(orchestrator_id, &selected_workflow)
+                    {
+                        Ok(_) => status = "default workflow updated".to_string(),
+                        Err(err) => status = err,
+                    }
                 }
             }
             KeyCode::Char('a') => {
@@ -1376,40 +2302,10 @@ fn run_workflow_manager_tui(
                         status = "workflow id must be non-empty".to_string();
                         continue;
                     }
-                    if let Err(err) = validate_identifier("workflow id", &workflow_id) {
-                        status = err;
-                        continue;
+                    match bootstrap.add_workflow(orchestrator_id, &workflow_id) {
+                        Ok(_) => status = "workflow added".to_string(),
+                        Err(err) => status = err,
                     }
-                    let Some(orchestrator) =
-                        bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                    else {
-                        return Err("orchestrator missing".to_string());
-                    };
-                    if orchestrator.workflows.iter().any(|w| w.id == workflow_id) {
-                        status = "workflow id already exists".to_string();
-                        continue;
-                    }
-                    let selector_agent = orchestrator.selector_agent.clone();
-                    orchestrator.workflows.push(WorkflowConfig {
-                        id: workflow_id,
-                        version: 1,
-                        inputs: WorkflowInputs::default(),
-                        limits: None,
-                        steps: vec![WorkflowStepConfig {
-                            id: "step_1".to_string(),
-                            step_type: WorkflowStepType::AgentTask,
-                            agent: selector_agent,
-                            prompt: default_step_scaffold("agent_task"),
-                            workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
-                            next: None,
-                            on_approve: None,
-                            on_reject: None,
-                            outputs: default_step_output_contract("agent_task"),
-                            output_files: default_step_output_files("agent_task"),
-                            limits: None,
-                        }],
-                    });
-                    status = "workflow added".to_string();
                 }
             }
             KeyCode::Char('d') => {
@@ -1417,22 +2313,13 @@ fn run_workflow_manager_tui(
                     status = "no workflows to delete".to_string();
                     continue;
                 }
-                let Some(orchestrator) = bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                else {
-                    return Err("orchestrator missing".to_string());
-                };
-                if orchestrator.workflows.len() <= 1 {
-                    status = "at least one workflow must remain".to_string();
-                    continue;
-                }
-                orchestrator.workflows.retain(|w| w.id != selected_workflow);
-                if orchestrator.default_workflow == selected_workflow {
-                    if let Some(next) = orchestrator.workflows.first() {
-                        orchestrator.default_workflow = next.id.clone();
+                match bootstrap.remove_workflow(orchestrator_id, &selected_workflow) {
+                    Ok(_) => {
+                        selected = selected.saturating_sub(1);
+                        status = "workflow removed".to_string();
                     }
+                    Err(err) => status = err,
                 }
-                selected = selected.saturating_sub(1);
-                status = "workflow removed".to_string();
             }
             _ => {}
         }
@@ -1440,7 +2327,7 @@ fn run_workflow_manager_tui(
 }
 
 fn workflow_detail_menu_rows(
-    bootstrap: &SetupBootstrap,
+    bootstrap: &SetupState,
     orchestrator_id: &str,
     workflow_id: &str,
 ) -> Vec<SetupFieldRow> {
@@ -1561,7 +2448,7 @@ fn unique_step_id(existing: &[WorkflowStepConfig], base: &str) -> String {
 
 fn run_workflow_detail_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
     workflow_id: &str,
@@ -1595,12 +2482,12 @@ fn run_workflow_detail_tui(
             KeyCode::Down => selected = std::cmp::min(selected + 1, rows.len().saturating_sub(1)),
             KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => match selected {
                 0 => {
-                    let cfg = bootstrap
-                        .orchestrator_configs
-                        .get_mut(orchestrator_id)
-                        .ok_or_else(|| "orchestrator missing".to_string())?;
-                    cfg.default_workflow = current_workflow_id.clone();
-                    status = "default workflow updated".to_string();
+                    match bootstrap
+                        .set_orchestrator_default_workflow(orchestrator_id, &current_workflow_id)
+                    {
+                        Ok(_) => status = "default workflow updated".to_string(),
+                        Err(err) => status = err,
+                    }
                 }
                 1 => {
                     let current = current_workflow_id.clone();
@@ -1612,35 +2499,18 @@ fn run_workflow_detail_tui(
                             status = "workflow id must be non-empty".to_string();
                             continue;
                         }
-                        if let Err(err) = validate_identifier("workflow id", &next_id) {
-                            status = err;
-                            continue;
-                        }
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if cfg
-                            .workflows
-                            .iter()
-                            .any(|w| w.id == next_id && w.id != current_workflow_id)
-                        {
-                            status = "workflow id already exists".to_string();
-                            continue;
-                        }
-                        if let Some(workflow) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == current_workflow_id)
-                        {
-                            workflow.id = next_id.clone();
-                            if cfg.default_workflow == current_workflow_id {
-                                cfg.default_workflow = next_id.clone();
+                        match bootstrap.rename_workflow(
+                            orchestrator_id,
+                            &current_workflow_id,
+                            &next_id,
+                        ) {
+                            Ok(_) => {
+                                current_workflow_id = next_id;
+                                status = "workflow id updated".to_string();
                             }
-                            current_workflow_id = next_id;
-                            status = "workflow id updated".to_string();
-                        } else {
-                            status = "workflow no longer exists".to_string();
+                            Err(err) => {
+                                status = err;
+                            }
                         }
                     }
                 }
@@ -1658,20 +2528,14 @@ fn run_workflow_detail_tui(
                         &current,
                     )? {
                         match value.trim().parse::<u32>() {
-                            Ok(v) if v >= 1 => {
-                                if let Some(cfg) =
-                                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                                {
-                                    if let Some(workflow) = cfg
-                                        .workflows
-                                        .iter_mut()
-                                        .find(|w| w.id == current_workflow_id)
-                                    {
-                                        workflow.version = v;
-                                        status = "workflow version updated".to_string();
-                                    }
-                                }
-                            }
+                            Ok(v) => match bootstrap.set_workflow_version(
+                                orchestrator_id,
+                                &current_workflow_id,
+                                v,
+                            ) {
+                                Ok(_) => status = "workflow version updated".to_string(),
+                                Err(err) => status = err,
+                            },
                             _ => status = "version must be >= 1".to_string(),
                         }
                     }
@@ -1690,22 +2554,14 @@ fn run_workflow_detail_tui(
                         "Comma-separated input keys (empty clears):",
                         initial,
                     )? {
-                        if let Some(cfg) = bootstrap.orchestrator_configs.get_mut(orchestrator_id) {
-                            if let Some(workflow) = cfg
-                                .workflows
-                                .iter_mut()
-                                .find(|w| w.id == current_workflow_id)
-                            {
-                                let parsed = parse_csv_values(&value);
-                                workflow.inputs = match WorkflowInputs::parse_keys(parsed) {
-                                    Ok(parsed) => parsed,
-                                    Err(err) => {
-                                        status = err;
-                                        continue;
-                                    }
-                                };
-                                status = "workflow inputs updated".to_string();
-                            }
+                        let parsed = parse_csv_values(&value);
+                        match bootstrap.set_workflow_inputs(
+                            orchestrator_id,
+                            &current_workflow_id,
+                            parsed,
+                        ) {
+                            Ok(_) => status = "workflow inputs updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -1724,37 +2580,25 @@ fn run_workflow_detail_tui(
                         "Set max_total_iterations (empty clears, >=1):",
                         &current,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        let Some(workflow) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == current_workflow_id)
-                        else {
-                            status = "workflow no longer exists".to_string();
-                            continue;
-                        };
                         if value.trim().is_empty() {
-                            if let Some(limits) = workflow.limits.as_mut() {
-                                limits.max_total_iterations = None;
-                                if limits.run_timeout_seconds.is_none() {
-                                    workflow.limits = None;
-                                }
+                            match bootstrap.set_workflow_max_total_iterations(
+                                orchestrator_id,
+                                &current_workflow_id,
+                                None,
+                            ) {
+                                Ok(_) => status = "max_total_iterations cleared".to_string(),
+                                Err(err) => status = err,
                             }
-                            status = "max_total_iterations cleared".to_string();
                         } else {
                             match value.trim().parse::<u32>() {
-                                Ok(v) if v >= 1 => {
-                                    let limits =
-                                        workflow.limits.get_or_insert(WorkflowLimitsConfig {
-                                            max_total_iterations: None,
-                                            run_timeout_seconds: None,
-                                        });
-                                    limits.max_total_iterations = Some(v);
-                                    status = "max_total_iterations updated".to_string();
-                                }
+                                Ok(v) => match bootstrap.set_workflow_max_total_iterations(
+                                    orchestrator_id,
+                                    &current_workflow_id,
+                                    Some(v),
+                                ) {
+                                    Ok(_) => status = "max_total_iterations updated".to_string(),
+                                    Err(err) => status = err,
+                                },
                                 _ => status = "max_total_iterations must be >= 1".to_string(),
                             }
                         }
@@ -1775,37 +2619,25 @@ fn run_workflow_detail_tui(
                         "Set run_timeout_seconds (empty clears, >=1):",
                         &current,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        let Some(workflow) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == current_workflow_id)
-                        else {
-                            status = "workflow no longer exists".to_string();
-                            continue;
-                        };
                         if value.trim().is_empty() {
-                            if let Some(limits) = workflow.limits.as_mut() {
-                                limits.run_timeout_seconds = None;
-                                if limits.max_total_iterations.is_none() {
-                                    workflow.limits = None;
-                                }
+                            match bootstrap.set_workflow_run_timeout_seconds(
+                                orchestrator_id,
+                                &current_workflow_id,
+                                None,
+                            ) {
+                                Ok(_) => status = "run_timeout_seconds cleared".to_string(),
+                                Err(err) => status = err,
                             }
-                            status = "run_timeout_seconds cleared".to_string();
                         } else {
                             match value.trim().parse::<u64>() {
-                                Ok(v) if v >= 1 => {
-                                    let limits =
-                                        workflow.limits.get_or_insert(WorkflowLimitsConfig {
-                                            max_total_iterations: None,
-                                            run_timeout_seconds: None,
-                                        });
-                                    limits.run_timeout_seconds = Some(v);
-                                    status = "run_timeout_seconds updated".to_string();
-                                }
+                                Ok(v) => match bootstrap.set_workflow_run_timeout_seconds(
+                                    orchestrator_id,
+                                    &current_workflow_id,
+                                    Some(v),
+                                ) {
+                                    Ok(_) => status = "run_timeout_seconds updated".to_string(),
+                                    Err(err) => status = err,
+                                },
                                 _ => status = "run_timeout_seconds must be >= 1".to_string(),
                             }
                         }
@@ -1886,7 +2718,7 @@ fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
 
 fn run_workflow_steps_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
     workflow_id: &str,
@@ -1968,38 +2800,10 @@ fn run_workflow_steps_tui(
                         status = "step id must be non-empty".to_string();
                         continue;
                     }
-                    if let Err(err) = validate_identifier("step id", &step_id) {
-                        status = err;
-                        continue;
+                    match bootstrap.add_step(orchestrator_id, workflow_id, &step_id) {
+                        Ok(_) => status = "step added".to_string(),
+                        Err(err) => status = err,
                     }
-                    let cfg = bootstrap
-                        .orchestrator_configs
-                        .get_mut(orchestrator_id)
-                        .ok_or_else(|| "orchestrator missing".to_string())?;
-                    let selector_agent = cfg.selector_agent.clone();
-                    let Some(workflow) = cfg.workflows.iter_mut().find(|w| w.id == workflow_id)
-                    else {
-                        status = "workflow no longer exists".to_string();
-                        continue;
-                    };
-                    if workflow.steps.iter().any(|step| step.id == step_id) {
-                        status = "step id already exists".to_string();
-                        continue;
-                    }
-                    workflow.steps.push(WorkflowStepConfig {
-                        id: step_id,
-                        step_type: WorkflowStepType::AgentTask,
-                        agent: selector_agent,
-                        prompt: default_step_scaffold("agent_task"),
-                        workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
-                        next: None,
-                        on_approve: None,
-                        on_reject: None,
-                        outputs: default_step_output_contract("agent_task"),
-                        output_files: default_step_output_files("agent_task"),
-                        limits: None,
-                    });
-                    status = "step added".to_string();
                 }
             }
             KeyCode::Char('d') => {
@@ -2007,21 +2811,13 @@ fn run_workflow_steps_tui(
                     status = "no steps to delete".to_string();
                     continue;
                 }
-                let cfg = bootstrap
-                    .orchestrator_configs
-                    .get_mut(orchestrator_id)
-                    .ok_or_else(|| "orchestrator missing".to_string())?;
-                let Some(workflow) = cfg.workflows.iter_mut().find(|w| w.id == workflow_id) else {
-                    status = "workflow no longer exists".to_string();
-                    continue;
-                };
-                if workflow.steps.len() <= 1 {
-                    status = "at least one step must remain".to_string();
-                    continue;
+                match bootstrap.remove_step(orchestrator_id, workflow_id, &selected_step) {
+                    Ok(_) => {
+                        selected = selected.saturating_sub(1);
+                        status = "step removed".to_string();
+                    }
+                    Err(err) => status = err,
                 }
-                workflow.steps.retain(|step| step.id != selected_step);
-                selected = selected.saturating_sub(1);
-                status = "step removed".to_string();
             }
             _ => {}
         }
@@ -2030,7 +2826,7 @@ fn run_workflow_steps_tui(
 
 fn run_workflow_step_detail_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
     workflow_id: &str,
@@ -2088,63 +2884,25 @@ fn run_workflow_step_detail_tui(
                             status = "step id must be non-empty".to_string();
                             continue;
                         }
-                        if let Err(err) = validate_identifier("step id", &next_id) {
-                            status = err;
-                            continue;
-                        }
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        let Some(workflow) = cfg.workflows.iter_mut().find(|w| w.id == workflow_id)
-                        else {
-                            status = "workflow no longer exists".to_string();
-                            continue;
-                        };
-                        if workflow
-                            .steps
-                            .iter()
-                            .any(|step| step.id == next_id && step.id != current_step_id)
-                        {
-                            status = "step id already exists".to_string();
-                            continue;
-                        }
-                        if let Some(step) = workflow
-                            .steps
-                            .iter_mut()
-                            .find(|step| step.id == current_step_id)
-                        {
-                            step.id = next_id.clone();
-                            current_step_id = next_id;
-                            status = "step id updated".to_string();
+                        match bootstrap.rename_step(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            &next_id,
+                        ) {
+                            Ok(_) => {
+                                current_step_id = next_id;
+                                status = "step id updated".to_string();
+                            }
+                            Err(err) => status = err,
                         }
                     }
                 }
                 1 => {
-                    let cfg = bootstrap
-                        .orchestrator_configs
-                        .get_mut(orchestrator_id)
-                        .ok_or_else(|| "orchestrator missing".to_string())?;
-                    if let Some(step) = cfg
-                        .workflows
-                        .iter_mut()
-                        .find(|w| w.id == workflow_id)
-                        .and_then(|workflow| {
-                            workflow
-                                .steps
-                                .iter_mut()
-                                .find(|step| step.id == current_step_id)
-                        })
+                    match bootstrap.toggle_step_type(orchestrator_id, workflow_id, &current_step_id)
                     {
-                        step.step_type = if step.step_type == WorkflowStepType::AgentTask {
-                            WorkflowStepType::AgentReview
-                        } else {
-                            WorkflowStepType::AgentTask
-                        };
-                        step.prompt = default_step_scaffold(step.step_type.as_str());
-                        step.outputs = default_step_output_contract(step.step_type.as_str());
-                        step.output_files = default_step_output_files(step.step_type.as_str());
-                        status = "step type toggled".to_string();
+                        Ok(_) => status = "step type toggled".to_string(),
+                        Err(err) => status = err,
                     }
                 }
                 2 => {
@@ -2155,23 +2913,14 @@ fn run_workflow_step_detail_tui(
                             status = "agent must be non-empty".to_string();
                             continue;
                         }
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.agent = value.trim().to_string();
-                            status = "step agent updated".to_string();
+                        match bootstrap.set_step_agent(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            value.trim(),
+                        ) {
+                            Ok(_) => status = "step agent updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2183,54 +2932,25 @@ fn run_workflow_step_detail_tui(
                             status = "prompt must be non-empty".to_string();
                             continue;
                         }
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.prompt = value;
-                            status = "step prompt updated".to_string();
+                        match bootstrap.set_step_prompt(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            &value,
+                        ) {
+                            Ok(_) => status = "step prompt updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
                 4 => {
-                    let cfg = bootstrap
-                        .orchestrator_configs
-                        .get_mut(orchestrator_id)
-                        .ok_or_else(|| "orchestrator missing".to_string())?;
-                    if let Some(step) = cfg
-                        .workflows
-                        .iter_mut()
-                        .find(|w| w.id == workflow_id)
-                        .and_then(|workflow| {
-                            workflow
-                                .steps
-                                .iter_mut()
-                                .find(|step| step.id == current_step_id)
-                        })
-                    {
-                        step.workspace_mode = match step.workspace_mode {
-                            WorkflowStepWorkspaceMode::OrchestratorWorkspace => {
-                                WorkflowStepWorkspaceMode::RunWorkspace
-                            }
-                            WorkflowStepWorkspaceMode::RunWorkspace => {
-                                WorkflowStepWorkspaceMode::AgentWorkspace
-                            }
-                            WorkflowStepWorkspaceMode::AgentWorkspace => {
-                                WorkflowStepWorkspaceMode::OrchestratorWorkspace
-                            }
-                        };
-                        status = "step workspace_mode toggled".to_string();
+                    match bootstrap.toggle_step_workspace_mode(
+                        orchestrator_id,
+                        workflow_id,
+                        &current_step_id,
+                    ) {
+                        Ok(_) => status = "step workspace_mode toggled".to_string(),
+                        Err(err) => status = err,
                     }
                 }
                 5 => {
@@ -2241,27 +2961,19 @@ fn run_workflow_step_detail_tui(
                         "Set next step id (empty clears):",
                         &current,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.next = if value.trim().is_empty() {
-                                None
-                            } else {
-                                Some(value.trim().to_string())
-                            };
-                            status = "step next updated".to_string();
+                        let next = if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(value.trim().to_string())
+                        };
+                        match bootstrap.set_step_next(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            next,
+                        ) {
+                            Ok(_) => status = "step next updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2273,27 +2985,19 @@ fn run_workflow_step_detail_tui(
                         "Set on_approve step id (empty clears):",
                         &current,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.on_approve = if value.trim().is_empty() {
-                                None
-                            } else {
-                                Some(value.trim().to_string())
-                            };
-                            status = "step on_approve updated".to_string();
+                        let on_approve = if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(value.trim().to_string())
+                        };
+                        match bootstrap.set_step_on_approve(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            on_approve,
+                        ) {
+                            Ok(_) => status = "step on_approve updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2305,27 +3009,19 @@ fn run_workflow_step_detail_tui(
                         "Set on_reject step id (empty clears):",
                         &current,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.on_reject = if value.trim().is_empty() {
-                                None
-                            } else {
-                                Some(value.trim().to_string())
-                            };
-                            status = "step on_reject updated".to_string();
+                        let on_reject = if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(value.trim().to_string())
+                        };
+                        match bootstrap.set_step_on_reject(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            on_reject,
+                        ) {
+                            Ok(_) => status = "step on_reject updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2353,23 +3049,14 @@ fn run_workflow_step_detail_tui(
                                 continue;
                             }
                         };
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.outputs = parsed;
-                            status = "step outputs updated".to_string();
+                        match bootstrap.set_step_outputs(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            parsed,
+                        ) {
+                            Ok(_) => status = "step outputs updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2382,24 +3069,15 @@ fn run_workflow_step_detail_tui(
                         "Comma-separated key=path mappings (empty clears):",
                         initial,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
                         if value.trim().is_empty() {
-                            if let Some(step) = cfg
-                                .workflows
-                                .iter_mut()
-                                .find(|w| w.id == workflow_id)
-                                .and_then(|workflow| {
-                                    workflow
-                                        .steps
-                                        .iter_mut()
-                                        .find(|step| step.id == current_step_id)
-                                })
-                            {
-                                step.output_files = BTreeMap::new();
-                                status = "step output_files cleared".to_string();
+                            match bootstrap.set_step_output_files(
+                                orchestrator_id,
+                                workflow_id,
+                                &current_step_id,
+                                BTreeMap::new(),
+                            ) {
+                                Ok(_) => status = "step output_files cleared".to_string(),
+                                Err(err) => status = err,
                             }
                             continue;
                         }
@@ -2410,19 +3088,14 @@ fn run_workflow_step_detail_tui(
                                 continue;
                             }
                         };
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            step.output_files = parsed;
-                            status = "step output_files updated".to_string();
+                        match bootstrap.set_step_output_files(
+                            orchestrator_id,
+                            workflow_id,
+                            &current_step_id,
+                            parsed,
+                        ) {
+                            Ok(_) => status = "step output_files updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2439,39 +3112,29 @@ fn run_workflow_step_detail_tui(
                         "Set max_retries (empty clears, >=1):",
                         &current,
                     )? {
-                        let cfg = bootstrap
-                            .orchestrator_configs
-                            .get_mut(orchestrator_id)
-                            .ok_or_else(|| "orchestrator missing".to_string())?;
-                        if let Some(step) = cfg
-                            .workflows
-                            .iter_mut()
-                            .find(|w| w.id == workflow_id)
-                            .and_then(|workflow| {
-                                workflow
-                                    .steps
-                                    .iter_mut()
-                                    .find(|step| step.id == current_step_id)
-                            })
-                        {
-                            if value.trim().is_empty() {
-                                if let Some(limits) = step.limits.as_mut() {
-                                    limits.max_retries = None;
-                                }
-                                step.limits = None;
-                                status = "step max_retries cleared".to_string();
-                                continue;
+                        if value.trim().is_empty() {
+                            match bootstrap.set_step_max_retries(
+                                orchestrator_id,
+                                workflow_id,
+                                &current_step_id,
+                                None,
+                            ) {
+                                Ok(_) => status = "step max_retries cleared".to_string(),
+                                Err(err) => status = err,
                             }
-                            match value.trim().parse::<u32>() {
-                                Ok(parsed) if parsed >= 1 => {
-                                    let limits = step
-                                        .limits
-                                        .get_or_insert(StepLimitsConfig { max_retries: None });
-                                    limits.max_retries = Some(parsed);
-                                    status = "step max_retries updated".to_string();
-                                }
-                                _ => status = "max_retries must be >= 1".to_string(),
-                            }
+                            continue;
+                        }
+                        match value.trim().parse::<u32>() {
+                            Ok(parsed) => match bootstrap.set_step_max_retries(
+                                orchestrator_id,
+                                workflow_id,
+                                &current_step_id,
+                                Some(parsed),
+                            ) {
+                                Ok(_) => status = "step max_retries updated".to_string(),
+                                Err(err) => status = err,
+                            },
+                            _ => status = "max_retries must be >= 1".to_string(),
                         }
                     }
                 }
@@ -2483,7 +3146,7 @@ fn run_workflow_step_detail_tui(
 
 fn run_agent_manager_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
 ) -> Result<Option<String>, String> {
@@ -2553,30 +3216,10 @@ fn run_agent_manager_tui(
                         status = "agent id must be non-empty".to_string();
                         continue;
                     }
-                    if let Err(err) = validate_identifier("agent id", &agent_id) {
-                        status = err;
-                        continue;
+                    match bootstrap.add_agent(orchestrator_id, &agent_id) {
+                        Ok(_) => status = "agent added".to_string(),
+                        Err(err) => status = err,
                     }
-                    let cfg = bootstrap
-                        .orchestrator_configs
-                        .get_mut(orchestrator_id)
-                        .ok_or_else(|| "orchestrator missing".to_string())?;
-                    if cfg.agents.contains_key(&agent_id) {
-                        status = "agent id already exists".to_string();
-                        continue;
-                    }
-                    cfg.agents.insert(
-                        agent_id.clone(),
-                        AgentConfig {
-                            provider: ConfigProviderKind::parse(&bootstrap.provider)
-                                .expect("setup provider remains valid"),
-                            model: bootstrap.model.clone(),
-                            private_workspace: Some(PathBuf::from(format!("agents/{agent_id}"))),
-                            can_orchestrate_workflows: false,
-                            shared_access: Vec::new(),
-                        },
-                    );
-                    status = "agent added".to_string();
                 }
             }
             KeyCode::Char('d') => {
@@ -2584,22 +3227,13 @@ fn run_agent_manager_tui(
                     status = "no agents to delete".to_string();
                     continue;
                 }
-                let cfg = bootstrap
-                    .orchestrator_configs
-                    .get_mut(orchestrator_id)
-                    .ok_or_else(|| "orchestrator missing".to_string())?;
-                if cfg.agents.len() <= 1 {
-                    status = "at least one agent must remain".to_string();
-                    continue;
-                }
-                cfg.agents.remove(&selected_agent);
-                if cfg.selector_agent == selected_agent {
-                    if let Some(next) = cfg.agents.keys().next() {
-                        cfg.selector_agent = next.clone();
+                match bootstrap.remove_agent(orchestrator_id, &selected_agent) {
+                    Ok(_) => {
+                        selected = selected.saturating_sub(1);
+                        status = "agent removed".to_string();
                     }
+                    Err(err) => status = err,
                 }
-                selected = selected.saturating_sub(1);
-                status = "agent removed".to_string();
             }
             _ => {}
         }
@@ -2608,7 +3242,7 @@ fn run_agent_manager_tui(
 
 fn run_agent_detail_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    bootstrap: &mut SetupState,
     config_exists: bool,
     orchestrator_id: &str,
     agent_id: &str,
@@ -2653,13 +3287,13 @@ fn run_agent_detail_tui(
                     )? {
                         match parse_provider(value.trim()) {
                             Ok(provider) => {
-                                if let Some(cfg) =
-                                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                                {
-                                    if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                                        agent.provider = ConfigProviderKind::parse(&provider)?;
-                                        status = "agent provider updated".to_string();
-                                    }
+                                match bootstrap.set_agent_provider(
+                                    orchestrator_id,
+                                    agent_id,
+                                    &provider,
+                                ) {
+                                    Ok(_) => status = "agent provider updated".to_string(),
+                                    Err(err) => status = err,
                                 }
                             }
                             Err(_) => status = "provider must be anthropic or openai".to_string(),
@@ -2678,12 +3312,11 @@ fn run_agent_detail_tui(
                     {
                         if value.trim().is_empty() {
                             status = "model must be non-empty".to_string();
-                        } else if let Some(cfg) =
-                            bootstrap.orchestrator_configs.get_mut(orchestrator_id)
-                        {
-                            if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                                agent.model = value.trim().to_string();
-                                status = "agent model updated".to_string();
+                        } else {
+                            match bootstrap.set_agent_model(orchestrator_id, agent_id, value.trim())
+                            {
+                                Ok(_) => status = "agent model updated".to_string(),
+                                Err(err) => status = err,
                             }
                         }
                     }
@@ -2702,15 +3335,18 @@ fn run_agent_detail_tui(
                         "private workspace (empty clears):",
                         &current,
                     )? {
-                        if let Some(cfg) = bootstrap.orchestrator_configs.get_mut(orchestrator_id) {
-                            if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                                if value.trim().is_empty() {
-                                    agent.private_workspace = None;
-                                } else {
-                                    agent.private_workspace = Some(PathBuf::from(value.trim()));
-                                }
-                                status = "agent private workspace updated".to_string();
-                            }
+                        let workspace = if value.trim().is_empty() {
+                            None
+                        } else {
+                            Some(PathBuf::from(value.trim()))
+                        };
+                        match bootstrap.set_agent_private_workspace(
+                            orchestrator_id,
+                            agent_id,
+                            workspace,
+                        ) {
+                            Ok(_) => status = "agent private workspace updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
@@ -2727,35 +3363,32 @@ fn run_agent_detail_tui(
                         "Comma-separated shared workspace keys:",
                         &current,
                     )? {
-                        if let Some(cfg) = bootstrap.orchestrator_configs.get_mut(orchestrator_id) {
-                            if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                                agent.shared_access = value
-                                    .split(',')
-                                    .map(|v| v.trim().to_string())
-                                    .filter(|v| !v.is_empty())
-                                    .collect();
-                                status = "agent shared_access updated".to_string();
-                            }
+                        let shared_access = value
+                            .split(',')
+                            .map(|v| v.trim().to_string())
+                            .filter(|v| !v.is_empty())
+                            .collect();
+                        match bootstrap.set_agent_shared_access(
+                            orchestrator_id,
+                            agent_id,
+                            shared_access,
+                        ) {
+                            Ok(_) => status = "agent shared_access updated".to_string(),
+                            Err(err) => status = err,
                         }
                     }
                 }
                 4 => {
-                    if let Some(cfg) = bootstrap.orchestrator_configs.get_mut(orchestrator_id) {
-                        if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                            agent.can_orchestrate_workflows = !agent.can_orchestrate_workflows;
-                            status = "agent orchestration capability toggled".to_string();
-                        }
+                    match bootstrap.toggle_agent_orchestration_capability(orchestrator_id, agent_id)
+                    {
+                        Ok(_) => status = "agent orchestration capability toggled".to_string(),
+                        Err(err) => status = err,
                     }
                 }
-                _ => {
-                    if let Some(cfg) = bootstrap.orchestrator_configs.get_mut(orchestrator_id) {
-                        cfg.selector_agent = agent_id.to_string();
-                        if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                            agent.can_orchestrate_workflows = true;
-                        }
-                        status = "selector agent updated".to_string();
-                    }
-                }
+                _ => match bootstrap.set_selector_agent(orchestrator_id, agent_id) {
+                    Ok(_) => status = "selector agent updated".to_string(),
+                    Err(err) => status = err,
+                },
             },
             _ => {}
         }
@@ -2763,7 +3396,7 @@ fn run_agent_detail_tui(
 }
 
 fn agent_detail_menu_rows(
-    bootstrap: &SetupBootstrap,
+    bootstrap: &SetupState,
     orchestrator_id: &str,
     agent_id: &str,
 ) -> Vec<SetupFieldRow> {
@@ -3170,7 +3803,7 @@ mod tests {
             auth_sync: AuthSyncConfig::default(),
         };
 
-        let bootstrap = SetupBootstrap {
+        let bootstrap = SetupState {
             workspaces_path: settings.workspaces_path.clone(),
             orchestrator_id: "main".to_string(),
             provider: "anthropic".to_string(),
@@ -3202,7 +3835,7 @@ mod tests {
             auth_sync: AuthSyncConfig::default(),
         };
 
-        let bootstrap = SetupBootstrap {
+        let bootstrap = SetupState {
             workspaces_path: settings.workspaces_path.clone(),
             orchestrator_id: "main".to_string(),
             provider: "anthropic".to_string(),
@@ -3221,5 +3854,141 @@ mod tests {
         };
 
         validate_setup_bootstrap(&settings, &bootstrap).expect("valid setup bootstrap");
+    }
+
+    fn test_setup_state() -> SetupState {
+        SetupState {
+            workspaces_path: PathBuf::from("/tmp/workspaces"),
+            orchestrator_id: "main".to_string(),
+            provider: "anthropic".to_string(),
+            model: "sonnet".to_string(),
+            workflow_template: SetupWorkflowTemplate::Minimal,
+            orchestrators: BTreeMap::from_iter([(
+                "main".to_string(),
+                SettingsOrchestrator {
+                    private_workspace: None,
+                    shared_access: Vec::new(),
+                },
+            )]),
+            orchestrator_configs: BTreeMap::from_iter([(
+                "main".to_string(),
+                initial_orchestrator_config(
+                    "main",
+                    "anthropic",
+                    "sonnet",
+                    SetupWorkflowTemplate::Minimal,
+                ),
+            )]),
+        }
+    }
+
+    #[test]
+    fn setup_state_enforces_orchestrator_and_workflow_invariants() {
+        let mut state = test_setup_state();
+        state.add_orchestrator("alpha").expect("add orchestrator");
+        assert_eq!(state.orchestrator_id, "alpha");
+        assert!(state.add_orchestrator("alpha").is_err());
+        state
+            .remove_orchestrator("alpha")
+            .expect("remove orchestrator");
+        assert_eq!(state.orchestrators.len(), 1);
+        assert!(state.remove_orchestrator("main").is_err());
+        assert!(state.remove_orchestrator("missing").is_err());
+
+        assert!(state
+            .set_orchestrator_default_workflow("main", "missing")
+            .is_err());
+        state.add_workflow("main", "triage").expect("add workflow");
+        assert!(state.add_workflow("main", "triage").is_err());
+        state
+            .set_orchestrator_default_workflow("main", "triage")
+            .expect("set default");
+        state
+            .remove_workflow("main", "default")
+            .expect("remove default");
+        assert!(state.remove_workflow("main", "triage").is_err());
+        assert!(state.remove_workflow("main", "missing").is_err());
+    }
+
+    #[test]
+    fn setup_state_enforces_step_and_agent_invariants() {
+        let mut state = test_setup_state();
+        state
+            .add_step("main", "default", "step_2")
+            .expect("add step");
+        assert!(state.add_step("main", "default", "step_2").is_err());
+        state
+            .remove_step("main", "default", "step_2")
+            .expect("remove step");
+        assert!(state.remove_step("main", "default", "step_1").is_err());
+        assert!(state.remove_step("main", "default", "missing").is_err());
+
+        assert!(state
+            .set_step_agent("main", "default", "step_1", "missing")
+            .is_err());
+
+        state.add_agent("main", "helper").expect("add agent");
+        assert!(state.add_agent("main", "helper").is_err());
+        state
+            .set_selector_agent("main", "helper")
+            .expect("set selector");
+        state
+            .set_step_agent("main", "default", "step_1", "helper")
+            .expect("retarget step agent");
+        state
+            .remove_agent("main", "default")
+            .expect("remove default agent");
+        assert!(state.remove_agent("main", "helper").is_err());
+        assert!(state.remove_agent("main", "missing").is_err());
+
+        assert!(state
+            .toggle_agent_orchestration_capability("main", "helper")
+            .is_err());
+    }
+
+    #[test]
+    fn setup_state_rejects_empty_or_inconsistent_step_output_contracts() {
+        let mut state = test_setup_state();
+        let key = OutputKey::parse("summary").expect("output key");
+        let missing_key = OutputKey::parse("missing").expect("output key");
+        let template = PathTemplate::parse("outputs/summary.md").expect("path template");
+
+        assert!(state
+            .set_step_outputs("main", "default", "step_1", Vec::new())
+            .is_err());
+        assert!(state
+            .set_step_output_files("main", "default", "step_1", BTreeMap::new())
+            .is_err());
+
+        assert!(state
+            .set_step_outputs("main", "default", "step_1", vec![missing_key.clone()])
+            .is_err());
+
+        let valid_files = BTreeMap::from_iter([(key.clone(), template.clone())]);
+        state
+            .set_step_outputs("main", "default", "step_1", vec![key.clone()])
+            .expect("set outputs");
+        state
+            .set_step_output_files("main", "default", "step_1", valid_files)
+            .expect("set output files");
+
+        let invalid_files = BTreeMap::from_iter([(missing_key, template)]);
+        assert!(state
+            .set_step_output_files("main", "default", "step_1", invalid_files)
+            .is_err());
+    }
+
+    #[test]
+    fn setup_state_normalize_for_save_rejects_invalid_domain_state() {
+        let mut state = test_setup_state();
+        let cfg = state
+            .orchestrator_configs
+            .get_mut("main")
+            .expect("main orchestrator config");
+        cfg.default_workflow = "missing".to_string();
+        let err = state
+            .normalize_for_save(false)
+            .expect_err("invalid default workflow");
+        assert!(err.contains("default workflow") || err.contains("missing"));
     }
 }
