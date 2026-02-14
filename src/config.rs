@@ -192,6 +192,25 @@ pub struct ValidationOptions {
     pub require_shared_paths_exist: bool,
 }
 
+fn parse_output_contract_key(raw: &str) -> Result<(String, bool), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("output key must be non-empty".to_string());
+    }
+    let (name, required) = if let Some(optional) = trimmed.strip_suffix('?') {
+        (optional.trim(), false)
+    } else {
+        (trimmed, true)
+    };
+    if name.is_empty() {
+        return Err("output key must be non-empty".to_string());
+    }
+    if name.contains('?') {
+        return Err("output key may only contain optional marker as trailing `?`".to_string());
+    }
+    Ok((name.to_string(), required))
+}
+
 impl Default for ValidationOptions {
     fn default() -> Self {
         Self {
@@ -484,10 +503,16 @@ impl OrchestratorConfig {
                         ))
                     })?;
                     for key in outputs {
-                        if !output_files.contains_key(key) {
+                        let (normalized, _) = parse_output_contract_key(key).map_err(|reason| {
+                            ConfigError::Orchestrator(format!(
+                                "workflow `{}` step `{}` has invalid output key `{}`: {}",
+                                workflow.id, step.id, key, reason
+                            ))
+                        })?;
+                        if !output_files.contains_key(&normalized) {
                             return Err(ConfigError::Orchestrator(format!(
                                 "workflow `{}` step `{}` missing output_files mapping for `{}`",
-                                workflow.id, step.id, key
+                                workflow.id, step.id, normalized
                             )));
                         }
                     }
@@ -759,6 +784,60 @@ workflows:
         match err {
             ConfigError::Orchestrator(message) => {
                 assert!(message.contains("selector_timeout_seconds"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn orchestrator_validation_rejects_output_keys_with_non_trailing_optional_marker() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators:
+  alpha:
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("parse settings");
+
+        let config: OrchestratorConfig = serde_yaml::from_str(
+            r#"
+id: alpha
+selector_agent: router
+default_workflow: real
+selection_max_retries: 1
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+workflows:
+  - id: real
+    version: 1
+    steps:
+      - id: step_1
+        type: agent_task
+        agent: router
+        prompt: hello
+        outputs: [plan?draft]
+        output_files:
+          "plan?draft": plan.md
+"#,
+        )
+        .expect("parse orchestrator");
+
+        let err = config
+            .validate(&settings, "alpha")
+            .expect_err("validation should fail");
+        match err {
+            ConfigError::Orchestrator(message) => {
+                assert!(message.contains("output key"));
+                assert!(message.contains("trailing `?`"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

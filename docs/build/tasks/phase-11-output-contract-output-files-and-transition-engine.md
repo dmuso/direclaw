@@ -13,7 +13,7 @@ Implement strict output handling and transition rules so steps produce validated
 
 ### P11-T01 Enforce step `outputs` contract and key validation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - When `outputs` is configured, all declared keys must exist in parsed result payload.
   - Missing required output keys fail step attempt deterministically.
@@ -25,7 +25,7 @@ Implement strict output handling and transition rules so steps produce validated
 
 ### P11-T02 Materialize `output_files` mappings with strict path safety
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Output files are written under run/step/attempt scoped output root only.
   - Absolute paths and traversal (`..`) are blocked and logged.
@@ -38,7 +38,7 @@ Implement strict output handling and transition rules so steps produce validated
 
 ### P11-T03 Implement transition engine for `agent_task` and `agent_review`
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `agent_task` transitions via `next` or lexical fallback.
   - `agent_review` transitions via `on_approve`/`on_reject` using parsed `decision`.
@@ -50,7 +50,7 @@ Implement strict output handling and transition rules so steps produce validated
 
 ### P11-T04 Persist complete attempt artifacts for outputs and transitions
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Each attempt record contains outputs and resolved next step id.
   - Progress snapshots reflect transition outcomes without ambiguity.
@@ -59,4 +59,3 @@ Implement strict output handling and transition rules so steps produce validated
   - Add integration tests asserting attempt record content and progress consistency.
   - Run `nix-shell --run "cargo test --all"`.
   - Run `nix-shell --run "cargo clippy --all-targets --all-features -- -D warnings"`.
-

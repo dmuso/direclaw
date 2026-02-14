@@ -69,6 +69,10 @@ pub enum OrchestratorError {
         template: String,
         reason: String,
     },
+    #[error("step `{step_id}` output contract validation failed: {reason}")]
+    OutputContractValidation { step_id: String, reason: String },
+    #[error("step `{step_id}` transition validation failed: {reason}")]
+    TransitionValidation { step_id: String, reason: String },
     #[error("config error: {0}")]
     Config(String),
     #[error("io error at {path}: {source}")]
@@ -558,6 +562,8 @@ pub struct WorkflowRunRecord {
     pub selected_workflow: Option<String>,
     #[serde(default)]
     pub status_conversation_id: Option<String>,
+    #[serde(default)]
+    pub terminal_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -594,7 +600,13 @@ pub struct StepAttemptRecord {
     #[serde(default)]
     pub outputs: Map<String, Value>,
     #[serde(default)]
+    pub output_files: BTreeMap<String, String>,
+    #[serde(default)]
     pub next_step_id: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub output_validation_errors: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -669,6 +681,7 @@ impl WorkflowRunStore {
             selector_id: metadata.selector_id,
             selected_workflow: metadata.selected_workflow,
             status_conversation_id: metadata.status_conversation_id,
+            terminal_reason: None,
         };
         self.persist_run(&run)?;
         self.persist_progress(&ProgressSnapshot {
@@ -727,6 +740,8 @@ impl WorkflowRunStore {
         pending_human_input: bool,
         next_expected_action: impl Into<String>,
     ) -> Result<(), OrchestratorError> {
+        let summary = summary.into();
+        let next_expected_action = next_expected_action.into();
         if !run.state.clone().can_transition_to(next.clone()) {
             return Err(OrchestratorError::InvalidRunTransition {
                 from: run.state.clone(),
@@ -735,6 +750,11 @@ impl WorkflowRunStore {
         }
         run.state = next;
         run.updated_at = now;
+        if run.state.clone().is_terminal() {
+            run.terminal_reason = Some(summary.clone());
+        } else {
+            run.terminal_reason = None;
+        }
         self.persist_run(run)?;
         self.persist_progress(&ProgressSnapshot {
             run_id: run.run_id.clone(),
@@ -747,9 +767,9 @@ impl WorkflowRunStore {
             started_at: run.started_at,
             updated_at: now,
             last_progress_at: now,
-            summary: summary.into(),
+            summary,
             pending_human_input,
-            next_expected_action: next_expected_action.into(),
+            next_expected_action,
         })
     }
 
@@ -1118,7 +1138,10 @@ impl WorkflowEngine {
                         ended_at: attempt_now.saturating_add(1),
                         state: "succeeded".to_string(),
                         outputs: evaluation.outputs.clone(),
+                        output_files: evaluation.output_files.clone(),
                         next_step_id: evaluation.next_step_id.clone(),
+                        error: None,
+                        output_validation_errors: BTreeMap::new(),
                     })?;
                     *run = self.run_store.load_run(&run.run_id)?;
 
@@ -1167,6 +1190,7 @@ impl WorkflowEngine {
                 Err(err) => {
                     let retryable = is_retryable_step_error(&err);
                     let can_retry = retryable && attempt <= limits.max_retries;
+                    let output_validation_errors = output_validation_errors_for(&err);
                     self.run_store.persist_step_attempt(&StepAttemptRecord {
                         run_id: run.run_id.clone(),
                         step_id: step.id.clone(),
@@ -1179,7 +1203,10 @@ impl WorkflowEngine {
                             "failed".to_string()
                         },
                         outputs: Map::new(),
+                        output_files: BTreeMap::new(),
                         next_step_id: None,
+                        error: Some(err.to_string()),
+                        output_validation_errors,
                     })?;
                     *run = self.run_store.load_run(&run.run_id)?;
                     self.run_store.append_engine_log(
@@ -1347,8 +1374,25 @@ impl WorkflowEngine {
 
         let step_outputs =
             load_latest_step_outputs(self.run_store.state_root(), &run.run_id, workflow, &step.id)?;
-        let output_paths =
-            resolve_step_output_paths(self.run_store.state_root(), &run.run_id, step, attempt)?;
+        let output_paths = match resolve_step_output_paths(
+            self.run_store.state_root(),
+            &run.run_id,
+            step,
+            attempt,
+        ) {
+            Ok(paths) => paths,
+            Err(err @ OrchestratorError::OutputPathValidation { .. }) => {
+                append_security_log(
+                    self.run_store.state_root(),
+                    &format!(
+                        "output path validation denied for run `{}` step `{}` attempt `{}`: {}",
+                        run.run_id, step.id, attempt, err
+                    ),
+                );
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         let rendered = render_step_prompt(
             run,
             workflow,
@@ -1424,7 +1468,14 @@ impl WorkflowEngine {
         persist_provider_invocation_log(&attempt_dir, &provider_output.log)
             .map_err(|err| io_error(&attempt_dir, err))?;
 
-        let evaluation = evaluate_step_result(workflow, step, &provider_output.message)?;
+        let mut evaluation = evaluate_step_result(workflow, step, &provider_output.message)?;
+        evaluation.output_files = materialize_output_files(
+            self.run_store.state_root(),
+            &run.run_id,
+            step,
+            attempt,
+            &evaluation.outputs,
+        )?;
         self.run_store.append_engine_log(
             &run.run_id,
             now,
@@ -1526,6 +1577,7 @@ fn is_retryable_step_error(error: &OrchestratorError) -> bool {
         OrchestratorError::StepExecution { .. }
             | OrchestratorError::WorkflowEnvelope(_)
             | OrchestratorError::InvalidReviewDecision(_)
+            | OrchestratorError::OutputContractValidation { .. }
     )
 }
 
@@ -1636,8 +1688,172 @@ pub fn parse_review_decision(outputs: &Map<String, Value>) -> Result<bool, Orche
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputContractKey {
+    name: String,
+    required: bool,
+}
+
+fn parse_output_contract_key(raw: &str) -> Result<OutputContractKey, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("output key must be non-empty".to_string());
+    }
+    let (name, required) = if let Some(optional) = trimmed.strip_suffix('?') {
+        (optional.trim(), false)
+    } else {
+        (trimmed, true)
+    };
+    if name.is_empty() {
+        return Err("output key must be non-empty".to_string());
+    }
+    if name.contains('?') {
+        return Err("output key may only contain optional marker as trailing `?`".to_string());
+    }
+    Ok(OutputContractKey {
+        name: name.to_string(),
+        required,
+    })
+}
+
+fn parse_output_contract(
+    step: &WorkflowStepConfig,
+) -> Result<Vec<OutputContractKey>, OrchestratorError> {
+    let Some(configured) = step.outputs.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let mut keys = Vec::with_capacity(configured.len());
+    for raw in configured {
+        let key = parse_output_contract_key(raw).map_err(|reason| {
+            OrchestratorError::OutputContractValidation {
+                step_id: step.id.clone(),
+                reason: format!("invalid output declaration `{raw}`: {reason}"),
+            }
+        })?;
+        keys.push(key);
+    }
+    Ok(keys)
+}
+
+fn validate_outputs_contract(
+    step: &WorkflowStepConfig,
+    outputs: &Map<String, Value>,
+) -> Result<(), OrchestratorError> {
+    let contract = parse_output_contract(step)?;
+    if contract.is_empty() {
+        return Ok(());
+    }
+
+    let mut missing_required = Vec::new();
+    for key in contract.into_iter().filter(|key| key.required) {
+        if !outputs.contains_key(&key.name) {
+            missing_required.push(key.name);
+        }
+    }
+    if missing_required.is_empty() {
+        return Ok(());
+    }
+
+    missing_required.sort();
+    let details = missing_required
+        .iter()
+        .map(|key| format!("{key}=missing"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(OrchestratorError::OutputContractValidation {
+        step_id: step.id.clone(),
+        reason: format!("missing required output keys: {details}"),
+    })
+}
+
+fn output_validation_errors_for(error: &OrchestratorError) -> BTreeMap<String, String> {
+    match error {
+        OrchestratorError::OutputContractValidation { reason, .. } => reason
+            .trim()
+            .strip_prefix("missing required output keys:")
+            .unwrap_or(reason.as_str())
+            .split(',')
+            .filter_map(|entry| {
+                let mut parts = entry.trim().splitn(2, '=');
+                let key = parts.next()?.trim();
+                let detail = parts.next()?.trim();
+                if key.is_empty() || detail.is_empty() {
+                    return None;
+                }
+                Some((key.to_string(), detail.to_string()))
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    }
+}
+
+fn validate_transition_target(
+    workflow: &WorkflowConfig,
+    step: &WorkflowStepConfig,
+    target: Option<String>,
+    reason: &str,
+) -> Result<Option<String>, OrchestratorError> {
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    if workflow
+        .steps
+        .iter()
+        .any(|candidate| candidate.id == target)
+    {
+        return Ok(Some(target));
+    }
+    Err(OrchestratorError::TransitionValidation {
+        step_id: step.id.clone(),
+        reason: format!("{reason} targets unknown step `{target}`"),
+    })
+}
+
+fn materialize_output_files(
+    state_root: &Path,
+    run_id: &str,
+    step: &WorkflowStepConfig,
+    attempt: u32,
+    outputs: &Map<String, Value>,
+) -> Result<BTreeMap<String, String>, OrchestratorError> {
+    let output_paths = resolve_step_output_paths(state_root, run_id, step, attempt)?;
+    if output_paths.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let contract = parse_output_contract(step)?;
+    let mut path_by_key = BTreeMap::new();
+    for key in contract {
+        let Some(value) = outputs.get(&key.name) else {
+            continue;
+        };
+        let Some(path) = output_paths.get(&key.name) else {
+            return Err(OrchestratorError::OutputContractValidation {
+                step_id: step.id.clone(),
+                reason: format!("missing output_files mapping for key `{}`", key.name),
+            });
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+        }
+        let content = if let Some(text) = value.as_str() {
+            text.as_bytes().to_vec()
+        } else {
+            serde_json::to_vec_pretty(value).map_err(|e| OrchestratorError::StepExecution {
+                step_id: step.id.clone(),
+                reason: format!("failed to serialize output key `{}`: {e}", key.name),
+            })?
+        };
+        fs::write(path, content).map_err(|e| io_error(path, e))?;
+        path_by_key.insert(key.name, path.display().to_string());
+    }
+
+    Ok(path_by_key)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepEvaluation {
     pub outputs: Map<String, Value>,
+    pub output_files: BTreeMap<String, String>,
     pub next_step_id: Option<String>,
 }
 
@@ -1647,6 +1863,7 @@ pub fn evaluate_step_result(
     raw_output: &str,
 ) -> Result<StepEvaluation, OrchestratorError> {
     let parsed = parse_workflow_result_envelope(raw_output)?;
+    validate_outputs_contract(step, &parsed)?;
     if step.step_type == "agent_review" {
         let approve = parse_review_decision(&parsed)?;
         let next = if approve {
@@ -1654,8 +1871,20 @@ pub fn evaluate_step_result(
         } else {
             step.on_reject.clone()
         };
+        if next.is_none() {
+            return Err(OrchestratorError::TransitionValidation {
+                step_id: step.id.clone(),
+                reason: if approve {
+                    "decision `approve` requires `on_approve` transition target".to_string()
+                } else {
+                    "decision `reject` requires `on_reject` transition target".to_string()
+                },
+            });
+        }
+        let next = validate_transition_target(workflow, step, next, "review transition")?;
         return Ok(StepEvaluation {
             outputs: parsed,
+            output_files: BTreeMap::new(),
             next_step_id: next,
         });
     }
@@ -1664,9 +1893,11 @@ pub fn evaluate_step_result(
         .next
         .clone()
         .or_else(|| next_step_in_workflow(workflow, &step.id));
+    let next = validate_transition_target(workflow, step, next, "step transition")?;
 
     Ok(StepEvaluation {
         outputs: parsed,
+        output_files: BTreeMap::new(),
         next_step_id: next,
     })
 }
@@ -4136,6 +4367,7 @@ ignored
             selector_id: None,
             selected_workflow: None,
             status_conversation_id: None,
+            terminal_reason: None,
         };
         let encoded = serde_json::to_string(&run).expect("encode");
         let decoded: WorkflowRunRecord = serde_json::from_str(&encoded).expect("decode");

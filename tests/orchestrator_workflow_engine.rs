@@ -275,6 +275,19 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             "workflows/runs/{run_id}/steps/plan/attempts/1/result.json"
         ))
         .is_file());
+    let plan_attempt = store
+        .load_step_attempt(&run_id, "plan", 1)
+        .expect("load plan attempt");
+    let plan_output_file = plan_attempt
+        .output_files
+        .get("plan")
+        .expect("plan output file path");
+    assert!(Path::new(plan_output_file).is_file());
+    assert_eq!(
+        fs::read_to_string(plan_output_file).expect("read plan output"),
+        "ok"
+    );
+    assert_eq!(plan_attempt.next_step_id.as_deref(), Some("review"));
     assert!(state_root
         .join(format!(
             "workflows/runs/{run_id}/steps/plan/attempts/1/provider_invocation.json"
@@ -310,6 +323,10 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
     let progress = store.load_progress(&run_id).expect("progress");
     assert_eq!(progress.input_count, run.inputs.len());
     assert!(progress.input_keys.contains(&"user_message".to_string()));
+    assert_eq!(
+        run.terminal_reason.as_deref(),
+        Some("step done attempt 1 finished")
+    );
 
     let before = store.load_run(&run_id).expect("before status");
     let status_result = SelectorResult {
@@ -510,7 +527,10 @@ fn run_state_and_progress_are_persisted_at_spec_paths_with_lifecycle_updates() {
         ended_at: 103,
         state: "succeeded".to_string(),
         outputs: Map::from_iter([("plan".to_string(), Value::String("draft done".to_string()))]),
+        output_files: BTreeMap::from_iter([("plan".to_string(), "/tmp/run-2-plan.md".to_string())]),
         next_step_id: Some("review".to_string()),
+        error: None,
+        output_validation_errors: BTreeMap::new(),
     };
     let attempt_path = store
         .persist_step_attempt(&attempt)
@@ -557,7 +577,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
     let plan_out = evaluate_step_result(
         workflow,
         plan,
-        r#"[workflow_result]{"artifact":"plan.md"}[/workflow_result]"#,
+        r#"[workflow_result]{"plan":"plan.md"}[/workflow_result]"#,
     )
     .expect("plan result");
     assert_eq!(plan_out.next_step_id.as_deref(), Some("review"));
@@ -1030,6 +1050,7 @@ fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
         selector_id: None,
         selected_workflow: None,
         status_conversation_id: None,
+        terminal_reason: None,
     };
     let rendered = render_step_prompt(
         &run,
@@ -1076,6 +1097,7 @@ fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
         selector_id: None,
         selected_workflow: None,
         status_conversation_id: None,
+        terminal_reason: None,
     };
     let rendered = render_step_prompt(
         &run,
@@ -1117,6 +1139,7 @@ fn step_prompt_renderer_fails_fast_on_missing_required_placeholder() {
         selector_id: None,
         selected_workflow: None,
         status_conversation_id: None,
+        terminal_reason: None,
     };
     let err = render_step_prompt(
         &run,
@@ -1188,6 +1211,265 @@ workflows:
         .expect("attempt2");
     assert_eq!(attempt_1.state, "failed_retryable");
     assert_eq!(attempt_2.state, "failed");
+}
+
+#[test]
+fn output_contract_supports_required_and_optional_keys() {
+    let workflow: direclaw::config::WorkflowConfig = serde_yaml::from_str(
+        r#"
+id: wf
+version: 1
+steps:
+  - id: s1
+    type: agent_task
+    agent: worker
+    prompt: test
+    outputs: [required_key, optional_key?]
+    output_files:
+      required_key: out/required.txt
+      optional_key: out/optional.txt
+"#,
+    )
+    .expect("workflow");
+    let step = workflow.steps.first().expect("step");
+
+    let with_required_only = evaluate_step_result(
+        &workflow,
+        step,
+        r#"[workflow_result]{"required_key":"ok"}[/workflow_result]"#,
+    )
+    .expect("required key should pass");
+    assert_eq!(
+        with_required_only.outputs.get("required_key"),
+        Some(&Value::String("ok".to_string()))
+    );
+
+    let missing_required = evaluate_step_result(
+        &workflow,
+        step,
+        r#"[workflow_result]{"optional_key":"nice"}[/workflow_result]"#,
+    )
+    .expect_err("missing required key should fail");
+    assert!(missing_required
+        .to_string()
+        .contains("missing required output keys"));
+}
+
+#[test]
+fn missing_required_output_key_retries_and_persists_key_level_validation_errors() {
+    let dir = tempdir().expect("tempdir");
+    let bad = dir.path().join("claude-missing-output");
+    write_script(
+        &bad,
+        "#!/bin/sh\necho '[workflow_result]{\"summary\":\"x\"}[/workflow_result]'\n",
+    );
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: s1
+        type: agent_task
+        agent: worker
+        prompt: test
+        outputs: [plan]
+        output_files:
+          plan: out/plan.md
+        limits:
+          max_retries: 1
+"#,
+    )
+    .expect("orchestrator");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store
+        .create_run("run-missing-output", "wf", 1)
+        .expect("run");
+    let engine =
+        WorkflowEngine::new(store.clone(), orchestrator).with_runner_binaries(RunnerBinaries {
+            anthropic: bad.display().to_string(),
+            openai: "unused".to_string(),
+        });
+
+    let err = engine
+        .start("run-missing-output", 2)
+        .expect_err("must fail after retries");
+    assert!(err.to_string().contains("missing required output keys"));
+    let run = store.load_run("run-missing-output").expect("run");
+    assert_eq!(run.state, RunState::Failed);
+    assert!(run
+        .terminal_reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("missing required output keys"));
+
+    let attempt_1 = store
+        .load_step_attempt("run-missing-output", "s1", 1)
+        .expect("attempt1");
+    let attempt_2 = store
+        .load_step_attempt("run-missing-output", "s1", 2)
+        .expect("attempt2");
+    assert_eq!(attempt_1.state, "failed_retryable");
+    assert_eq!(attempt_2.state, "failed");
+    assert_eq!(
+        attempt_2.output_validation_errors.get("plan"),
+        Some(&"missing".to_string())
+    );
+}
+
+#[test]
+fn review_transition_engine_handles_approve_and_reject_paths() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: review
+        type: agent_review
+        agent: worker
+        prompt: review
+        on_approve: approved
+        on_reject: rejected
+      - id: approved
+        type: agent_task
+        agent: worker
+        prompt: approved
+        next: done
+      - id: rejected
+        type: agent_task
+        agent: worker
+        prompt: rejected
+        next: done
+      - id: done
+        type: agent_task
+        agent: worker
+        prompt: done
+"#,
+    )
+    .expect("orchestrator");
+
+    for (run_id, decision, expected_step, unexpected_step) in [
+        ("run-approve", "approve", "approved", "rejected"),
+        ("run-reject", "reject", "rejected", "approved"),
+    ] {
+        let bin = dir.path().join(format!("claude-{decision}"));
+        write_script(
+            &bin,
+            &format!(
+                "#!/bin/sh\necho '[workflow_result]{{\"decision\":\"{decision}\"}}[/workflow_result]'\n"
+            ),
+        );
+        store.create_run(run_id, "wf", 10).expect("run");
+        let engine = WorkflowEngine::new(store.clone(), orchestrator.clone()).with_runner_binaries(
+            RunnerBinaries {
+                anthropic: bin.display().to_string(),
+                openai: "unused".to_string(),
+            },
+        );
+        let run = engine.start(run_id, 11).expect("run");
+        assert_eq!(run.state, RunState::Succeeded);
+        assert!(state_root
+            .join(format!(
+                "workflows/runs/{run_id}/steps/{expected_step}/attempts/1/result.json"
+            ))
+            .is_file());
+        assert!(!state_root
+            .join(format!(
+                "workflows/runs/{run_id}/steps/{unexpected_step}/attempts/1/result.json"
+            ))
+            .is_file());
+    }
+}
+
+#[test]
+fn missing_transition_target_fails_run_with_explicit_error() {
+    let dir = tempdir().expect("tempdir");
+    let approve = dir.path().join("claude-approve");
+    write_script(
+        &approve,
+        "#!/bin/sh\necho '[workflow_result]{\"decision\":\"approve\"}[/workflow_result]'\n",
+    );
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: review
+        type: agent_review
+        agent: worker
+        prompt: review
+        on_approve: missing_step
+        on_reject: rejected
+      - id: rejected
+        type: agent_task
+        agent: worker
+        prompt: rejected
+"#,
+    )
+    .expect("orchestrator");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store
+        .create_run("run-bad-transition", "wf", 1)
+        .expect("run");
+    let engine =
+        WorkflowEngine::new(store.clone(), orchestrator).with_runner_binaries(RunnerBinaries {
+            anthropic: approve.display().to_string(),
+            openai: "unused".to_string(),
+        });
+
+    let err = engine
+        .start("run-bad-transition", 2)
+        .expect_err("must fail on invalid transition");
+    assert!(err.to_string().contains("transition validation failed"));
+    let run = store.load_run("run-bad-transition").expect("run");
+    assert_eq!(run.state, RunState::Failed);
 }
 
 #[test]
