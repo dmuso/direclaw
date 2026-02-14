@@ -1583,7 +1583,7 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
                     id: "step_1".to_string(),
                     step_type: "agent_task".to_string(),
                     agent: selector,
-                    prompt: default_step_prompt("agent_task"),
+                    prompt: default_step_scaffold("agent_task"),
                     workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                     next: None,
                     on_approve: None,
@@ -1887,22 +1887,46 @@ fn parse_bool(raw: &str) -> Result<bool, String> {
 pub(super) fn default_step_prompt(step_type: &str) -> String {
     if step_type == "agent_review" {
         return r#"Return exactly one [workflow_result] JSON envelope.
+Execution requirements:
+- Evaluate the deliverable against the stated objective, constraints, and quality bar.
+- Be explicit, concrete, and evidence-based in summary/feedback.
+- Do not emit markdown fences or text outside the envelope.
 Required JSON keys:
 - decision: "approve" or "reject"
 - summary: concise reason for the decision
 - feedback: concrete changes needed or verification notes
+Decision policy:
+- approve only when acceptance criteria are fully met.
+- reject when fixes are required; feedback must be actionable.
 Output format (JSON only inside envelope):
 [workflow_result]{"decision":"approve|reject","summary":"...","feedback":"..."}[/workflow_result]"#
             .to_string();
     }
     r#"Return exactly one [workflow_result] JSON envelope.
+Execution requirements:
+- Follow the step objective and constraints above.
+- Use available workflow context and prior-step outputs when present.
+- Do not emit markdown fences or text outside the envelope.
 Required JSON keys:
 - status: "complete" | "blocked" | "failed"
 - summary: concise step summary
 - artifact: primary output text for this step
+Status policy:
+- complete only when the objective is fully satisfied.
+- blocked when waiting on missing dependency/permission; include unblock action in summary.
+- failed only for unrecoverable errors.
 Output format (JSON only inside envelope):
 [workflow_result]{"status":"complete|blocked|failed","summary":"...","artifact":"..."}[/workflow_result]"#
         .to_string()
+}
+
+pub(super) fn default_step_scaffold(step_type: &str) -> String {
+    let objective = if step_type == "agent_review" {
+        "Review the target output against requirements and quality expectations."
+    } else {
+        "Execute this step objective using available workflow context and workspace artifacts."
+    };
+    format!("{objective}\n\n{}", default_step_prompt(step_type))
 }
 
 pub(super) fn default_step_output_contract(step_type: &str) -> Option<Vec<String>> {
@@ -2001,7 +2025,14 @@ fn initial_orchestrator_config(
                 "step_1",
                 "agent_task",
                 &selector,
-                "You are the default workflow step.",
+                "Execute the user request end-to-end with clear, actionable output.
+If requirements are ambiguous, choose reasonable assumptions and state them in summary.
+Return one [workflow_result] JSON [/workflow_result] block.
+Required outputs schema:
+{{workflow.output_schema_json}}
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
             )];
             (
                 workflow_id.clone(),
@@ -2032,7 +2063,12 @@ fn initial_orchestrator_config(
                 "review",
                 "agent_review",
                 "reviewer",
-                "Review implementation and return approve or reject with concrete feedback.",
+                "Review implementation quality, correctness, and test impact.
+Approve only when the work is production-ready.
+Write outputs exactly to:
+decision -> {{workflow.output_paths.decision}}
+summary -> {{workflow.output_paths.summary}}
+feedback -> {{workflow.output_paths.feedback}}",
             );
             review.on_approve = Some("done".to_string());
             review.on_reject = Some("implement".to_string());
@@ -2041,7 +2077,11 @@ fn initial_orchestrator_config(
                 "implement",
                 "agent_task",
                 "builder",
-                "Implement the approved plan and summarize changed files and test impact.",
+                "Implement the approved plan with production-safe changes.
+Include changed files and validation results in artifact.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
             );
             implement.next = Some("review".to_string());
 
@@ -2059,7 +2099,10 @@ fn initial_orchestrator_config(
                                     "plan",
                                     "agent_task",
                                     "planner",
-                                    "Draft an implementation plan with risks and test strategy.",
+                                    "Draft an implementation plan with risks, sequencing, and test strategy.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
                                 );
                                 plan.next = Some("implement".to_string());
                                 plan
@@ -2070,7 +2113,10 @@ fn initial_orchestrator_config(
                                 "done",
                                 "agent_task",
                                 "planner",
-                                "Summarize final outcome and recommended follow-up actions.",
+                                "Summarize final outcome, residual risks, and concrete follow-up actions.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
                             ),
                         ],
                     },
@@ -2083,7 +2129,10 @@ fn initial_orchestrator_config(
                             "answer",
                             "agent_task",
                             "planner",
-                            "Answer the user request directly and concisely.",
+                            "Answer the user request directly with correct, concise guidance.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
                         )],
                     },
                 ],
@@ -2113,7 +2162,10 @@ fn initial_orchestrator_config(
                                     "research",
                                     "agent_task",
                                     "researcher",
-                                    "Collect constraints, requirements, and user goals from provided context.",
+                                    "Extract product constraints, user goals, assumptions, and open questions.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
                                 );
                                 research.next = Some("draft".to_string());
                                 research
@@ -2122,7 +2174,10 @@ fn initial_orchestrator_config(
                                 "draft",
                                 "agent_task",
                                 "writer",
-                                "Write a concise PRD with problem, goals, scope, and milestones.",
+                                "Write a concise PRD with problem, goals, scope, milestones, and risks.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
                             ),
                         ],
                     },
@@ -2135,7 +2190,10 @@ fn initial_orchestrator_config(
                             "compose",
                             "agent_task",
                             "writer",
-                            "Write release notes grouped by user impact and breaking changes.",
+                            "Write release notes grouped by user impact, fixes, and breaking changes.
+Write outputs exactly to:
+summary -> {{workflow.output_paths.summary}}
+artifact -> {{workflow.output_paths.artifact}}",
                         )],
                     },
                 ],
@@ -2170,6 +2228,8 @@ mod tests {
         assert!(task_prompt.contains("status"));
         assert!(task_prompt.contains("summary"));
         assert!(task_prompt.contains("artifact"));
+        let task_scaffold = default_step_scaffold("agent_task");
+        assert!(task_scaffold.contains("Execute this step objective"));
         assert!(default_step_output_contract("agent_task").is_some());
         assert!(default_step_output_files("agent_task").is_some());
     }

@@ -58,6 +58,18 @@ pub(super) fn cmd_setup() -> Result<String, String> {
             private_workspace: None,
             shared_access: Vec::new(),
         });
+    bootstrap.orchestrators = settings.orchestrators.clone();
+    bootstrap
+        .orchestrator_configs
+        .entry(bootstrap.orchestrator_id.clone())
+        .or_insert_with(|| {
+            initial_orchestrator_config(
+                &bootstrap.orchestrator_id,
+                &bootstrap.provider,
+                &bootstrap.model,
+                bootstrap.workflow_template,
+            )
+        });
     if settings.channel_profiles.is_empty() {
         settings.channel_profiles.insert(
             "local-default".to_string(),
@@ -84,18 +96,14 @@ pub(super) fn cmd_setup() -> Result<String, String> {
             },
         );
     }
+    settings
+        .validate(ValidationOptions {
+            require_shared_paths_exist: false,
+        })
+        .map_err(map_config_err)?;
+    validate_setup_bootstrap(&settings, &bootstrap)?;
+
     let path = save_settings(&settings)?;
-    bootstrap
-        .orchestrator_configs
-        .entry(bootstrap.orchestrator_id.clone())
-        .or_insert_with(|| {
-            initial_orchestrator_config(
-                &bootstrap.orchestrator_id,
-                &bootstrap.provider,
-                &bootstrap.model,
-                bootstrap.workflow_template,
-            )
-        });
     save_orchestrator_registry(&settings, &bootstrap.orchestrator_configs)?;
     let orchestrator_path = settings
         .resolve_private_workspace(&bootstrap.orchestrator_id)
@@ -170,6 +178,58 @@ fn parse_provider(value: &str) -> Result<String, String> {
         return Ok(normalized);
     }
     Err("provider must be one of: anthropic, openai".to_string())
+}
+
+fn is_valid_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
+    if is_valid_identifier(value) {
+        return Ok(());
+    }
+    Err(format!(
+        "{kind} must use only ASCII letters, digits, '-' or '_'"
+    ))
+}
+
+fn validate_setup_bootstrap(settings: &Settings, bootstrap: &SetupBootstrap) -> Result<(), String> {
+    if bootstrap.orchestrators.is_empty() {
+        return Err("at least one orchestrator must be configured".to_string());
+    }
+    if !bootstrap
+        .orchestrators
+        .contains_key(&bootstrap.orchestrator_id)
+    {
+        return Err(format!(
+            "primary orchestrator `{}` is missing from setup registry",
+            bootstrap.orchestrator_id
+        ));
+    }
+
+    for orchestrator_id in settings.orchestrators.keys() {
+        validate_identifier("orchestrator id", orchestrator_id)?;
+        let config = bootstrap
+            .orchestrator_configs
+            .get(orchestrator_id)
+            .ok_or_else(|| {
+                format!("missing orchestrator config for `{orchestrator_id}` in setup registry")
+            })?;
+        config
+            .validate(settings, orchestrator_id)
+            .map_err(map_config_err)?;
+    }
+    for orchestrator_id in bootstrap.orchestrator_configs.keys() {
+        if !settings.orchestrators.contains_key(orchestrator_id) {
+            return Err(format!(
+                "orchestrator config `{orchestrator_id}` exists without settings entry"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn infer_workflow_template(orchestrator: &OrchestratorConfig) -> SetupWorkflowTemplate {
@@ -654,6 +714,8 @@ fn run_orchestrator_manager_tui(
                     let id = id.trim().to_string();
                     if id.is_empty() {
                         status = "orchestrator id must be non-empty".to_string();
+                    } else if let Err(err) = validate_identifier("orchestrator id", &id) {
+                        status = err;
                     } else if bootstrap.orchestrators.contains_key(&id) {
                         status = "orchestrator id already exists".to_string();
                     } else {
@@ -1330,6 +1392,10 @@ fn run_workflow_manager_tui(
                         status = "workflow id must be non-empty".to_string();
                         continue;
                     }
+                    if let Err(err) = validate_identifier("workflow id", &workflow_id) {
+                        status = err;
+                        continue;
+                    }
                     let Some(orchestrator) =
                         bootstrap.orchestrator_configs.get_mut(orchestrator_id)
                     else {
@@ -1349,7 +1415,7 @@ fn run_workflow_manager_tui(
                             id: "step_1".to_string(),
                             step_type: "agent_task".to_string(),
                             agent: selector_agent,
-                            prompt: default_step_prompt("agent_task"),
+                            prompt: default_step_scaffold("agent_task"),
                             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                             next: None,
                             on_approve: None,
@@ -1566,6 +1632,10 @@ fn run_workflow_detail_tui(
                         let next_id = value.trim().to_string();
                         if next_id.is_empty() {
                             status = "workflow id must be non-empty".to_string();
+                            continue;
+                        }
+                        if let Err(err) = validate_identifier("workflow id", &next_id) {
+                            status = err;
                             continue;
                         }
                         let cfg = bootstrap
@@ -1918,6 +1988,10 @@ fn run_workflow_steps_tui(
                         status = "step id must be non-empty".to_string();
                         continue;
                     }
+                    if let Err(err) = validate_identifier("step id", &step_id) {
+                        status = err;
+                        continue;
+                    }
                     let cfg = bootstrap
                         .orchestrator_configs
                         .get_mut(orchestrator_id)
@@ -1936,7 +2010,7 @@ fn run_workflow_steps_tui(
                         id: step_id,
                         step_type: "agent_task".to_string(),
                         agent: selector_agent,
-                        prompt: default_step_prompt("agent_task"),
+                        prompt: default_step_scaffold("agent_task"),
                         workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                         next: None,
                         on_approve: None,
@@ -2034,6 +2108,10 @@ fn run_workflow_step_detail_tui(
                             status = "step id must be non-empty".to_string();
                             continue;
                         }
+                        if let Err(err) = validate_identifier("step id", &next_id) {
+                            status = err;
+                            continue;
+                        }
                         let cfg = bootstrap
                             .orchestrator_configs
                             .get_mut(orchestrator_id)
@@ -2083,7 +2161,7 @@ fn run_workflow_step_detail_tui(
                         } else {
                             "agent_task".to_string()
                         };
-                        step.prompt = default_step_prompt(&step.step_type);
+                        step.prompt = default_step_scaffold(&step.step_type);
                         step.outputs = default_step_output_contract(&step.step_type);
                         step.output_files = default_step_output_files(&step.step_type);
                         status = "step type toggled".to_string();
@@ -2486,6 +2564,10 @@ fn run_agent_manager_tui(
                     let agent_id = agent_id.trim().to_string();
                     if agent_id.is_empty() {
                         status = "agent id must be non-empty".to_string();
+                        continue;
+                    }
+                    if let Err(err) = validate_identifier("agent id", &agent_id) {
+                        status = err;
                         continue;
                     }
                     let cfg = bootstrap
@@ -3065,5 +3147,82 @@ mod tests {
             workflow_inputs_as_csv(&serde_yaml::Value::Sequence(Vec::new())),
             "<none>"
         );
+    }
+
+    #[test]
+    fn validate_identifier_accepts_slug_and_rejects_spaces() {
+        assert!(validate_identifier("workflow id", "feature_delivery").is_ok());
+        assert!(validate_identifier("workflow id", "feature delivery").is_err());
+    }
+
+    #[test]
+    fn validate_setup_bootstrap_requires_matching_config_registry() {
+        let settings = Settings {
+            workspaces_path: PathBuf::from("/tmp/workspaces"),
+            shared_workspaces: BTreeMap::new(),
+            orchestrators: BTreeMap::from_iter([(
+                "main".to_string(),
+                SettingsOrchestrator {
+                    private_workspace: None,
+                    shared_access: Vec::new(),
+                },
+            )]),
+            channel_profiles: BTreeMap::new(),
+            monitoring: Default::default(),
+            channels: BTreeMap::new(),
+            auth_sync: AuthSyncConfig::default(),
+        };
+
+        let bootstrap = SetupBootstrap {
+            workspaces_path: settings.workspaces_path.clone(),
+            orchestrator_id: "main".to_string(),
+            provider: "anthropic".to_string(),
+            model: "sonnet".to_string(),
+            workflow_template: SetupWorkflowTemplate::Minimal,
+            orchestrators: settings.orchestrators.clone(),
+            orchestrator_configs: BTreeMap::new(),
+        };
+
+        let err = validate_setup_bootstrap(&settings, &bootstrap).expect_err("missing config");
+        assert!(err.contains("missing orchestrator config"));
+    }
+
+    #[test]
+    fn validate_setup_bootstrap_accepts_valid_minimal_registry() {
+        let settings = Settings {
+            workspaces_path: PathBuf::from("/tmp/workspaces"),
+            shared_workspaces: BTreeMap::new(),
+            orchestrators: BTreeMap::from_iter([(
+                "main".to_string(),
+                SettingsOrchestrator {
+                    private_workspace: None,
+                    shared_access: Vec::new(),
+                },
+            )]),
+            channel_profiles: BTreeMap::new(),
+            monitoring: Default::default(),
+            channels: BTreeMap::new(),
+            auth_sync: AuthSyncConfig::default(),
+        };
+
+        let bootstrap = SetupBootstrap {
+            workspaces_path: settings.workspaces_path.clone(),
+            orchestrator_id: "main".to_string(),
+            provider: "anthropic".to_string(),
+            model: "sonnet".to_string(),
+            workflow_template: SetupWorkflowTemplate::Minimal,
+            orchestrators: settings.orchestrators.clone(),
+            orchestrator_configs: BTreeMap::from_iter([(
+                "main".to_string(),
+                initial_orchestrator_config(
+                    "main",
+                    "anthropic",
+                    "sonnet",
+                    SetupWorkflowTemplate::Minimal,
+                ),
+            )]),
+        };
+
+        validate_setup_bootstrap(&settings, &bootstrap).expect("valid setup bootstrap");
     }
 }

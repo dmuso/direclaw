@@ -80,6 +80,19 @@ fn setup_defaults_workspace_under_state_root_when_config_is_missing() {
         .expect("default workflow");
     let first_step = default_workflow.steps.first().expect("default step");
     assert!(first_step.prompt.contains("[workflow_result]"));
+    assert!(first_step.prompt.contains("Required outputs schema:"));
+    assert!(first_step
+        .prompt
+        .contains("{{workflow.output_schema_json}}"));
+    assert!(first_step
+        .prompt
+        .contains("{{workflow.output_paths.summary}}"));
+    assert!(first_step
+        .prompt
+        .contains("{{workflow.output_paths.artifact}}"));
+    assert!(!first_step
+        .prompt
+        .contains("You are the default workflow step."));
     assert!(first_step.outputs.is_some());
     assert!(first_step.output_files.is_some());
 
