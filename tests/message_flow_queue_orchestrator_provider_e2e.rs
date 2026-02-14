@@ -19,6 +19,13 @@ fn write_script(path: &Path, body: &str) {
     fs::set_permissions(path, perms).expect("chmod");
 }
 
+fn write_openai_success_script(path: &Path) {
+    write_script(
+        path,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"result\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+    );
+}
+
 fn sample_message(message_id: &str, conversation_id: &str) -> IncomingMessage {
     IncomingMessage {
         channel: "slack".to_string(),
@@ -130,10 +137,12 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-mock");
+    let codex = dir.path().join("codex-mock");
     write_script(
         &claude,
         "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-1\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
     );
+    write_openai_success_script(&codex);
 
     let settings =
         write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"), "anthropic", 1, 30);
@@ -143,7 +152,7 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
         &state_root,
         &settings,
         4,
-        &binaries(claude.display().to_string(), "unused"),
+        &binaries(claude.display().to_string(), codex.display().to_string()),
     )
     .expect("drain");
     assert_eq!(processed, 1);
@@ -213,7 +222,9 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
     let queue = QueuePaths::from_state_root(&state_root);
 
     let claude_fail = dir.path().join("claude-fail");
+    let codex_ok = dir.path().join("codex-ok");
     write_script(&claude_fail, "#!/bin/sh\necho fail 1>&2\nexit 7\n");
+    write_openai_success_script(&codex_ok);
     let settings_fail = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-fail"),
@@ -226,7 +237,10 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
         &state_root,
         &settings_fail,
         2,
-        &binaries(claude_fail.display().to_string(), "unused"),
+        &binaries(
+            claude_fail.display().to_string(),
+            codex_ok.display().to_string(),
+        ),
     )
     .expect("drain non-zero");
     assert_eq!(processed, 1);
@@ -238,7 +252,18 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
     assert!(non_zero_log.contains("\"exitCode\": 7"));
 
     let codex_bad = dir.path().join("codex-bad");
-    write_script(&codex_bad, "#!/bin/sh\necho '{not-json}'\n");
+    write_script(
+        &codex_bad,
+        r#"#!/bin/sh
+set -eu
+args="$*"
+if printf "%s" "$args" | grep -q "sel-msg-parse_attempt_"; then
+  echo '{not-json}'
+else
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":\"ok\"}[/workflow_result]"}}'
+fi
+"#,
+    );
     let settings_parse = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-parse"),
@@ -251,7 +276,10 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
         &state_root,
         &settings_parse,
         2,
-        &binaries("unused", codex_bad.display().to_string()),
+        &binaries(
+            codex_ok.display().to_string(),
+            codex_bad.display().to_string(),
+        ),
     )
     .expect("drain parse failure");
     assert_eq!(processed, 1);
@@ -274,7 +302,9 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
     let queue = QueuePaths::from_state_root(&state_root);
 
     let claude_timeout = dir.path().join("claude-timeout");
+    let codex = dir.path().join("codex-timeout-ok");
     write_script(&claude_timeout, "#!/bin/sh\nsleep 2\necho too-late\n");
+    write_openai_success_script(&codex);
     let settings = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-timeout"),
@@ -288,7 +318,10 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
         &state_root,
         &settings,
         1,
-        &binaries(claude_timeout.display().to_string(), "unused"),
+        &binaries(
+            claude_timeout.display().to_string(),
+            codex.display().to_string(),
+        ),
     )
     .expect("drain timeout fallback");
     assert_eq!(processed, 1);
@@ -388,17 +421,19 @@ fn supervisor_start_recovers_processing_entries_and_processes_message() {
     .expect("write stale processing");
 
     let claude = dir.path().join("claude-restart");
+    let codex = dir.path().join("codex-restart");
     write_script(
         &claude,
         "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-restart\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
     );
+    write_openai_success_script(&codex);
     let old_anthropic = std::env::var_os("DIRECLAW_PROVIDER_BIN_ANTHROPIC");
     let old_openai = std::env::var_os("DIRECLAW_PROVIDER_BIN_OPENAI");
     std::env::set_var(
         "DIRECLAW_PROVIDER_BIN_ANTHROPIC",
         claude.display().to_string(),
     );
-    std::env::set_var("DIRECLAW_PROVIDER_BIN_OPENAI", "unused");
+    std::env::set_var("DIRECLAW_PROVIDER_BIN_OPENAI", codex.display().to_string());
 
     let state_root_for_thread = state_root.clone();
     let settings_for_thread = settings.clone();
@@ -448,6 +483,7 @@ fn queue_runtime_enforces_same_key_ordering_and_cross_key_concurrency() {
     let settings = write_settings_and_orchestrator(dir.path(), &orch_ws, "anthropic", 1, 30);
 
     let claude = dir.path().join("claude-order");
+    let codex = dir.path().join("codex-order");
     write_script(
         &claude,
         r#"#!/bin/sh
@@ -463,6 +499,7 @@ echo "end $selector_id" >> "$PWD/trace.log"
 echo "{\"selectorId\":\"$selector_id\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}"
 "#,
     );
+    write_openai_success_script(&codex);
 
     write_incoming(&queue, &sample_message("a1", "thread-a"));
     write_incoming(&queue, &sample_message("a2", "thread-a"));
@@ -472,7 +509,7 @@ echo "{\"selectorId\":\"$selector_id\",\"status\":\"selected\",\"action\":\"work
         &state_root,
         &settings,
         4,
-        &binaries(claude.display().to_string(), "unused"),
+        &binaries(claude.display().to_string(), codex.display().to_string()),
     )
     .expect("drain");
     assert_eq!(processed, 3);

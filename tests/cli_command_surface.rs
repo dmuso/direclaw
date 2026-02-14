@@ -1,3 +1,4 @@
+use direclaw::config::OrchestratorConfig;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -336,6 +337,29 @@ fn orchestrator_and_agent_commands_work() {
 fn workflow_commands_work() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let claude = bin_dir.join("claude");
+    let codex = bin_dir.join("codex");
+    fs::write(
+        &claude,
+        "#!/bin/sh\necho '[workflow_result]{\"result\":\"ok\"}[/workflow_result]'\n",
+    )
+    .expect("write claude mock");
+    fs::write(
+        &codex,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"result\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+    )
+    .expect("write codex mock");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&claude, &codex] {
+            let mut perms = fs::metadata(path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms).expect("chmod");
+        }
+    }
 
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
     assert_ok(&run(temp.path(), &["workflow", "list", "alpha"]));
@@ -346,7 +370,7 @@ fn workflow_commands_work() {
         &["orchestrator", "set-default-workflow", "alpha", "triage"],
     ));
 
-    let run_output = run(
+    let run_output = run_with_env(
         temp.path(),
         &[
             "workflow",
@@ -355,6 +379,16 @@ fn workflow_commands_work() {
             "triage",
             "--input",
             "ticket=123",
+        ],
+        &[
+            (
+                "DIRECLAW_PROVIDER_BIN_ANTHROPIC",
+                claude.to_str().expect("utf8"),
+            ),
+            (
+                "DIRECLAW_PROVIDER_BIN_OPENAI",
+                codex.to_str().expect("utf8"),
+            ),
         ],
     );
     assert_ok(&run_output);
@@ -391,6 +425,41 @@ fn workflow_commands_work() {
     );
 
     assert_ok(&run(temp.path(), &["workflow", "cancel", &run_id]));
+}
+
+#[test]
+fn workflow_run_denies_ungranted_agent_workspace_and_creates_no_workspace_dirs() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+
+    assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
+    let private_workspace = temp.path().join("workspace").join("alpha");
+    let denied_workspace = temp.path().join("denied-agent-workspace");
+    let orchestrators_path = temp.path().join(".direclaw/config-orchestrators.yaml");
+    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
+            .expect("parse orchestrators");
+    orchestrators
+        .get_mut("alpha")
+        .expect("alpha orchestrator")
+        .agents
+        .get_mut("default")
+        .expect("default agent")
+        .private_workspace = Some(denied_workspace.clone());
+    fs::write(
+        &orchestrators_path,
+        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+    )
+    .expect("write orchestrators");
+
+    assert!(!private_workspace.join("workflows/runs").exists());
+    assert!(!denied_workspace.exists());
+
+    let run_output = run(temp.path(), &["workflow", "run", "alpha", "default"]);
+    assert_err_contains(&run_output, "workspace access denied");
+
+    assert!(!private_workspace.join("workflows/runs").exists());
+    assert!(!denied_workspace.exists());
 }
 
 #[test]

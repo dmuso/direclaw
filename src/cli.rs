@@ -4,7 +4,9 @@ use crate::config::{
     Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig,
     WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
 };
-use crate::orchestrator::{RunState, WorkflowEngine, WorkflowRunStore};
+use crate::orchestrator::{
+    verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
+};
 use crate::queue::IncomingMessage;
 use crate::runtime::{
     append_runtime_log, bootstrap_state_root, cleanup_stale_supervisor, default_state_root_path,
@@ -1668,6 +1670,9 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
             let orchestrator_id = &args[1];
             let workflow_id = &args[2];
             let orchestrator = load_orchestrator_or_err(&settings, orchestrator_id)?;
+            let workspace_context =
+                verify_orchestrator_workspace_access(&settings, orchestrator_id, &orchestrator)
+                    .map_err(|e| e.to_string())?;
             if !orchestrator.workflows.iter().any(|w| &w.id == workflow_id) {
                 return Err(format!("invalid workflow id `{workflow_id}`"));
             }
@@ -1686,7 +1691,8 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
             store
                 .create_run_with_inputs(run_id.clone(), workflow_id.clone(), input_map, now_secs())
                 .map_err(|e| e.to_string())?;
-            let engine = WorkflowEngine::new(store.clone(), orchestrator.clone());
+            let engine = WorkflowEngine::new(store.clone(), orchestrator.clone())
+                .with_workspace_access_context(workspace_context);
             engine
                 .start(&run_id, now_secs())
                 .map_err(|e| e.to_string())?;

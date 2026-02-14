@@ -1132,13 +1132,14 @@ fn process_claimed_message(
     let run_store = WorkflowRunStore::new(state_root);
     let functions = FunctionRegistry::v1_defaults(run_store, settings);
 
-    let action = orchestrator::process_queued_message(
+    let action = orchestrator::process_queued_message_with_runner_binaries(
         state_root,
         settings,
         &claimed.payload,
         now_secs(),
         &BTreeMap::new(),
         &functions,
+        Some(binaries.clone()),
         |attempt, request, orchestrator_cfg| {
             run_selector_attempt_with_provider(
                 state_root,

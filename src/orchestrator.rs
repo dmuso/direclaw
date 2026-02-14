@@ -3,6 +3,10 @@ use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, Settings,
     WorkflowConfig, WorkflowStepConfig,
 };
+use crate::provider::{
+    consume_reset_flag, run_provider, write_file_backed_prompt, InvocationLog, ProviderError,
+    ProviderKind, ProviderRequest, RunnerBinaries,
+};
 use crate::queue::IncomingMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -10,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -41,6 +46,10 @@ pub enum OrchestratorError {
     WorkflowEnvelope(String),
     #[error("workflow review decision must be `approve` or `reject`, got `{0}`")]
     InvalidReviewDecision(String),
+    #[error("step prompt render failed for step `{step_id}`: {reason}")]
+    StepPromptRender { step_id: String, reason: String },
+    #[error("step execution failed for step `{step_id}`: {reason}")]
+    StepExecution { step_id: String, reason: String },
     #[error("workflow execution exceeded max total iterations ({max_total_iterations})")]
     MaxIterationsExceeded { max_total_iterations: u32 },
     #[error("workflow run timed out after {run_timeout_seconds}s")]
@@ -951,6 +960,8 @@ fn sorted_input_keys(inputs: &Map<String, Value>) -> Vec<String> {
 pub struct WorkflowEngine {
     run_store: WorkflowRunStore,
     orchestrator: OrchestratorConfig,
+    runner_binaries: RunnerBinaries,
+    workspace_access_context: Option<WorkspaceAccessContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -964,7 +975,22 @@ impl WorkflowEngine {
         Self {
             run_store,
             orchestrator,
+            runner_binaries: resolve_runner_binaries(),
+            workspace_access_context: None,
         }
+    }
+
+    pub fn with_runner_binaries(mut self, runner_binaries: RunnerBinaries) -> Self {
+        self.runner_binaries = runner_binaries;
+        self
+    }
+
+    pub fn with_workspace_access_context(
+        mut self,
+        workspace_access_context: WorkspaceAccessContext,
+    ) -> Self {
+        self.workspace_access_context = Some(workspace_access_context);
+        self
     }
 
     pub fn start(&self, run_id: &str, now: i64) -> Result<WorkflowRunRecord, OrchestratorError> {
@@ -1065,76 +1091,114 @@ impl WorkflowEngine {
                 ))
             })?;
 
-        self.run_store.append_engine_log(
-            &run.run_id,
-            now,
-            format!(
-                "run_id={} decision=execute_next step_id={} attempt={} state={}",
-                run.run_id, step.id, pointer.attempt, run.state
-            ),
-        )?;
-        self.run_store
-            .mark_step_attempt_started(run, &step.id, pointer.attempt, now)?;
+        let limits = resolve_execution_safety_limits(&self.orchestrator, workflow, step);
+        let mut attempt = pointer.attempt;
+        let mut attempt_now = now;
 
-        let next_step_id = step
-            .next
-            .clone()
-            .or_else(|| next_step_in_workflow(workflow, &step.id));
-        let attempt_state = "skeleton_succeeded".to_string();
-        self.run_store.persist_step_attempt(&StepAttemptRecord {
-            run_id: run.run_id.clone(),
-            step_id: step.id.clone(),
-            attempt: pointer.attempt,
-            started_at: now,
-            ended_at: now.saturating_add(1),
-            state: attempt_state.clone(),
-            outputs: Map::new(),
-            next_step_id: next_step_id.clone(),
-        })?;
-        *run = self.run_store.load_run(&run.run_id)?;
-
-        self.run_store.append_engine_log(
-            &run.run_id,
-            now.saturating_add(1),
-            format!(
-                "run_id={} step_id={} attempt={} transition={} next={}",
-                run.run_id,
-                step.id,
-                pointer.attempt,
-                attempt_state,
-                next_step_id
-                    .clone()
-                    .unwrap_or_else(|| "terminal".to_string())
-            ),
-        )?;
-
-        if let Some(next) = next_step_id {
-            run.current_step_id = Some(next.clone());
-            run.current_attempt = None;
-            self.run_store.checkpoint(
-                run,
-                now.saturating_add(1),
+        loop {
+            self.run_store.append_engine_log(
+                &run.run_id,
+                attempt_now,
                 format!(
-                    "step {} attempt {} finished; next {}",
-                    step.id, pointer.attempt, next
+                    "run_id={} decision=execute_next step_id={} attempt={} state={}",
+                    run.run_id, step.id, attempt, run.state
                 ),
-                false,
-                format!("execute step {next}"),
             )?;
-        } else {
-            run.current_step_id = None;
-            run.current_attempt = None;
-            self.run_store.transition_state(
-                run,
-                RunState::Succeeded,
-                now.saturating_add(1),
-                format!("step {} attempt {} finished", step.id, pointer.attempt),
-                false,
-                "none",
-            )?;
-        }
+            self.run_store
+                .mark_step_attempt_started(run, &step.id, attempt, attempt_now)?;
+            enforce_execution_safety(run, limits, attempt_now, attempt_now, attempt)?;
 
-        Ok(())
+            match self.execute_step_attempt(run, workflow, step, attempt, attempt_now) {
+                Ok(evaluation) => {
+                    self.run_store.persist_step_attempt(&StepAttemptRecord {
+                        run_id: run.run_id.clone(),
+                        step_id: step.id.clone(),
+                        attempt,
+                        started_at: attempt_now,
+                        ended_at: attempt_now.saturating_add(1),
+                        state: "succeeded".to_string(),
+                        outputs: evaluation.outputs.clone(),
+                        next_step_id: evaluation.next_step_id.clone(),
+                    })?;
+                    *run = self.run_store.load_run(&run.run_id)?;
+
+                    self.run_store.append_engine_log(
+                        &run.run_id,
+                        attempt_now.saturating_add(1),
+                        format!(
+                            "run_id={} step_id={} attempt={} transition=succeeded next={}",
+                            run.run_id,
+                            step.id,
+                            attempt,
+                            evaluation
+                                .next_step_id
+                                .clone()
+                                .unwrap_or_else(|| "terminal".to_string())
+                        ),
+                    )?;
+
+                    if let Some(next) = evaluation.next_step_id {
+                        run.current_step_id = Some(next.clone());
+                        run.current_attempt = None;
+                        self.run_store.checkpoint(
+                            run,
+                            attempt_now.saturating_add(1),
+                            format!(
+                                "step {} attempt {} finished; next {}",
+                                step.id, attempt, next
+                            ),
+                            false,
+                            format!("execute step {next}"),
+                        )?;
+                    } else {
+                        run.current_step_id = None;
+                        run.current_attempt = None;
+                        self.run_store.transition_state(
+                            run,
+                            RunState::Succeeded,
+                            attempt_now.saturating_add(1),
+                            format!("step {} attempt {} finished", step.id, attempt),
+                            false,
+                            "none",
+                        )?;
+                    }
+                    return Ok(());
+                }
+                Err(err) => {
+                    let retryable = is_retryable_step_error(&err);
+                    let can_retry = retryable && attempt <= limits.max_retries;
+                    self.run_store.persist_step_attempt(&StepAttemptRecord {
+                        run_id: run.run_id.clone(),
+                        step_id: step.id.clone(),
+                        attempt,
+                        started_at: attempt_now,
+                        ended_at: attempt_now.saturating_add(1),
+                        state: if can_retry {
+                            "failed_retryable".to_string()
+                        } else {
+                            "failed".to_string()
+                        },
+                        outputs: Map::new(),
+                        next_step_id: None,
+                    })?;
+                    *run = self.run_store.load_run(&run.run_id)?;
+                    self.run_store.append_engine_log(
+                        &run.run_id,
+                        attempt_now.saturating_add(1),
+                        format!(
+                            "run_id={} step_id={} attempt={} transition=failed retryable={} error={}",
+                            run.run_id, step.id, attempt, can_retry, err
+                        ),
+                    )?;
+                    if can_retry {
+                        attempt = attempt.saturating_add(1);
+                        attempt_now = attempt_now.saturating_add(2);
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
     }
 
     fn execute_or_fail(
@@ -1226,6 +1290,299 @@ impl WorkflowEngine {
             Err(other) => Err(other),
         }
     }
+
+    fn execute_step_attempt(
+        &self,
+        run: &WorkflowRunRecord,
+        workflow: &WorkflowConfig,
+        step: &WorkflowStepConfig,
+        attempt: u32,
+        now: i64,
+    ) -> Result<StepEvaluation, OrchestratorError> {
+        let run_workspace = if let Some(context) = self.workspace_access_context.as_ref() {
+            context
+                .private_workspace_root
+                .join("workflows/runs")
+                .join(&run.run_id)
+                .join("workspace")
+        } else {
+            self.run_store
+                .state_root()
+                .join("workflows/runs")
+                .join(&run.run_id)
+                .join("workspace")
+        };
+
+        let agent = self.orchestrator.agents.get(&step.agent).ok_or_else(|| {
+            OrchestratorError::StepExecution {
+                step_id: step.id.clone(),
+                reason: format!("step references unknown agent `{}`", step.agent),
+            }
+        })?;
+        let agent_workspace = resolve_agent_workspace_root(
+            self.workspace_access_context
+                .as_ref()
+                .map(|ctx| ctx.private_workspace_root.as_path())
+                .unwrap_or_else(|| self.run_store.state_root()),
+            &step.agent,
+            agent,
+        );
+
+        if let Some(context) = self.workspace_access_context.as_ref() {
+            if let Err(err) =
+                enforce_workspace_access(context, &[agent_workspace.clone(), run_workspace.clone()])
+            {
+                append_security_log(
+                    self.run_store.state_root(),
+                    &format!(
+                        "workspace access denied for run `{}` step `{}`: {}",
+                        run.run_id, step.id, err
+                    ),
+                );
+                return Err(err);
+            }
+        }
+        fs::create_dir_all(&run_workspace).map_err(|err| io_error(&run_workspace, err))?;
+        fs::create_dir_all(&agent_workspace).map_err(|err| io_error(&agent_workspace, err))?;
+
+        let step_outputs =
+            load_latest_step_outputs(self.run_store.state_root(), &run.run_id, workflow, &step.id)?;
+        let output_paths =
+            resolve_step_output_paths(self.run_store.state_root(), &run.run_id, step, attempt)?;
+        let rendered = render_step_prompt(
+            run,
+            workflow,
+            step,
+            attempt,
+            &run_workspace,
+            &output_paths,
+            &step_outputs,
+        )?;
+
+        let attempt_dir = self
+            .run_store
+            .state_root()
+            .join("workflows/runs")
+            .join(&run.run_id)
+            .join("steps")
+            .join(&step.id)
+            .join("attempts")
+            .join(attempt.to_string());
+        fs::create_dir_all(&attempt_dir).map_err(|err| io_error(&attempt_dir, err))?;
+
+        let artifacts = write_file_backed_prompt(
+            &attempt_dir,
+            &format!("{}-{}-{attempt}", run.run_id, step.id),
+            &rendered.prompt,
+            &rendered.context,
+        )
+        .map_err(|err| OrchestratorError::StepExecution {
+            step_id: step.id.clone(),
+            reason: err.to_string(),
+        })?;
+
+        let reset_flag = agent_workspace.join("reset_flag");
+        let reset_resolution =
+            consume_reset_flag(&reset_flag).map_err(|err| OrchestratorError::StepExecution {
+                step_id: step.id.clone(),
+                reason: err.to_string(),
+            })?;
+
+        let provider_kind = ProviderKind::try_from(agent.provider.as_str()).map_err(|err| {
+            OrchestratorError::StepExecution {
+                step_id: step.id.clone(),
+                reason: err.to_string(),
+            }
+        })?;
+        let provider_request = ProviderRequest {
+            agent_id: step.agent.clone(),
+            provider: provider_kind,
+            model: agent.model.clone(),
+            cwd: agent_workspace.clone(),
+            message: provider_instruction_message(&artifacts),
+            prompt_artifacts: artifacts.clone(),
+            timeout: Duration::from_secs(
+                resolve_execution_safety_limits(&self.orchestrator, workflow, step)
+                    .step_timeout_seconds,
+            ),
+            reset_requested: reset_resolution.reset_requested,
+            fresh_on_failure: false,
+            env_overrides: BTreeMap::new(),
+        };
+
+        let provider_output =
+            run_provider(&provider_request, &self.runner_binaries).map_err(|err| {
+                if let Some(log) = provider_error_log(&err) {
+                    let _ = persist_provider_invocation_log(&attempt_dir, log);
+                }
+                OrchestratorError::StepExecution {
+                    step_id: step.id.clone(),
+                    reason: err.to_string(),
+                }
+            })?;
+
+        persist_provider_invocation_log(&attempt_dir, &provider_output.log)
+            .map_err(|err| io_error(&attempt_dir, err))?;
+
+        let evaluation = evaluate_step_result(workflow, step, &provider_output.message)?;
+        self.run_store.append_engine_log(
+            &run.run_id,
+            now,
+            format!(
+                "run_id={} step_id={} attempt={} provider={} model={} cwd={}",
+                run.run_id,
+                step.id,
+                attempt,
+                provider_output.log.provider,
+                provider_output.log.model,
+                provider_output.log.working_directory.display(),
+            ),
+        )?;
+        Ok(evaluation)
+    }
+}
+
+fn provider_instruction_message(artifacts: &crate::provider::PromptArtifacts) -> String {
+    let context_paths = artifacts
+        .context_files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Read prompt file at {} and context file(s) at {}. Execute exactly as instructed in those files.",
+        artifacts.prompt_file.display(),
+        context_paths
+    )
+}
+
+fn resolve_runner_binaries() -> RunnerBinaries {
+    RunnerBinaries {
+        anthropic: std::env::var("DIRECLAW_PROVIDER_BIN_ANTHROPIC")
+            .unwrap_or_else(|_| "claude".to_string()),
+        openai: std::env::var("DIRECLAW_PROVIDER_BIN_OPENAI")
+            .unwrap_or_else(|_| "codex".to_string()),
+    }
+}
+
+fn provider_error_log(error: &ProviderError) -> Option<&InvocationLog> {
+    match error {
+        ProviderError::MissingBinary { log, .. } => Some(log),
+        ProviderError::NonZeroExit { log, .. } => Some(log),
+        ProviderError::Timeout { log, .. } => Some(log),
+        ProviderError::ParseFailure { log, .. } => log.as_deref(),
+        ProviderError::UnknownProvider(_)
+        | ProviderError::UnsupportedAnthropicModel(_)
+        | ProviderError::Io { .. } => None,
+    }
+}
+
+fn persist_provider_invocation_log(path_root: &Path, log: &InvocationLog) -> std::io::Result<()> {
+    let path = path_root.join("provider_invocation.json");
+    let payload = Value::Object(Map::from_iter([
+        ("agentId".to_string(), Value::String(log.agent_id.clone())),
+        (
+            "provider".to_string(),
+            Value::String(log.provider.to_string()),
+        ),
+        ("model".to_string(), Value::String(log.model.clone())),
+        (
+            "commandForm".to_string(),
+            Value::String(log.command_form.clone()),
+        ),
+        (
+            "workingDirectory".to_string(),
+            Value::String(log.working_directory.display().to_string()),
+        ),
+        (
+            "promptFile".to_string(),
+            Value::String(log.prompt_file.display().to_string()),
+        ),
+        (
+            "contextFiles".to_string(),
+            Value::Array(
+                log.context_files
+                    .iter()
+                    .map(|path| Value::String(path.display().to_string()))
+                    .collect(),
+            ),
+        ),
+        (
+            "exitCode".to_string(),
+            match log.exit_code {
+                Some(value) => Value::from(value),
+                None => Value::Null,
+            },
+        ),
+        ("timedOut".to_string(), Value::Bool(log.timed_out)),
+    ]));
+    let body = serde_json::to_vec_pretty(&payload).map_err(std::io::Error::other)?;
+    fs::write(path, body)
+}
+
+fn is_retryable_step_error(error: &OrchestratorError) -> bool {
+    matches!(
+        error,
+        OrchestratorError::StepExecution { .. }
+            | OrchestratorError::WorkflowEnvelope(_)
+            | OrchestratorError::InvalidReviewDecision(_)
+    )
+}
+
+fn load_latest_step_outputs(
+    state_root: &Path,
+    run_id: &str,
+    workflow: &WorkflowConfig,
+    current_step_id: &str,
+) -> Result<BTreeMap<String, Map<String, Value>>, OrchestratorError> {
+    let mut outputs = BTreeMap::new();
+    for step in &workflow.steps {
+        if step.id == current_step_id {
+            continue;
+        }
+        let attempts_root = state_root
+            .join("workflows/runs")
+            .join(run_id)
+            .join("steps")
+            .join(&step.id)
+            .join("attempts");
+        if !attempts_root.exists() {
+            continue;
+        }
+
+        let mut latest_attempt: Option<(u32, StepAttemptRecord)> = None;
+        let entries = fs::read_dir(&attempts_root).map_err(|err| io_error(&attempts_root, err))?;
+        for entry in entries {
+            let entry = entry.map_err(|err| io_error(&attempts_root, err))?;
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            let Ok(attempt_num) = name.parse::<u32>() else {
+                continue;
+            };
+            let result_path = entry.path().join("result.json");
+            if !result_path.is_file() {
+                continue;
+            }
+            let raw =
+                fs::read_to_string(&result_path).map_err(|err| io_error(&result_path, err))?;
+            let attempt: StepAttemptRecord =
+                serde_json::from_str(&raw).map_err(|err| json_error(&result_path, err))?;
+            if attempt.state != "succeeded" {
+                continue;
+            }
+            match latest_attempt {
+                Some((current, _)) if current >= attempt_num => {}
+                _ => latest_attempt = Some((attempt_num, attempt)),
+            }
+        }
+
+        if let Some((_, attempt)) = latest_attempt {
+            outputs.insert(step.id.clone(), attempt.outputs);
+        }
+    }
+    Ok(outputs)
 }
 
 pub fn parse_workflow_result_envelope(
@@ -1239,6 +1596,16 @@ pub fn parse_workflow_result_envelope(
     let end = output.find(close_tag).ok_or_else(|| {
         OrchestratorError::WorkflowEnvelope("missing [/workflow_result] tag".to_string())
     })?;
+    if output[start + open_tag.len()..].contains(open_tag) {
+        return Err(OrchestratorError::WorkflowEnvelope(
+            "multiple [workflow_result] tags are not allowed".to_string(),
+        ));
+    }
+    if output[end + close_tag.len()..].contains(close_tag) {
+        return Err(OrchestratorError::WorkflowEnvelope(
+            "multiple [/workflow_result] tags are not allowed".to_string(),
+        ));
+    }
     if end <= start {
         return Err(OrchestratorError::WorkflowEnvelope(
             "invalid workflow_result tag ordering".to_string(),
@@ -1311,6 +1678,259 @@ fn next_step_in_workflow(workflow: &WorkflowConfig, step_id: &str) -> Option<Str
         .position(|s| s.id == step_id)
         .and_then(|idx| workflow.steps.get(idx + 1))
         .map(|s| s.id.clone())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepPromptRender {
+    pub prompt: String,
+    pub context: String,
+}
+
+fn resolve_json_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        let object = current.as_object()?;
+        current = object.get(*segment)?;
+    }
+    Some(current)
+}
+
+fn value_to_rendered_text(value: &Value) -> Result<String, OrchestratorError> {
+    if let Some(text) = value.as_str() {
+        return Ok(text.to_string());
+    }
+    serde_json::to_string(value).map_err(|err| {
+        OrchestratorError::SelectorJson(format!("failed to render placeholder value: {err}"))
+    })
+}
+
+fn render_template_with_placeholders<F>(
+    template: &str,
+    mut resolve: F,
+) -> Result<String, OrchestratorError>
+where
+    F: FnMut(&str) -> Result<String, OrchestratorError>,
+{
+    let mut rendered = String::new();
+    let mut cursor = template;
+
+    while let Some(start) = cursor.find("{{") {
+        rendered.push_str(&cursor[..start]);
+        let after_open = &cursor[start + 2..];
+        let Some(close_offset) = after_open.find("}}") else {
+            return Err(OrchestratorError::SelectorValidation(
+                "unclosed placeholder in template".to_string(),
+            ));
+        };
+        let token = after_open[..close_offset].trim();
+        if token.is_empty() {
+            return Err(OrchestratorError::SelectorValidation(
+                "empty placeholder in template".to_string(),
+            ));
+        }
+        rendered.push_str(&resolve(token)?);
+        cursor = &after_open[close_offset + 2..];
+    }
+
+    rendered.push_str(cursor);
+    Ok(rendered)
+}
+
+pub fn render_step_prompt(
+    run: &WorkflowRunRecord,
+    workflow: &WorkflowConfig,
+    step: &WorkflowStepConfig,
+    attempt: u32,
+    run_workspace: &Path,
+    output_paths: &BTreeMap<String, PathBuf>,
+    step_outputs: &BTreeMap<String, Map<String, Value>>,
+) -> Result<StepPromptRender, OrchestratorError> {
+    let input_value = Value::Object(run.inputs.clone());
+    let mut state_map = Map::from_iter([
+        (
+            "run_state".to_string(),
+            Value::String(run.state.to_string()),
+        ),
+        (
+            "total_iterations".to_string(),
+            Value::from(run.total_iterations),
+        ),
+        ("started_at".to_string(), Value::from(run.started_at)),
+        ("updated_at".to_string(), Value::from(run.updated_at)),
+    ]);
+    if let Some(step_id) = run.current_step_id.clone() {
+        state_map.insert("current_step_id".to_string(), Value::String(step_id));
+    }
+    if let Some(current_attempt) = run.current_attempt {
+        state_map.insert("current_attempt".to_string(), Value::from(current_attempt));
+    }
+    for (step_id, outputs) in step_outputs {
+        for (key, value) in outputs {
+            state_map.insert(format!("{step_id}_{key}"), value.clone());
+        }
+    }
+    let state_value = Value::Object(state_map.clone());
+
+    let output_schema_json = serde_json::to_string(
+        &step
+            .outputs
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|err| OrchestratorError::StepPromptRender {
+        step_id: step.id.clone(),
+        reason: format!("failed to render output schema json: {err}"),
+    })?;
+    let output_paths_json = serde_json::to_string_pretty(
+        &output_paths
+            .iter()
+            .map(|(k, v)| (k.clone(), v.display().to_string()))
+            .collect::<BTreeMap<_, _>>(),
+    )
+    .map_err(|err| OrchestratorError::StepPromptRender {
+        step_id: step.id.clone(),
+        reason: format!("failed to render output paths json: {err}"),
+    })?;
+
+    let rendered_prompt = render_template_with_placeholders(&step.prompt, |token| {
+        if let Some(path) = token.strip_prefix("inputs.") {
+            let path_segments = path
+                .split('.')
+                .filter(|segment| !segment.trim().is_empty())
+                .collect::<Vec<_>>();
+            let Some(value) = resolve_json_path(&input_value, &path_segments) else {
+                return Err(OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("missing required placeholder `{{{{{token}}}}}`"),
+                });
+            };
+            return value_to_rendered_text(value);
+        }
+
+        if let Some(path) = token.strip_prefix("steps.") {
+            let mut segments = path.split('.').collect::<Vec<_>>();
+            if segments.len() < 3 || segments[1] != "outputs" {
+                return Err(OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("unsupported placeholder `{{{{{token}}}}}`"),
+                });
+            }
+            let source_step_id = segments.remove(0).to_string();
+            let _ = segments.remove(0);
+            let Some(outputs) = step_outputs.get(&source_step_id) else {
+                return Err(OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("missing outputs for placeholder `{{{{{token}}}}}`"),
+                });
+            };
+            let output_value = Value::Object(outputs.clone());
+            let Some(value) = resolve_json_path(&output_value, &segments) else {
+                return Err(OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("missing output key for placeholder `{{{{{token}}}}}`"),
+                });
+            };
+            return value_to_rendered_text(value);
+        }
+
+        if let Some(path) = token.strip_prefix("state.") {
+            let segments = path
+                .split('.')
+                .filter(|segment| !segment.trim().is_empty())
+                .collect::<Vec<_>>();
+            let Some(value) = resolve_json_path(&state_value, &segments) else {
+                return Ok(String::new());
+            };
+            return value_to_rendered_text(value);
+        }
+
+        if token == "workflow.run_id" {
+            return Ok(run.run_id.clone());
+        }
+        if token == "workflow.step_id" {
+            return Ok(step.id.clone());
+        }
+        if token == "workflow.attempt" {
+            return Ok(attempt.to_string());
+        }
+        if token == "workflow.run_workspace" {
+            return Ok(run_workspace.display().to_string());
+        }
+        if token == "workflow.output_schema_json" {
+            return Ok(output_schema_json.clone());
+        }
+        if token == "workflow.output_paths_json" {
+            return Ok(output_paths_json.clone());
+        }
+        if let Some(path_key) = token.strip_prefix("workflow.output_paths.") {
+            let Some(path) = output_paths.get(path_key) else {
+                return Err(OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("missing output path for placeholder `{{{{{token}}}}}`"),
+                });
+            };
+            return Ok(path.display().to_string());
+        }
+
+        let input_field = match token {
+            "workflow.channel" => Some("channel"),
+            "workflow.channel_profile_id" => Some("channel_profile_id"),
+            "workflow.conversation_id" => Some("conversation_id"),
+            "workflow.sender_id" => Some("sender_id"),
+            "workflow.selector_id" => Some("selector_id"),
+            _ => None,
+        };
+        if let Some(field) = input_field {
+            let Some(value) = run.inputs.get(field) else {
+                return Err(OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("missing required placeholder `{{{{{token}}}}}`"),
+                });
+            };
+            return value_to_rendered_text(value);
+        }
+
+        Err(OrchestratorError::StepPromptRender {
+            step_id: step.id.clone(),
+            reason: format!("unsupported placeholder `{{{{{token}}}}}`"),
+        })
+    })?;
+
+    let context = serde_json::to_string_pretty(&Value::Object(Map::from_iter([
+        ("runId".to_string(), Value::String(run.run_id.clone())),
+        ("workflowId".to_string(), Value::String(workflow.id.clone())),
+        ("stepId".to_string(), Value::String(step.id.clone())),
+        ("attempt".to_string(), Value::from(attempt)),
+        (
+            "runWorkspace".to_string(),
+            Value::String(run_workspace.display().to_string()),
+        ),
+        ("inputs".to_string(), Value::Object(run.inputs.clone())),
+        ("state".to_string(), Value::Object(state_map)),
+        (
+            "availableStepOutputs".to_string(),
+            Value::Object(Map::from_iter(step_outputs.iter().map(
+                |(step_id, outputs)| (step_id.clone(), Value::Object(outputs.clone())),
+            ))),
+        ),
+        (
+            "outputPaths".to_string(),
+            Value::Object(Map::from_iter(output_paths.iter().map(|(k, path)| {
+                (k.clone(), Value::String(path.display().to_string()))
+            }))),
+        ),
+    ])))
+    .map_err(|err| OrchestratorError::StepPromptRender {
+        step_id: step.id.clone(),
+        reason: format!("failed to render context artifact: {err}"),
+    })?;
+
+    Ok(StepPromptRender {
+        prompt: rendered_prompt,
+        context,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1440,6 +2060,18 @@ pub fn resolve_workspace_access_context(
         private_workspace_root: private_workspace,
         shared_workspace_roots,
     })
+}
+
+pub fn verify_orchestrator_workspace_access(
+    settings: &Settings,
+    orchestrator_id: &str,
+    orchestrator: &OrchestratorConfig,
+) -> Result<WorkspaceAccessContext, OrchestratorError> {
+    let workspace_context = resolve_workspace_access_context(settings, orchestrator_id)?;
+    let requested_paths =
+        collect_orchestrator_requested_paths(&workspace_context, settings, orchestrator)?;
+    enforce_workspace_access(&workspace_context, &requested_paths)?;
+    Ok(workspace_context)
 }
 
 pub fn enforce_workspace_access(
@@ -2974,6 +3606,8 @@ pub struct RouteContext<'a> {
     pub functions: &'a FunctionRegistry,
     pub run_store: &'a WorkflowRunStore,
     pub orchestrator: &'a OrchestratorConfig,
+    pub workspace_access_context: Option<WorkspaceAccessContext>,
+    pub runner_binaries: Option<RunnerBinaries>,
     pub source_message_id: Option<&'a str>,
     pub now: i64,
 }
@@ -3043,7 +3677,13 @@ pub fn route_selector_action(
                 selector_start_inputs(request, ctx.source_message_id),
                 ctx.now,
             )?;
-            let engine = WorkflowEngine::new(ctx.run_store.clone(), ctx.orchestrator.clone());
+            let mut engine = WorkflowEngine::new(ctx.run_store.clone(), ctx.orchestrator.clone());
+            if let Some(context) = ctx.workspace_access_context.clone() {
+                engine = engine.with_workspace_access_context(context);
+            }
+            if let Some(binaries) = ctx.runner_binaries.clone() {
+                engine = engine.with_runner_binaries(binaries);
+            }
             engine.start(&run_id, ctx.now)?;
 
             Ok(RoutedSelectorAction::WorkflowStart {
@@ -3220,11 +3860,38 @@ pub fn process_queued_message<F>(
     now: i64,
     active_conversation_runs: &BTreeMap<(String, String), String>,
     functions: &FunctionRegistry,
+    next_selector_attempt: F,
+) -> Result<RoutedSelectorAction, OrchestratorError>
+where
+    F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
+{
+    process_queued_message_with_runner_binaries(
+        state_root,
+        settings,
+        inbound,
+        now,
+        active_conversation_runs,
+        functions,
+        None,
+        next_selector_attempt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn process_queued_message_with_runner_binaries<F>(
+    state_root: &Path,
+    settings: &Settings,
+    inbound: &IncomingMessage,
+    now: i64,
+    active_conversation_runs: &BTreeMap<(String, String), String>,
+    functions: &FunctionRegistry,
+    runner_binaries: Option<RunnerBinaries>,
     mut next_selector_attempt: F,
 ) -> Result<RoutedSelectorAction, OrchestratorError>
 where
     F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
 {
+    let runner_binaries = runner_binaries.unwrap_or_else(resolve_runner_binaries);
     let run_store = WorkflowRunStore::new(state_root);
     if let Some(run_id) = inbound
         .workflow_run_id
@@ -3278,6 +3945,8 @@ where
                     workflows: Vec::new(),
                     workflow_orchestration: None,
                 },
+                workspace_access_context: None,
+                runner_binaries: Some(runner_binaries.clone()),
                 source_message_id: Some(&inbound.message_id),
                 now,
             },
@@ -3286,19 +3955,20 @@ where
 
     let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
     let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
-    let workspace_context = resolve_workspace_access_context(settings, &orchestrator_id)?;
-    let requested_paths =
-        collect_orchestrator_requested_paths(&workspace_context, settings, &orchestrator)?;
-    if let Err(err) = enforce_workspace_access(&workspace_context, &requested_paths) {
-        append_security_log(
-            state_root,
-            &format!(
+    let workspace_context =
+        match verify_orchestrator_workspace_access(settings, &orchestrator_id, &orchestrator) {
+            Ok(context) => context,
+            Err(err) => {
+                append_security_log(
+                    state_root,
+                    &format!(
                 "workspace access denied for orchestrator `{orchestrator_id}` message `{}`: {err}",
                 inbound.message_id
             ),
-        );
-        return Err(err);
-    }
+                );
+                return Err(err);
+            }
+        };
 
     let request = SelectorRequest {
         selector_id: format!("sel-{}", inbound.message_id),
@@ -3352,6 +4022,8 @@ where
             functions,
             run_store: &run_store,
             orchestrator: &orchestrator,
+            workspace_access_context: Some(workspace_context),
+            runner_binaries: Some(runner_binaries),
             source_message_id: Some(&inbound.message_id),
             now,
         },

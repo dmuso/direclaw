@@ -1,17 +1,21 @@
 use direclaw::config::{OrchestratorConfig, Settings};
 use direclaw::orchestrator::{
     enforce_execution_safety, evaluate_step_result, parse_and_validate_selector_result,
-    process_queued_message, resolve_execution_safety_limits, resolve_selector_with_retries,
-    resolve_step_output_paths, route_selector_action, ExecutionSafetyLimits, FunctionRegistry,
-    RouteContext, RoutedSelectorAction, RunState, SelectorAction, SelectorArtifactStore,
-    SelectorRequest, SelectorResult, SelectorStatus, StatusResolutionInput, StepAttemptRecord,
-    WorkflowEngine, WorkflowRunStore,
+    parse_workflow_result_envelope, process_queued_message, render_step_prompt,
+    resolve_execution_safety_limits, resolve_selector_with_retries, resolve_step_output_paths,
+    route_selector_action, ExecutionSafetyLimits, FunctionRegistry, RouteContext,
+    RoutedSelectorAction, RunState, SelectorAction, SelectorArtifactStore, SelectorRequest,
+    SelectorResult, SelectorStatus, StatusResolutionInput, StepAttemptRecord, WorkflowEngine,
+    WorkflowRunRecord, WorkflowRunStore,
 };
+use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::{bootstrap_state_root, StatePaths};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use tempfile::tempdir;
 
 fn sample_orchestrator() -> OrchestratorConfig {
@@ -115,6 +119,30 @@ fn sample_incoming() -> IncomingMessage {
     }
 }
 
+fn write_script(path: &Path, body: &str) {
+    fs::write(path, body).expect("write script");
+    let mut perms = fs::metadata(path).expect("metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).expect("chmod");
+}
+
+fn mock_runner_binaries(root: &Path) -> RunnerBinaries {
+    let anthropic = root.join("claude-mock");
+    let openai = root.join("codex-mock");
+    write_script(
+        &anthropic,
+        "#!/bin/sh\necho '[workflow_result]{\"decision\":\"approve\",\"plan\":\"ok\"}[/workflow_result]'\n",
+    );
+    write_script(
+        &openai,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"decision\\\":\\\"approve\\\",\\\"plan\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+    );
+    RunnerBinaries {
+        anthropic: anthropic.display().to_string(),
+        openai: openai.display().to_string(),
+    }
+}
+
 #[test]
 fn selector_flow_persists_artifacts_and_supports_retry_and_default_fallback() {
     let dir = tempdir().expect("tempdir");
@@ -177,6 +205,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
     let orchestrator = sample_orchestrator();
     let store = WorkflowRunStore::new(&state_root);
     let request = sample_selector_request();
+    let runner_binaries = mock_runner_binaries(dir.path());
 
     let start_result = SelectorResult {
         selector_id: "selector-1".to_string(),
@@ -212,6 +241,8 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             functions: &functions,
             run_store: &store,
             orchestrator: &orchestrator,
+            workspace_access_context: None,
+            runner_binaries: Some(runner_binaries.clone()),
             source_message_id: Some("message-1"),
             now: 100,
         },
@@ -242,6 +273,21 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
     assert!(state_root
         .join(format!(
             "workflows/runs/{run_id}/steps/plan/attempts/1/result.json"
+        ))
+        .is_file());
+    assert!(state_root
+        .join(format!(
+            "workflows/runs/{run_id}/steps/plan/attempts/1/provider_invocation.json"
+        ))
+        .is_file());
+    assert!(state_root
+        .join(format!(
+            "workflows/runs/{run_id}/steps/plan/attempts/1/provider_prompts/{run_id}-plan-1_prompt.md"
+        ))
+        .is_file());
+    assert!(state_root
+        .join(format!(
+            "workflows/runs/{run_id}/steps/plan/attempts/1/provider_prompts/{run_id}-plan-1_context.md"
         ))
         .is_file());
     assert!(state_root
@@ -291,6 +337,8 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             functions: &functions,
             run_store: &store,
             orchestrator: &orchestrator,
+            workspace_access_context: None,
+            runner_binaries: Some(runner_binaries.clone()),
             source_message_id: Some("message-1"),
             now: 101,
         },
@@ -340,6 +388,8 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             functions: &functions,
             run_store: &store,
             orchestrator: &orchestrator,
+            workspace_access_context: None,
+            runner_binaries: Some(runner_binaries),
             source_message_id: Some("message-1"),
             now: 102,
         },
@@ -389,7 +439,8 @@ fn workflow_engine_resume_replays_persisted_in_progress_attempt() {
         .mark_step_attempt_started(&mut run, "plan", 1, 12)
         .expect("mark started");
 
-    let engine = WorkflowEngine::new(store.clone(), sample_orchestrator());
+    let engine = WorkflowEngine::new(store.clone(), sample_orchestrator())
+        .with_runner_binaries(mock_runner_binaries(dir.path()));
     let resumed = engine.resume("run-resume", 13).expect("resume");
     assert_eq!(resumed.state, RunState::Succeeded);
     assert_eq!(resumed.current_step_id, None);
@@ -605,6 +656,7 @@ channels: {{}}
     );
 
     let request = sample_selector_request();
+    let runner_binaries = mock_runner_binaries(dir.path());
     let diag_result = SelectorResult {
         selector_id: "selector-1".to_string(),
         status: SelectorStatus::Selected,
@@ -633,6 +685,8 @@ channels: {{}}
             functions: &functions,
             run_store: &store,
             orchestrator: &sample_orchestrator(),
+            workspace_access_context: None,
+            runner_binaries: Some(runner_binaries),
             source_message_id: Some("message-1"),
             now: 200,
         },
@@ -934,4 +988,346 @@ workflows:
     let security_log =
         fs::read_to_string(state_root.join("logs/security.log")).expect("read security log");
     assert!(security_log.contains("output path validation denied"));
+}
+
+#[test]
+fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
+    let engineering_yaml =
+        fs::read_to_string("docs/build/spec/examples/orchestrators/engineering.orchestrator.yaml")
+            .expect("read engineering fixture");
+    let product_yaml =
+        fs::read_to_string("docs/build/spec/examples/orchestrators/product.orchestrator.yaml")
+            .expect("read product fixture");
+    let engineering: OrchestratorConfig =
+        serde_yaml::from_str(&engineering_yaml).expect("parse engineering fixture");
+    let product: OrchestratorConfig =
+        serde_yaml::from_str(&product_yaml).expect("parse product fixture");
+
+    let engineering_workflow = engineering
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == "code_with_reviews")
+        .expect("workflow");
+    let plan_review_step = engineering_workflow
+        .steps
+        .iter()
+        .find(|step| step.id == "plan_review")
+        .expect("step");
+    let output_paths =
+        resolve_step_output_paths(Path::new("/tmp/.direclaw"), "run-1", plan_review_step, 2)
+            .expect("output paths");
+    let run = WorkflowRunRecord {
+        run_id: "run-1".to_string(),
+        workflow_id: engineering_workflow.id.clone(),
+        state: RunState::Running,
+        inputs: Map::from_iter([("channel".to_string(), Value::String("slack".to_string()))]),
+        current_step_id: Some("plan_review".to_string()),
+        current_attempt: Some(2),
+        started_at: 10,
+        updated_at: 12,
+        total_iterations: 2,
+        source_message_id: None,
+        selector_id: None,
+        selected_workflow: None,
+        status_conversation_id: None,
+    };
+    let rendered = render_step_prompt(
+        &run,
+        engineering_workflow,
+        plan_review_step,
+        2,
+        Path::new("/tmp/workspace/run-1"),
+        &output_paths,
+        &BTreeMap::from_iter([(
+            "plan_create".to_string(),
+            Map::from_iter([(
+                "plan_doc".to_string(),
+                Value::String("Plan body".to_string()),
+            )]),
+        )]),
+    )
+    .expect("render engineering");
+    assert!(rendered.prompt.contains("Plan body"));
+    assert!(rendered
+        .prompt
+        .contains("review/decision__run-1__plan_review__a2.txt"));
+    assert!(!rendered.prompt.contains("{{"));
+
+    let product_workflow = product
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == "product_default")
+        .expect("workflow");
+    let product_step = product_workflow.steps.first().expect("step");
+    let run = WorkflowRunRecord {
+        run_id: "run-2".to_string(),
+        workflow_id: product_workflow.id.clone(),
+        state: RunState::Running,
+        inputs: Map::from_iter([(
+            "user_message".to_string(),
+            Value::String("Summarize roadmap tradeoffs".to_string()),
+        )]),
+        current_step_id: Some(product_step.id.clone()),
+        current_attempt: Some(1),
+        started_at: 20,
+        updated_at: 21,
+        total_iterations: 1,
+        source_message_id: None,
+        selector_id: None,
+        selected_workflow: None,
+        status_conversation_id: None,
+    };
+    let rendered = render_step_prompt(
+        &run,
+        product_workflow,
+        product_step,
+        1,
+        Path::new("/tmp/workspace/run-2"),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect("render product");
+    assert!(rendered.prompt.contains("Summarize roadmap tradeoffs"));
+}
+
+#[test]
+fn step_prompt_renderer_fails_fast_on_missing_required_placeholder() {
+    let orchestrator_yaml =
+        fs::read_to_string("docs/build/spec/examples/orchestrators/product.orchestrator.yaml")
+            .expect("read product fixture");
+    let orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&orchestrator_yaml).expect("parse product fixture");
+    let workflow = orchestrator
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == "product_default")
+        .expect("workflow");
+    let step = workflow.steps.first().expect("step");
+    let run = WorkflowRunRecord {
+        run_id: "run-missing".to_string(),
+        workflow_id: workflow.id.clone(),
+        state: RunState::Running,
+        inputs: Map::new(),
+        current_step_id: Some(step.id.clone()),
+        current_attempt: Some(1),
+        started_at: 1,
+        updated_at: 2,
+        total_iterations: 0,
+        source_message_id: None,
+        selector_id: None,
+        selected_workflow: None,
+        status_conversation_id: None,
+    };
+    let err = render_step_prompt(
+        &run,
+        workflow,
+        step,
+        1,
+        Path::new("/tmp/workspace/run"),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .expect_err("missing placeholder must fail");
+    assert!(err.to_string().contains("missing required placeholder"));
+}
+
+#[test]
+fn malformed_envelope_increments_attempts_and_respects_retry_limit() {
+    let dir = tempdir().expect("tempdir");
+    let bad = dir.path().join("claude-bad");
+    write_script(&bad, "#!/bin/sh\necho 'missing envelope'\n");
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: s1
+        type: agent_task
+        agent: worker
+        prompt: test
+        limits:
+          max_retries: 1
+"#,
+    )
+    .expect("orchestrator");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store.create_run("run-bad-envelope", "wf", 1).expect("run");
+    let engine =
+        WorkflowEngine::new(store.clone(), orchestrator).with_runner_binaries(RunnerBinaries {
+            anthropic: bad.display().to_string(),
+            openai: "unused".to_string(),
+        });
+
+    let err = engine
+        .start("run-bad-envelope", 2)
+        .expect_err("must fail after retries");
+    assert!(err.to_string().contains("missing [workflow_result]"));
+    let run = store.load_run("run-bad-envelope").expect("run");
+    assert_eq!(run.state, RunState::Failed);
+
+    let attempt_1 = store
+        .load_step_attempt("run-bad-envelope", "s1", 1)
+        .expect("attempt1");
+    let attempt_2 = store
+        .load_step_attempt("run-bad-envelope", "s1", 2)
+        .expect("attempt2");
+    assert_eq!(attempt_1.state, "failed_retryable");
+    assert_eq!(attempt_2.state, "failed");
+}
+
+#[test]
+fn step_provider_failures_persist_invocation_logs_and_fail_run() {
+    let dir = tempdir().expect("tempdir");
+    let non_zero = dir.path().join("claude-fail");
+    write_script(&non_zero, "#!/bin/sh\necho boom 1>&2\nexit 7\n");
+    let timeout = dir.path().join("claude-timeout");
+    write_script(&timeout, "#!/bin/sh\nsleep 2\necho late\n");
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: s1
+        type: agent_task
+        agent: worker
+        prompt: test
+        limits:
+          max_retries: 0
+workflow_orchestration:
+  default_step_timeout_seconds: 1
+  max_step_timeout_seconds: 1
+"#,
+    )
+    .expect("orchestrator");
+
+    for (name, binary) in [("run-fail", non_zero), ("run-timeout", timeout)] {
+        let state_root = dir.path().join(format!(".direclaw-{name}"));
+        bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+        let store = WorkflowRunStore::new(&state_root);
+        store.create_run(name, "wf", 1).expect("run");
+        let engine = WorkflowEngine::new(store.clone(), orchestrator.clone()).with_runner_binaries(
+            RunnerBinaries {
+                anthropic: binary.display().to_string(),
+                openai: "unused".to_string(),
+            },
+        );
+        engine.start(name, 2).expect_err("must fail");
+        let run = store.load_run(name).expect("load run");
+        assert_eq!(run.state, RunState::Failed);
+        let log_path = state_root.join(format!(
+            "workflows/runs/{name}/steps/s1/attempts/1/provider_invocation.json"
+        ));
+        assert!(log_path.is_file());
+    }
+}
+
+#[test]
+fn step_workspace_denial_is_logged_and_run_fails_safely() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let private_workspace = dir
+        .path()
+        .join("workspace")
+        .join("engineering_orchestrator");
+    let denied_agent_workspace = dir.path().join("outside-agent-workspace");
+    let settings: Settings = serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {{}}
+orchestrators:
+  engineering_orchestrator:
+    private_workspace: {}
+    shared_access: []
+channel_profiles: {{}}
+monitoring: {{}}
+channels: {{}}
+"#,
+        private_workspace.display()
+    ))
+    .expect("settings");
+    let workspace_context = direclaw::orchestrator::resolve_workspace_access_context(
+        &settings,
+        "engineering_orchestrator",
+    )
+    .expect("workspace context");
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(&format!(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+    private_workspace: {}
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: s1
+        type: agent_task
+        agent: worker
+        prompt: test
+"#,
+        denied_agent_workspace.display()
+    ))
+    .expect("orchestrator");
+    let store = WorkflowRunStore::new(&state_root);
+    store.create_run("run-denied", "wf", 1).expect("run");
+    let engine = WorkflowEngine::new(store.clone(), orchestrator)
+        .with_workspace_access_context(workspace_context)
+        .with_runner_binaries(mock_runner_binaries(dir.path()));
+    let run_workspace = private_workspace.join("workflows/runs/run-denied/workspace");
+    assert!(!run_workspace.exists());
+    assert!(!denied_agent_workspace.exists());
+    let err = engine.start("run-denied", 2).expect_err("must fail");
+    assert!(err.to_string().contains("workspace access denied"));
+    let run = store.load_run("run-denied").expect("load run");
+    assert_eq!(run.state, RunState::Failed);
+    assert!(!run_workspace.exists());
+    assert!(!denied_agent_workspace.exists());
+    let security_log =
+        fs::read_to_string(state_root.join("logs/security.log")).expect("read security");
+    assert!(security_log.contains("workspace access denied"));
+}
+
+#[test]
+fn workflow_result_envelope_rejects_multiple_blocks() {
+    let raw = "[workflow_result]{\"a\":1}[/workflow_result] x [workflow_result]{\"b\":2}[/workflow_result]";
+    let err = parse_workflow_result_envelope(raw).expect_err("multiple envelopes should fail");
+    assert!(err.to_string().contains("multiple [workflow_result]"));
 }
