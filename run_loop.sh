@@ -44,13 +44,13 @@ for x in "${task_files[@]}"; do
   echo "=== Processing task: $x ==="
 
   echo "  implement tasks from '$x'"
-  codex exec "Implement all tasks described in file '$x'."
+  codex exec --yolo "Implement all tasks described in file '$x'."
 
   echo "  review work '$x', output report to '$y'"
-  codex exec "Review the uncommitted work (or the last commit if there are no uncommitted changes) from task file '$x' against the spec doc in '$SPEC'. Write a review for anything that needs actioning to '$y'."
+  codex exec --yolo "Review the uncommitted work (or the last commit if there are no uncommitted changes) from task file '$x' against the spec doc in '$SPEC'. Write a review for anything that needs actioning to '$y'."
 
   echo "  action the review items from '$y'"
-  codex exec "Rectify all issues identified in review doc '$y' and then commit all uncommitted work."
+  codex exec --yolo "Rectify all issues identified in review doc '$y' and then commit all uncommitted work."
 
   echo "=== Completed task: $x ==="
   echo
