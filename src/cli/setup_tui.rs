@@ -23,7 +23,12 @@ pub(super) fn cmd_setup() -> Result<String, String> {
         .map_err(map_config_err)?
         .exists();
     let mut state = load_setup_bootstrap(&paths)?;
-    if is_interactive_setup() {
+    if let Some(scripted_keys) = load_scripted_setup_keys()? {
+        match run_setup_scripted(&mut state, scripted_keys)? {
+            SetupExit::Save => {}
+            SetupExit::Cancel => return Ok("setup canceled".to_string()),
+        }
+    } else if is_interactive_setup() {
         match run_setup_tui(&mut state, config_exists)? {
             SetupExit::Save => {}
             SetupExit::Cancel => return Ok("setup canceled".to_string()),
@@ -1188,6 +1193,38 @@ fn is_interactive_setup() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
+fn load_scripted_setup_keys() -> Result<Option<Vec<crossterm::event::KeyEvent>>, String> {
+    let Ok(raw) = std::env::var("DIRECLAW_SETUP_SCRIPT_KEYS") else {
+        return Ok(None);
+    };
+    let mut keys = Vec::new();
+    for token in raw.split(',') {
+        let normalized = token.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        let key = match normalized.as_str() {
+            "up" => crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            "down" => crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            "enter" => crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            "esc" => crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            "ctrl-c" => crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            "a" => crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            "d" => crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            "e" => crossterm::event::KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+            "t" => crossterm::event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            "s" => crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            other => {
+                return Err(format!(
+                    "invalid DIRECLAW_SETUP_SCRIPT_KEYS token `{other}`; valid tokens: up,down,enter,esc,ctrl-c,a,d,e,t,s"
+                ));
+            }
+        };
+        keys.push(key);
+    }
+    Ok(Some(keys))
+}
+
 fn default_model_for_provider(provider: &str) -> &'static str {
     if provider == "openai" {
         "gpt-5.3-codex"
@@ -1344,6 +1381,418 @@ const SETUP_MENU_ITEMS: [&str; 5] = [
     "Cancel",
 ];
 
+const ROOT_STATUS_TEXT: &str = "Enter opens a section. Esc cancels setup.";
+const ROOT_HINT_TEXT: &str = "Up/Down move | Enter open | Esc cancel";
+const WORKSPACES_STATUS_TEXT: &str = "Enter to edit workspace path. Esc back.";
+const WORKSPACES_HINT_TEXT: &str = "Enter edit | Esc back";
+const INITIAL_DEFAULTS_STATUS_TEXT: &str = "Enter to edit/toggle. Esc back.";
+const INITIAL_DEFAULTS_HINT_TEXT: &str = "Up/Down move | Enter edit/toggle | Esc back";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupScreen {
+    Root,
+    Workspaces,
+    Orchestrators,
+    InitialAgentDefaults,
+    NewWorkflowTemplate,
+    OrchestratorDetail,
+    OrchestrationLimits,
+    Workflows,
+    WorkflowDetail,
+    WorkflowSteps,
+    WorkflowStepDetail,
+    AddStarterWorkflows,
+    Agents,
+    AgentDetail,
+}
+
+const ALL_SETUP_SCREENS: [SetupScreen; 14] = [
+    SetupScreen::Root,
+    SetupScreen::Workspaces,
+    SetupScreen::Orchestrators,
+    SetupScreen::InitialAgentDefaults,
+    SetupScreen::NewWorkflowTemplate,
+    SetupScreen::OrchestratorDetail,
+    SetupScreen::OrchestrationLimits,
+    SetupScreen::Workflows,
+    SetupScreen::WorkflowDetail,
+    SetupScreen::WorkflowSteps,
+    SetupScreen::WorkflowStepDetail,
+    SetupScreen::AddStarterWorkflows,
+    SetupScreen::Agents,
+    SetupScreen::AgentDetail,
+];
+
+impl SetupScreen {
+    fn as_str(self) -> &'static str {
+        match self {
+            SetupScreen::Root => "root",
+            SetupScreen::Workspaces => "workspaces",
+            SetupScreen::Orchestrators => "orchestrators",
+            SetupScreen::InitialAgentDefaults => "initial_agent_defaults",
+            SetupScreen::NewWorkflowTemplate => "new_workflow_template",
+            SetupScreen::OrchestratorDetail => "orchestrator_detail",
+            SetupScreen::OrchestrationLimits => "orchestration_limits",
+            SetupScreen::Workflows => "workflows",
+            SetupScreen::WorkflowDetail => "workflow_detail",
+            SetupScreen::WorkflowSteps => "workflow_steps",
+            SetupScreen::WorkflowStepDetail => "workflow_step_detail",
+            SetupScreen::AddStarterWorkflows => "add_starter_workflows",
+            SetupScreen::Agents => "agents",
+            SetupScreen::AgentDetail => "agent_detail",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupAction {
+    MovePrev,
+    MoveNext,
+    Enter,
+    Back,
+    Save,
+    Cancel,
+    Edit,
+    Add,
+    Delete,
+    Toggle,
+    ReconcileSelection(usize),
+}
+
+impl SetupAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            SetupAction::MovePrev => "move_prev",
+            SetupAction::MoveNext => "move_next",
+            SetupAction::Enter => "enter",
+            SetupAction::Back => "back",
+            SetupAction::Save => "save",
+            SetupAction::Cancel => "cancel",
+            SetupAction::Edit => "edit",
+            SetupAction::Add => "add",
+            SetupAction::Delete => "delete",
+            SetupAction::Toggle => "toggle",
+            SetupAction::ReconcileSelection(_) => "reconcile_selection",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NavState {
+    screen: SetupScreen,
+    selected: usize,
+    status_text: String,
+    hint_text: String,
+}
+
+impl NavState {
+    fn root() -> Self {
+        Self {
+            screen: SetupScreen::Root,
+            selected: 0,
+            status_text: ROOT_STATUS_TEXT.to_string(),
+            hint_text: ROOT_HINT_TEXT.to_string(),
+        }
+    }
+
+    fn clamp_selection(&mut self, len: usize) {
+        self.selected = clamp_selection(self.selected, len);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SetupNavEffect {
+    None,
+    OpenScreen(SetupScreen),
+    OpenOrchestratorManager,
+    EditWorkspacePath,
+    ToggleDefaultProvider,
+    EditDefaultModel,
+    SaveSetup,
+    CancelSetup,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SetupTransition {
+    effect: SetupNavEffect,
+    feedback: Option<String>,
+}
+
+impl SetupTransition {
+    fn no_op(feedback: Option<String>) -> Self {
+        Self {
+            effect: SetupNavEffect::None,
+            feedback,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SetupNavError {
+    InvalidTransition {
+        screen: SetupScreen,
+        action: SetupAction,
+    },
+}
+
+impl std::fmt::Display for SetupNavError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetupNavError::InvalidTransition { screen, action } => {
+                write!(
+                    f,
+                    "invalid setup transition: screen={} action={}",
+                    screen.as_str(),
+                    action.as_str()
+                )
+            }
+        }
+    }
+}
+
+fn clamp_selection(selected: usize, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    selected.min(len - 1)
+}
+
+fn setup_action_from_key(
+    screen: SetupScreen,
+    key: crossterm::event::KeyEvent,
+) -> Option<SetupAction> {
+    if key.kind == KeyEventKind::Release {
+        return None;
+    }
+    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(SetupAction::Cancel);
+    }
+    match key.code {
+        KeyCode::Up => Some(SetupAction::MovePrev),
+        KeyCode::Down => Some(SetupAction::MoveNext),
+        KeyCode::Esc => Some(if screen == SetupScreen::Root {
+            SetupAction::Cancel
+        } else {
+            SetupAction::Back
+        }),
+        KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => Some(SetupAction::Enter),
+        KeyCode::Char('a') => Some(SetupAction::Add),
+        KeyCode::Char('d') => Some(SetupAction::Delete),
+        KeyCode::Char('e') => Some(SetupAction::Edit),
+        KeyCode::Char('t') => Some(SetupAction::Toggle),
+        KeyCode::Char('s') => Some(SetupAction::Save),
+        _ => None,
+    }
+}
+
+fn setup_transition(
+    state: &mut NavState,
+    action: SetupAction,
+    root_item_count: usize,
+) -> Result<SetupTransition, SetupNavError> {
+    if let SetupAction::ReconcileSelection(len) = action {
+        let previous = state.selected;
+        state.clamp_selection(len);
+        if previous != state.selected {
+            return Ok(SetupTransition::no_op(Some(
+                "selection adjusted".to_string(),
+            )));
+        }
+        return Ok(SetupTransition::no_op(None));
+    }
+
+    match state.screen {
+        SetupScreen::Root => match action {
+            SetupAction::MovePrev => {
+                state.selected = state.selected.saturating_sub(1);
+                Ok(SetupTransition::no_op(None))
+            }
+            SetupAction::MoveNext => {
+                let max_index = root_item_count.saturating_sub(1);
+                state.selected = std::cmp::min(state.selected + 1, max_index);
+                Ok(SetupTransition::no_op(None))
+            }
+            SetupAction::Enter => {
+                let effect = match state.selected {
+                    0 => {
+                        state.screen = SetupScreen::Workspaces;
+                        state.selected = 0;
+                        state.status_text = WORKSPACES_STATUS_TEXT.to_string();
+                        state.hint_text = WORKSPACES_HINT_TEXT.to_string();
+                        SetupNavEffect::OpenScreen(SetupScreen::Workspaces)
+                    }
+                    1 => SetupNavEffect::OpenOrchestratorManager,
+                    2 => {
+                        state.screen = SetupScreen::InitialAgentDefaults;
+                        state.selected = 0;
+                        state.status_text = INITIAL_DEFAULTS_STATUS_TEXT.to_string();
+                        state.hint_text = INITIAL_DEFAULTS_HINT_TEXT.to_string();
+                        SetupNavEffect::OpenScreen(SetupScreen::InitialAgentDefaults)
+                    }
+                    3 => SetupNavEffect::SaveSetup,
+                    _ => SetupNavEffect::CancelSetup,
+                };
+                Ok(SetupTransition {
+                    effect,
+                    feedback: None,
+                })
+            }
+            SetupAction::Back => Ok(SetupTransition {
+                effect: SetupNavEffect::CancelSetup,
+                feedback: None,
+            }),
+            SetupAction::Save => Ok(SetupTransition {
+                effect: SetupNavEffect::SaveSetup,
+                feedback: None,
+            }),
+            SetupAction::Cancel => Ok(SetupTransition {
+                effect: SetupNavEffect::CancelSetup,
+                feedback: None,
+            }),
+            SetupAction::Edit
+            | SetupAction::Add
+            | SetupAction::Delete
+            | SetupAction::Toggle
+            | SetupAction::ReconcileSelection(_) => Err(SetupNavError::InvalidTransition {
+                screen: state.screen,
+                action,
+            }),
+        },
+        SetupScreen::Workspaces => match action {
+            SetupAction::MovePrev | SetupAction::MoveNext => Ok(SetupTransition::no_op(None)),
+            SetupAction::Enter | SetupAction::Edit => Ok(SetupTransition {
+                effect: SetupNavEffect::EditWorkspacePath,
+                feedback: None,
+            }),
+            SetupAction::Back => {
+                state.screen = SetupScreen::Root;
+                state.selected = 0;
+                state.hint_text = ROOT_HINT_TEXT.to_string();
+                Ok(SetupTransition::no_op(Some(
+                    "Closed Workspaces.".to_string(),
+                )))
+            }
+            SetupAction::Cancel => Ok(SetupTransition {
+                effect: SetupNavEffect::CancelSetup,
+                feedback: None,
+            }),
+            SetupAction::Add | SetupAction::Delete | SetupAction::Toggle | SetupAction::Save => {
+                Err(SetupNavError::InvalidTransition {
+                    screen: state.screen,
+                    action,
+                })
+            }
+            SetupAction::ReconcileSelection(_) => unreachable!(),
+        },
+        SetupScreen::InitialAgentDefaults => match action {
+            SetupAction::MovePrev => {
+                state.selected = state.selected.saturating_sub(1);
+                Ok(SetupTransition::no_op(None))
+            }
+            SetupAction::MoveNext => {
+                state.selected = std::cmp::min(state.selected + 1, 1);
+                Ok(SetupTransition::no_op(None))
+            }
+            SetupAction::Enter => {
+                let effect = if state.selected == 0 {
+                    SetupNavEffect::ToggleDefaultProvider
+                } else {
+                    SetupNavEffect::EditDefaultModel
+                };
+                Ok(SetupTransition {
+                    effect,
+                    feedback: None,
+                })
+            }
+            SetupAction::Toggle if state.selected == 0 => Ok(SetupTransition {
+                effect: SetupNavEffect::ToggleDefaultProvider,
+                feedback: None,
+            }),
+            SetupAction::Edit if state.selected == 1 => Ok(SetupTransition {
+                effect: SetupNavEffect::EditDefaultModel,
+                feedback: None,
+            }),
+            SetupAction::Back => {
+                state.screen = SetupScreen::Root;
+                state.selected = 0;
+                state.hint_text = ROOT_HINT_TEXT.to_string();
+                Ok(SetupTransition::no_op(Some(
+                    "Closed Initial Agent Defaults.".to_string(),
+                )))
+            }
+            SetupAction::Cancel => Ok(SetupTransition {
+                effect: SetupNavEffect::CancelSetup,
+                feedback: None,
+            }),
+            SetupAction::Add | SetupAction::Delete | SetupAction::Save => {
+                Err(SetupNavError::InvalidTransition {
+                    screen: state.screen,
+                    action,
+                })
+            }
+            SetupAction::Edit | SetupAction::Toggle => Ok(SetupTransition::no_op(Some(
+                "Choose a compatible field before editing.".to_string(),
+            ))),
+            SetupAction::ReconcileSelection(_) => unreachable!(),
+        },
+        _ => match action {
+            SetupAction::Back => {
+                state.screen = SetupScreen::Root;
+                state.selected = 0;
+                state.hint_text = ROOT_HINT_TEXT.to_string();
+                Ok(SetupTransition::no_op(Some(
+                    "Returned to setup menu.".to_string(),
+                )))
+            }
+            SetupAction::Cancel => Ok(SetupTransition {
+                effect: SetupNavEffect::CancelSetup,
+                feedback: None,
+            }),
+            SetupAction::Save | SetupAction::ReconcileSelection(_) => {
+                Err(SetupNavError::InvalidTransition {
+                    screen: state.screen,
+                    action,
+                })
+            }
+            SetupAction::MovePrev
+            | SetupAction::MoveNext
+            | SetupAction::Enter
+            | SetupAction::Edit
+            | SetupAction::Add
+            | SetupAction::Delete
+            | SetupAction::Toggle => Ok(SetupTransition::no_op(Some(
+                "Action is not mapped for this setup screen.".to_string(),
+            ))),
+        },
+    }
+}
+
+struct SetupMenuViewModel {
+    mode_line: String,
+    items: Vec<String>,
+    selected: usize,
+    status_text: String,
+    hint_text: String,
+}
+
+fn project_setup_menu_view_model(config_exists: bool, state: &NavState) -> SetupMenuViewModel {
+    debug_assert!(ALL_SETUP_SCREENS.contains(&state.screen));
+    SetupMenuViewModel {
+        mode_line: if config_exists {
+            "Mode: existing setup (edit + apply)".to_string()
+        } else {
+            "Mode: first-time setup".to_string()
+        },
+        items: SETUP_MENU_ITEMS
+            .iter()
+            .map(|item| (*item).to_string())
+            .collect(),
+        selected: clamp_selection(state.selected, SETUP_MENU_ITEMS.len()),
+        status_text: state.status_text.clone(),
+        hint_text: state.hint_text.clone(),
+    }
+}
+
 fn run_setup_tui(bootstrap: &mut SetupState, config_exists: bool) -> Result<SetupExit, String> {
     let mut stdout = io::stdout();
     enable_raw_mode().map_err(|e| format!("failed to enable raw mode: {e}"))?;
@@ -1364,12 +1813,19 @@ fn run_setup_tui_loop(
     config_exists: bool,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<SetupExit, String> {
-    let mut selected = 0usize;
-    let mut status = "Enter opens a section. Esc cancels setup.".to_string();
+    let mut nav = NavState::root();
     loop {
-        terminal
-            .draw(|frame| draw_setup_ui(frame, config_exists, selected, &status))
-            .map_err(|e| format!("failed to render setup ui: {e}"))?;
+        let item_count = setup_screen_item_count(nav.screen);
+        let transition = setup_transition(
+            &mut nav,
+            SetupAction::ReconcileSelection(item_count),
+            SETUP_MENU_ITEMS.len(),
+        )
+        .map_err(|err| err.to_string())?;
+        if let Some(feedback) = transition.feedback {
+            nav.status_text = feedback;
+        }
+        draw_active_setup_screen(terminal, config_exists, &nav, bootstrap)?;
         if !event::poll(Duration::from_millis(250))
             .map_err(|e| format!("failed to poll setup input: {e}"))?
         {
@@ -1379,154 +1835,213 @@ fn run_setup_tui_loop(
         let Event::Key(key) = ev else {
             continue;
         };
-        if key.kind == KeyEventKind::Release {
+        let Some(action) = setup_action_from_key(nav.screen, key) else {
             continue;
-        }
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            return Ok(SetupExit::Cancel);
-        }
-        match key.code {
-            KeyCode::Up => selected = selected.saturating_sub(1),
-            KeyCode::Down => {
-                selected = std::cmp::min(selected + 1, SETUP_MENU_ITEMS.len().saturating_sub(1))
+        };
+        let transition = match setup_transition(&mut nav, action, SETUP_MENU_ITEMS.len()) {
+            Ok(transition) => transition,
+            Err(err) => {
+                nav.status_text = err.to_string();
+                continue;
             }
-            KeyCode::Esc => return Ok(SetupExit::Cancel),
-            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => match selected {
-                0 => {
-                    if let Some(message) = run_workspaces_tui(terminal, bootstrap, config_exists)? {
-                        status = message;
-                    }
-                }
-                1 => {
-                    if let Some(message) =
-                        run_orchestrator_manager_tui(terminal, bootstrap, config_exists)?
-                    {
-                        status = message;
-                    }
-                }
-                2 => {
-                    if let Some(message) =
-                        run_initial_defaults_tui(terminal, bootstrap, config_exists)?
-                    {
-                        status = message;
-                    }
-                }
-                3 => return Ok(SetupExit::Save),
-                _ => return Ok(SetupExit::Cancel),
-            },
-            _ => {}
+        };
+        if let Some(feedback) = transition.feedback {
+            nav.status_text = feedback;
+        }
+        if let Some(exit) = apply_setup_effect_tui(
+            terminal,
+            bootstrap,
+            config_exists,
+            &mut nav,
+            transition.effect,
+        )? {
+            return Ok(exit);
         }
     }
 }
 
-fn run_workspaces_tui(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupState,
-    config_exists: bool,
-) -> Result<Option<String>, String> {
-    let mut status = "Enter to edit workspace path. Esc back.".to_string();
-    loop {
-        let items = vec![format!(
-            "Workspace Path: {}",
-            bootstrap.workspaces_path.display()
-        )];
-        draw_list_screen(
-            terminal,
-            "Setup > Workspaces",
-            config_exists,
-            &items,
-            0,
-            &status,
-            "Enter edit | Esc back",
-        )?;
-        let ev = event::read().map_err(|e| format!("failed to read workspaces input: {e}"))?;
-        let Event::Key(key) = ev else {
-            continue;
-        };
-        if key.kind == KeyEventKind::Release {
-            continue;
-        }
-        match key.code {
-            KeyCode::Esc => return Ok(Some("Closed Workspaces.".to_string())),
-            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
-                if let Some(value) = prompt_line_tui(
-                    terminal,
-                    "Workspace Path",
-                    "Enter workspace path:",
-                    &bootstrap.workspaces_path.display().to_string(),
-                )? {
-                    if value.trim().is_empty() {
-                        status = "workspace path must be non-empty".to_string();
-                    } else {
-                        bootstrap.set_workspaces_path(PathBuf::from(value.trim()));
-                        status = "workspace path updated".to_string();
-                    }
-                }
-            }
-            _ => {}
-        }
+fn setup_screen_item_count(screen: SetupScreen) -> usize {
+    match screen {
+        SetupScreen::Root => SETUP_MENU_ITEMS.len(),
+        SetupScreen::Workspaces => 1,
+        SetupScreen::InitialAgentDefaults => 2,
+        _ => 0,
     }
 }
 
-fn run_initial_defaults_tui(
+fn draw_active_setup_screen(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config_exists: bool,
+    nav: &NavState,
+    bootstrap: &SetupState,
+) -> Result<(), String> {
+    match nav.screen {
+        SetupScreen::Root => {
+            let view_model = project_setup_menu_view_model(config_exists, nav);
+            terminal
+                .draw(|frame| draw_setup_ui(frame, &view_model))
+                .map_err(|e| format!("failed to render setup ui: {e}"))?;
+        }
+        SetupScreen::Workspaces => {
+            let items = vec![format!(
+                "Workspace Path: {}",
+                bootstrap.workspaces_path.display()
+            )];
+            draw_list_screen(
+                terminal,
+                "Setup > Workspaces",
+                config_exists,
+                &items,
+                0,
+                &nav.status_text,
+                &nav.hint_text,
+            )?;
+        }
+        SetupScreen::InitialAgentDefaults => {
+            let items = vec![
+                format!("Provider: {}", bootstrap.provider),
+                format!("Model: {}", bootstrap.model),
+            ];
+            draw_list_screen(
+                terminal,
+                "Setup > Initial Agent Defaults",
+                config_exists,
+                &items,
+                nav.selected,
+                &nav.status_text,
+                &nav.hint_text,
+            )?;
+        }
+        _ => {
+            let view_model = project_setup_menu_view_model(config_exists, nav);
+            terminal
+                .draw(|frame| draw_setup_ui(frame, &view_model))
+                .map_err(|e| format!("failed to render setup ui: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn toggle_default_provider(bootstrap: &mut SetupState) -> String {
+    let next_provider = if bootstrap.provider == "anthropic" {
+        "openai".to_string()
+    } else {
+        "anthropic".to_string()
+    };
+    bootstrap.set_default_provider(next_provider);
+    if bootstrap.model == "sonnet" || bootstrap.model == "gpt-5.3-codex" {
+        bootstrap.set_default_model(default_model_for_provider(&bootstrap.provider).to_string());
+    }
+    format!("provider set to {}", bootstrap.provider)
+}
+
+fn apply_setup_effect_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     bootstrap: &mut SetupState,
     config_exists: bool,
-) -> Result<Option<String>, String> {
-    let mut selected = 0usize;
-    let mut status = "Enter to edit/toggle. Esc back.".to_string();
-    loop {
-        let items = vec![
-            format!("Provider: {}", bootstrap.provider),
-            format!("Model: {}", bootstrap.model),
-        ];
-        draw_list_screen(
-            terminal,
-            "Setup > Initial Agent Defaults",
-            config_exists,
-            &items,
-            selected,
-            &status,
-            "Up/Down move | Enter edit/toggle | Esc back",
-        )?;
-        let ev = event::read().map_err(|e| format!("failed to read defaults input: {e}"))?;
-        let Event::Key(key) = ev else {
-            continue;
-        };
-        if key.kind == KeyEventKind::Release {
-            continue;
+    nav: &mut NavState,
+    effect: SetupNavEffect,
+) -> Result<Option<SetupExit>, String> {
+    match effect {
+        SetupNavEffect::None | SetupNavEffect::OpenScreen(_) => Ok(None),
+        SetupNavEffect::OpenOrchestratorManager => {
+            if let Some(message) = run_orchestrator_manager_tui(terminal, bootstrap, config_exists)?
+            {
+                nav.status_text = message;
+            }
+            Ok(None)
         }
-        match key.code {
-            KeyCode::Esc => return Ok(Some("Closed Initial Agent Defaults.".to_string())),
-            KeyCode::Up => selected = selected.saturating_sub(1),
-            KeyCode::Down => selected = std::cmp::min(selected + 1, 1),
-            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
-                if selected == 0 {
-                    let next_provider = if bootstrap.provider == "anthropic" {
-                        "openai".to_string()
-                    } else {
-                        "anthropic".to_string()
-                    };
-                    bootstrap.set_default_provider(next_provider);
-                    if bootstrap.model == "sonnet" || bootstrap.model == "gpt-5.3-codex" {
-                        bootstrap.set_default_model(
-                            default_model_for_provider(&bootstrap.provider).to_string(),
-                        );
-                    }
-                    status = format!("provider set to {}", bootstrap.provider);
-                } else if let Some(value) =
-                    prompt_line_tui(terminal, "Default Model", "Enter model:", &bootstrap.model)?
-                {
-                    if value.trim().is_empty() {
-                        status = "model must be non-empty".to_string();
-                    } else {
-                        bootstrap.set_default_model(value.trim().to_string());
-                        status = "model updated".to_string();
-                    }
+        SetupNavEffect::EditWorkspacePath => {
+            if let Some(value) = prompt_line_tui(
+                terminal,
+                "Workspace Path",
+                "Enter workspace path:",
+                &bootstrap.workspaces_path.display().to_string(),
+            )? {
+                if value.trim().is_empty() {
+                    nav.status_text = "workspace path must be non-empty".to_string();
+                } else {
+                    bootstrap.set_workspaces_path(PathBuf::from(value.trim()));
+                    nav.status_text = "workspace path updated".to_string();
                 }
             }
-            _ => {}
+            Ok(None)
         }
+        SetupNavEffect::ToggleDefaultProvider => {
+            nav.status_text = toggle_default_provider(bootstrap);
+            Ok(None)
+        }
+        SetupNavEffect::EditDefaultModel => {
+            if let Some(value) =
+                prompt_line_tui(terminal, "Default Model", "Enter model:", &bootstrap.model)?
+            {
+                if value.trim().is_empty() {
+                    nav.status_text = "model must be non-empty".to_string();
+                } else {
+                    bootstrap.set_default_model(value.trim().to_string());
+                    nav.status_text = "model updated".to_string();
+                }
+            }
+            Ok(None)
+        }
+        SetupNavEffect::SaveSetup => Ok(Some(SetupExit::Save)),
+        SetupNavEffect::CancelSetup => Ok(Some(SetupExit::Cancel)),
+    }
+}
+
+fn run_setup_scripted(
+    bootstrap: &mut SetupState,
+    scripted_keys: Vec<crossterm::event::KeyEvent>,
+) -> Result<SetupExit, String> {
+    let mut nav = NavState::root();
+    for key in scripted_keys {
+        let item_count = setup_screen_item_count(nav.screen);
+        let reconcile = setup_transition(
+            &mut nav,
+            SetupAction::ReconcileSelection(item_count),
+            SETUP_MENU_ITEMS.len(),
+        )
+        .map_err(|err| err.to_string())?;
+        if let Some(feedback) = reconcile.feedback {
+            nav.status_text = feedback;
+        }
+        let Some(action) = setup_action_from_key(nav.screen, key) else {
+            continue;
+        };
+        let transition = setup_transition(&mut nav, action, SETUP_MENU_ITEMS.len())
+            .map_err(|e| e.to_string())?;
+        if let Some(feedback) = transition.feedback {
+            nav.status_text = feedback;
+        }
+        if let Some(exit) = apply_setup_effect_scripted(bootstrap, &mut nav, transition.effect)? {
+            return Ok(exit);
+        }
+    }
+    Err("scripted setup did not terminate; include save/cancel key".to_string())
+}
+
+fn apply_setup_effect_scripted(
+    bootstrap: &mut SetupState,
+    nav: &mut NavState,
+    effect: SetupNavEffect,
+) -> Result<Option<SetupExit>, String> {
+    match effect {
+        SetupNavEffect::None | SetupNavEffect::OpenScreen(_) => Ok(None),
+        SetupNavEffect::OpenOrchestratorManager => {
+            Err("scripted setup does not support orchestrator manager actions".to_string())
+        }
+        SetupNavEffect::EditWorkspacePath => {
+            Err("scripted setup does not support workspace path prompt actions".to_string())
+        }
+        SetupNavEffect::ToggleDefaultProvider => {
+            nav.status_text = toggle_default_provider(bootstrap);
+            Ok(None)
+        }
+        SetupNavEffect::EditDefaultModel => {
+            Err("scripted setup does not support default model prompt actions".to_string())
+        }
+        SetupNavEffect::SaveSetup => Ok(Some(SetupExit::Save)),
+        SetupNavEffect::CancelSetup => Ok(Some(SetupExit::Cancel)),
     }
 }
 
@@ -3685,7 +4200,7 @@ fn draw_list_screen(
     Ok(())
 }
 
-fn draw_setup_ui(frame: &mut Frame<'_>, config_exists: bool, selected: usize, status: &str) {
+fn draw_setup_ui(frame: &mut Frame<'_>, view_model: &SetupMenuViewModel) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -3702,20 +4217,16 @@ fn draw_setup_ui(frame: &mut Frame<'_>, config_exists: bool, selected: usize, st
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(if config_exists {
-            "Mode: existing setup (edit + apply)"
-        } else {
-            "Mode: first-time setup"
-        }),
+        Line::from(view_model.mode_line.clone()),
     ])
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(header, chunks[0]);
 
-    let mut items = Vec::with_capacity(SETUP_MENU_ITEMS.len());
-    for (idx, label) in SETUP_MENU_ITEMS.iter().enumerate() {
-        let text = label.to_string();
+    let mut items = Vec::with_capacity(view_model.items.len());
+    for (idx, label) in view_model.items.iter().enumerate() {
+        let text = label.clone();
         let mut item = ListItem::new(Line::from(Span::raw(text)));
-        if idx == selected {
+        if idx == view_model.selected {
             item = item.style(
                 Style::default()
                     .fg(Color::Yellow)
@@ -3728,8 +4239,8 @@ fn draw_setup_ui(frame: &mut Frame<'_>, config_exists: bool, selected: usize, st
     frame.render_widget(menu, chunks[1]);
 
     let footer = Paragraph::new(vec![
-        Line::from("Up/Down move | Enter open | Esc cancel"),
-        Line::from(format!("Status: {status}")),
+        Line::from(view_model.hint_text.clone()),
+        Line::from(format!("Status: {}", view_model.status_text)),
     ])
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[2]);
@@ -3744,6 +4255,199 @@ fn main_panel_block() -> Block<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyEvent;
+
+    fn key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn key_event_with_modifiers(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn setup_key_mapping_maps_root_and_subscreen_escape_differently() {
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Root, key_event(KeyCode::Esc)),
+            Some(SetupAction::Cancel)
+        );
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Workspaces, key_event(KeyCode::Esc)),
+            Some(SetupAction::Back)
+        );
+    }
+
+    #[test]
+    fn setup_key_mapping_maps_movement_enter_and_hotkeys() {
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Root, key_event(KeyCode::Up)),
+            Some(SetupAction::MovePrev)
+        );
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Root, key_event(KeyCode::Down)),
+            Some(SetupAction::MoveNext)
+        );
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Root, key_event(KeyCode::Enter)),
+            Some(SetupAction::Enter)
+        );
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Orchestrators, key_event(KeyCode::Char('a'))),
+            Some(SetupAction::Add)
+        );
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Orchestrators, key_event(KeyCode::Char('d'))),
+            Some(SetupAction::Delete)
+        );
+        assert_eq!(
+            setup_action_from_key(SetupScreen::Orchestrators, key_event(KeyCode::Char('e'))),
+            Some(SetupAction::Edit)
+        );
+    }
+
+    #[test]
+    fn setup_key_mapping_maps_ctrl_c_to_cancel() {
+        assert_eq!(
+            setup_action_from_key(
+                SetupScreen::Root,
+                key_event_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL)
+            ),
+            Some(SetupAction::Cancel)
+        );
+    }
+
+    #[test]
+    fn nav_state_initialization_and_selection_boundaries() {
+        let mut nav = NavState::root();
+        assert_eq!(nav.screen, SetupScreen::Root);
+        assert_eq!(nav.selected, 0);
+        assert_eq!(nav.status_text, ROOT_STATUS_TEXT);
+        assert_eq!(nav.hint_text, ROOT_HINT_TEXT);
+
+        nav.selected = 12;
+        setup_transition(&mut nav, SetupAction::ReconcileSelection(0), 5).expect("reconcile empty");
+        assert_eq!(nav.selected, 0);
+
+        nav.selected = 12;
+        setup_transition(&mut nav, SetupAction::ReconcileSelection(2), 5)
+            .expect("reconcile non-empty");
+        assert_eq!(nav.selected, 1);
+    }
+
+    #[test]
+    fn setup_transition_covers_root_enter_paths() {
+        let mut nav = NavState::root();
+        nav.selected = 0;
+        let transition =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("enter");
+        assert_eq!(
+            transition.effect,
+            SetupNavEffect::OpenScreen(SetupScreen::Workspaces)
+        );
+
+        nav.screen = SetupScreen::Root;
+        nav.selected = 1;
+        let transition =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("enter");
+        assert_eq!(transition.effect, SetupNavEffect::OpenOrchestratorManager);
+
+        nav.screen = SetupScreen::Root;
+        nav.selected = 2;
+        let transition =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("enter");
+        assert_eq!(
+            transition.effect,
+            SetupNavEffect::OpenScreen(SetupScreen::InitialAgentDefaults)
+        );
+
+        nav.screen = SetupScreen::Root;
+        nav.selected = 3;
+        let transition =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("save");
+        assert_eq!(transition.effect, SetupNavEffect::SaveSetup);
+
+        nav.screen = SetupScreen::Root;
+        nav.selected = 4;
+        let transition =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("cancel");
+        assert_eq!(transition.effect, SetupNavEffect::CancelSetup);
+    }
+
+    #[test]
+    fn setup_transition_rejects_invalid_actions_without_panicking() {
+        let mut nav = NavState::root();
+        let err =
+            setup_transition(&mut nav, SetupAction::Add, SETUP_MENU_ITEMS.len()).expect_err("err");
+        assert!(matches!(
+            err,
+            SetupNavError::InvalidTransition {
+                screen: SetupScreen::Root,
+                action: SetupAction::Add
+            }
+        ));
+    }
+
+    #[test]
+    fn setup_transition_supports_navigation_and_save_cancel_sequences() {
+        let mut nav = NavState::root();
+        nav.selected = 0;
+        let open = setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len())
+            .expect("open workspaces");
+        assert_eq!(
+            open.effect,
+            SetupNavEffect::OpenScreen(SetupScreen::Workspaces)
+        );
+        assert_eq!(nav.screen, SetupScreen::Workspaces);
+
+        let back =
+            setup_transition(&mut nav, SetupAction::Back, SETUP_MENU_ITEMS.len()).expect("back");
+        assert_eq!(back.effect, SetupNavEffect::None);
+        assert_eq!(nav.screen, SetupScreen::Root);
+
+        nav.selected = 2;
+        let defaults = setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len())
+            .expect("open initial defaults");
+        assert_eq!(
+            defaults.effect,
+            SetupNavEffect::OpenScreen(SetupScreen::InitialAgentDefaults)
+        );
+        assert_eq!(nav.screen, SetupScreen::InitialAgentDefaults);
+        let toggle = setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len())
+            .expect("toggle provider");
+        assert_eq!(toggle.effect, SetupNavEffect::ToggleDefaultProvider);
+
+        nav.screen = SetupScreen::Root;
+        nav.selected = 3;
+        let save =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("save");
+        assert_eq!(save.effect, SetupNavEffect::SaveSetup);
+
+        nav.screen = SetupScreen::Root;
+        nav.selected = 4;
+        let cancel =
+            setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len()).expect("cancel");
+        assert_eq!(cancel.effect, SetupNavEffect::CancelSetup);
+    }
+
+    #[test]
+    fn setup_transition_handles_workspace_and_initial_defaults_screen_actions() {
+        let mut nav = NavState::root();
+        nav.screen = SetupScreen::Workspaces;
+        let workspace_edit = setup_transition(&mut nav, SetupAction::Enter, SETUP_MENU_ITEMS.len())
+            .expect("workspace edit");
+        assert_eq!(workspace_edit.effect, SetupNavEffect::EditWorkspacePath);
+
+        nav.screen = SetupScreen::InitialAgentDefaults;
+        nav.selected = 0;
+        let toggle = setup_transition(&mut nav, SetupAction::Toggle, SETUP_MENU_ITEMS.len())
+            .expect("toggle provider");
+        assert_eq!(toggle.effect, SetupNavEffect::ToggleDefaultProvider);
+
+        nav.selected = 1;
+        let edit = setup_transition(&mut nav, SetupAction::Edit, SETUP_MENU_ITEMS.len())
+            .expect("edit model");
+        assert_eq!(edit.effect, SetupNavEffect::EditDefaultModel);
+    }
 
     #[test]
     fn parse_csv_values_trims_and_filters_empty() {

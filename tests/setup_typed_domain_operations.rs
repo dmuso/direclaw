@@ -13,6 +13,15 @@ fn run_setup(home: &Path) -> Output {
         .expect("run setup")
 }
 
+fn run_setup_with_script_keys(home: &Path, keys: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_direclaw"))
+        .arg("setup")
+        .env("HOME", home)
+        .env("DIRECLAW_SETUP_SCRIPT_KEYS", keys)
+        .output()
+        .expect("run setup with scripted keys")
+}
+
 fn load_settings(home: &Path) -> Settings {
     Settings::from_path(&home.join(".direclaw/config.yaml")).expect("load settings")
 }
@@ -217,4 +226,62 @@ fn setup_preserves_add_edit_delete_state_across_save_and_reload() {
 
     let reloaded_alpha = load_orchestrator(&reloaded_settings, "alpha");
     assert_eq!(reloaded_alpha.id, "alpha");
+}
+
+#[test]
+fn setup_scripted_cancel_via_escape_does_not_persist_config() {
+    let dir = tempdir().expect("tempdir");
+    let home = dir.path();
+
+    let output = run_setup_with_script_keys(home, "esc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("setup canceled"),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!home.join(".direclaw/config.yaml").exists());
+}
+
+#[test]
+fn setup_scripted_cancel_via_ctrl_c_does_not_persist_config() {
+    let dir = tempdir().expect("tempdir");
+    let home = dir.path();
+
+    let output = run_setup_with_script_keys(home, "ctrl-c");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("setup canceled"),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(!home.join(".direclaw/config.yaml").exists());
+}
+
+#[test]
+fn setup_scripted_hotkeys_toggle_defaults_then_save() {
+    let dir = tempdir().expect("tempdir");
+    let home = dir.path();
+
+    let output = run_setup_with_script_keys(home, "down,down,enter,t,esc,s");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("setup complete"), "stdout: {stdout}");
+    assert!(stdout.contains("provider=openai"), "stdout: {stdout}");
+    assert!(stdout.contains("model=gpt-5.3-codex"), "stdout: {stdout}");
+
+    let settings = load_settings(home);
+    assert!(settings.workspaces_path.exists());
 }

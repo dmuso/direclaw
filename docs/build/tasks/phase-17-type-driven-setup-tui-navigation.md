@@ -8,7 +8,7 @@ Implement typed screen/action navigation for setup TUI so transition logic is ex
 
 ### P17-T01 Define typed setup navigation model
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `SetupScreen` enum covers root and all setup sub-screens.
   - `SetupAction` enum covers movement, enter/back, save/cancel, edit/add/delete intents.
@@ -19,7 +19,7 @@ Implement typed screen/action navigation for setup TUI so transition logic is ex
 
 ### P17-T02 Implement reducer-style transition function and view-model projection
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - A central transition function handles screen/action updates.
   - Invalid transitions return typed errors or no-op feedback, not panics.
@@ -30,7 +30,7 @@ Implement typed screen/action navigation for setup TUI so transition logic is ex
 
 ### P17-T03 Migrate setup TUI loop to typed navigation dispatch
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Main setup TUI event loop dispatches typed actions into typed transitions.
   - Existing interaction behavior (save/cancel, section navigation, edit entry) is preserved.
