@@ -58,7 +58,7 @@ jobs:
         run: |
           BIN="target/${{ matrix.target }}/release/direclaw"
           TMP_HOME="$(mktemp -d)"
-          HOME="$TMP_HOME" "$BIN" --help >/dev/null
+          HOME="$TMP_HOME" "$BIN" >/dev/null
           HOME="$TMP_HOME" "$BIN" setup >/dev/null
           HOME="$TMP_HOME" "$BIN" status >/dev/null
 
@@ -83,7 +83,7 @@ jobs:
           tar -C "$INSTALL_ROOT" -xzf "$TAR_NAME"
           BIN="$INSTALL_ROOT/direclaw"
           TMP_HOME="$(mktemp -d)"
-          HOME="$TMP_HOME" "$BIN" --help >/dev/null
+          HOME="$TMP_HOME" "$BIN" >/dev/null
           HOME="$TMP_HOME" "$BIN" setup >/dev/null
           HOME="$TMP_HOME" "$BIN" status >/dev/null
 
