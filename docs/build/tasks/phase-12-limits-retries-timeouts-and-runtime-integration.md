@@ -13,7 +13,7 @@ Enforce orchestration safety controls in live execution and integrate the workfl
 
 ### P12-T01 Enforce max iterations, run timeout, step timeout, and max retries in engine loop
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Limits from orchestrator/workflow/step configuration are applied in precedence order.
   - Step retries stop exactly at configured retry ceiling.
@@ -25,7 +25,7 @@ Enforce orchestration safety controls in live execution and integrate the workfl
 
 ### P12-T02 Integrate engine execution path into queue processor runtime
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Queue-claimed workflow starts run engine execution, not selector-only metadata updates.
   - Workflow-bound messages (`workflow_run_id`) can resume existing runs correctly.
@@ -37,7 +37,7 @@ Enforce orchestration safety controls in live execution and integrate the workfl
 
 ### P12-T03 Preserve per-key ordering and concurrency semantics during workflow execution
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Workflow execution does not violate ordering guarantees for same ordering key.
   - Independent keys still execute concurrently where allowed.
@@ -49,7 +49,7 @@ Enforce orchestration safety controls in live execution and integrate the workfl
 
 ### P12-T04 Validate operational observability and failure diagnostics in runtime
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Runtime logs clearly report step failures, limit triggers, and transition outcomes.
   - `workflow status/progress` remain read-only and accurate during/after failures.
@@ -58,4 +58,3 @@ Enforce orchestration safety controls in live execution and integrate the workfl
   - Add integration assertions on runtime logs/progress snapshots for failure scenarios.
   - Run `nix-shell --run "cargo test --all"`.
   - Run `nix-shell --run "cargo clippy --all-targets --all-features -- -D warnings"`.
-

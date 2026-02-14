@@ -36,3 +36,39 @@ fn mixed_keys_preserve_sequence_and_allow_concurrency() {
 
     assert!(scheduler.dequeue_runnable(2).is_empty());
 }
+
+#[test]
+fn bounded_scheduler_avoids_starvation_under_heavy_mixed_load() {
+    let mut scheduler = PerKeyScheduler::default();
+    let hot_key = OrderingKey::WorkflowRun("hot".to_string());
+
+    for idx in 0..50 {
+        scheduler.enqueue(hot_key.clone(), format!("hot-{idx}"));
+    }
+    for idx in 0..25 {
+        scheduler.enqueue(
+            OrderingKey::WorkflowRun(format!("cold-{idx}")),
+            format!("cold-{idx}"),
+        );
+    }
+
+    let mut completed = Vec::new();
+    while scheduler.pending_len() > 0 || scheduler.active_len() > 0 {
+        let batch = scheduler.dequeue_runnable(4);
+        if batch.is_empty() {
+            break;
+        }
+        for item in batch {
+            completed.push(item.value.clone());
+            scheduler.complete(&item.key);
+        }
+    }
+
+    assert_eq!(completed.len(), 75);
+    for idx in 0..25 {
+        assert!(
+            completed.iter().any(|v| v == &format!("cold-{idx}")),
+            "missing cold key cold-{idx}"
+        );
+    }
+}

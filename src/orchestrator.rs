@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -111,6 +111,10 @@ fn append_security_log(state_root: &Path, line: &str) {
         return;
     };
     let _ = file.write_all(format!("{line}\n").as_bytes());
+}
+
+fn elapsed_now(base_now: i64, started_at: Instant) -> i64 {
+    base_now.saturating_add(started_at.elapsed().as_secs() as i64)
 }
 
 fn json_error(path: &Path, source: serde_json::Error) -> OrchestratorError {
@@ -1055,10 +1059,10 @@ impl WorkflowEngine {
         run: &mut WorkflowRunRecord,
         start_now: i64,
     ) -> Result<(), OrchestratorError> {
-        let mut now = start_now;
         // Guard against accidental infinite loops in malformed workflows.
         let max_cycles = 10_000u32;
         let mut cycles = 0u32;
+        let run_clock_started = Instant::now();
 
         while run.state == RunState::Running {
             if cycles >= max_cycles {
@@ -1067,6 +1071,7 @@ impl WorkflowEngine {
                 ));
             }
             let previous_iterations = run.total_iterations;
+            let now = elapsed_now(start_now, run_clock_started);
             self.execute_or_fail(run, now)?;
             *run = self.run_store.load_run(&run.run_id)?;
             if run.state == RunState::Running && run.total_iterations == previous_iterations {
@@ -1075,7 +1080,6 @@ impl WorkflowEngine {
                 ));
             }
             cycles = cycles.saturating_add(1);
-            now = now.saturating_add(2);
         }
 
         Ok(())
@@ -1113,29 +1117,31 @@ impl WorkflowEngine {
 
         let limits = resolve_execution_safety_limits(&self.orchestrator, workflow, step);
         let mut attempt = pointer.attempt;
-        let mut attempt_now = now;
+        let step_clock_started = Instant::now();
 
         loop {
+            let attempt_started_at = elapsed_now(now, step_clock_started);
             self.run_store.append_engine_log(
                 &run.run_id,
-                attempt_now,
+                attempt_started_at,
                 format!(
                     "run_id={} decision=execute_next step_id={} attempt={} state={}",
                     run.run_id, step.id, attempt, run.state
                 ),
             )?;
             self.run_store
-                .mark_step_attempt_started(run, &step.id, attempt, attempt_now)?;
-            enforce_execution_safety(run, limits, attempt_now, attempt_now, attempt)?;
+                .mark_step_attempt_started(run, &step.id, attempt, attempt_started_at)?;
+            enforce_execution_safety(run, limits, attempt_started_at, attempt_started_at, attempt)?;
 
-            match self.execute_step_attempt(run, workflow, step, attempt, attempt_now) {
+            match self.execute_step_attempt(run, workflow, step, attempt, attempt_started_at) {
                 Ok(evaluation) => {
+                    let attempt_ended_at = elapsed_now(now, step_clock_started);
                     self.run_store.persist_step_attempt(&StepAttemptRecord {
                         run_id: run.run_id.clone(),
                         step_id: step.id.clone(),
                         attempt,
-                        started_at: attempt_now,
-                        ended_at: attempt_now.saturating_add(1),
+                        started_at: attempt_started_at,
+                        ended_at: attempt_ended_at,
                         state: "succeeded".to_string(),
                         outputs: evaluation.outputs.clone(),
                         output_files: evaluation.output_files.clone(),
@@ -1147,7 +1153,7 @@ impl WorkflowEngine {
 
                     self.run_store.append_engine_log(
                         &run.run_id,
-                        attempt_now.saturating_add(1),
+                        attempt_ended_at,
                         format!(
                             "run_id={} step_id={} attempt={} transition=succeeded next={}",
                             run.run_id,
@@ -1159,13 +1165,20 @@ impl WorkflowEngine {
                                 .unwrap_or_else(|| "terminal".to_string())
                         ),
                     )?;
+                    enforce_execution_safety(
+                        run,
+                        limits,
+                        attempt_ended_at,
+                        attempt_started_at,
+                        attempt,
+                    )?;
 
                     if let Some(next) = evaluation.next_step_id {
                         run.current_step_id = Some(next.clone());
                         run.current_attempt = None;
                         self.run_store.checkpoint(
                             run,
-                            attempt_now.saturating_add(1),
+                            attempt_ended_at,
                             format!(
                                 "step {} attempt {} finished; next {}",
                                 step.id, attempt, next
@@ -1179,7 +1192,7 @@ impl WorkflowEngine {
                         self.run_store.transition_state(
                             run,
                             RunState::Succeeded,
-                            attempt_now.saturating_add(1),
+                            attempt_ended_at,
                             format!("step {} attempt {} finished", step.id, attempt),
                             false,
                             "none",
@@ -1188,6 +1201,7 @@ impl WorkflowEngine {
                     return Ok(());
                 }
                 Err(err) => {
+                    let attempt_ended_at = elapsed_now(now, step_clock_started);
                     let retryable = is_retryable_step_error(&err);
                     let can_retry = retryable && attempt <= limits.max_retries;
                     let output_validation_errors = output_validation_errors_for(&err);
@@ -1195,8 +1209,8 @@ impl WorkflowEngine {
                         run_id: run.run_id.clone(),
                         step_id: step.id.clone(),
                         attempt,
-                        started_at: attempt_now,
-                        ended_at: attempt_now.saturating_add(1),
+                        started_at: attempt_started_at,
+                        ended_at: attempt_ended_at,
                         state: if can_retry {
                             "failed_retryable".to_string()
                         } else {
@@ -1211,15 +1225,21 @@ impl WorkflowEngine {
                     *run = self.run_store.load_run(&run.run_id)?;
                     self.run_store.append_engine_log(
                         &run.run_id,
-                        attempt_now.saturating_add(1),
+                        attempt_ended_at,
                         format!(
                             "run_id={} step_id={} attempt={} transition=failed retryable={} error={}",
                             run.run_id, step.id, attempt, can_retry, err
                         ),
                     )?;
+                    enforce_execution_safety(
+                        run,
+                        limits,
+                        attempt_ended_at,
+                        attempt_started_at,
+                        attempt,
+                    )?;
                     if can_retry {
                         attempt = attempt.saturating_add(1);
-                        attempt_now = attempt_now.saturating_add(2);
                         continue;
                     }
                     return Err(err);
@@ -1454,14 +1474,22 @@ impl WorkflowEngine {
             env_overrides: BTreeMap::new(),
         };
 
+        let step_timeout_seconds =
+            resolve_execution_safety_limits(&self.orchestrator, workflow, step)
+                .step_timeout_seconds;
         let provider_output =
             run_provider(&provider_request, &self.runner_binaries).map_err(|err| {
                 if let Some(log) = provider_error_log(&err) {
                     let _ = persist_provider_invocation_log(&attempt_dir, log);
                 }
-                OrchestratorError::StepExecution {
-                    step_id: step.id.clone(),
-                    reason: err.to_string(),
+                match err {
+                    ProviderError::Timeout { .. } => OrchestratorError::StepTimeout {
+                        step_timeout_seconds,
+                    },
+                    _ => OrchestratorError::StepExecution {
+                        step_id: step.id.clone(),
+                        reason: err.to_string(),
+                    },
                 }
             })?;
 
@@ -4124,64 +4152,127 @@ where
 {
     let runner_binaries = runner_binaries.unwrap_or_else(resolve_runner_binaries);
     let run_store = WorkflowRunStore::new(state_root);
+    let inbound_message = inbound.message.trim().to_ascii_lowercase();
     if let Some(run_id) = inbound
         .workflow_run_id
         .as_ref()
         .filter(|v| !v.trim().is_empty())
     {
-        let status_input = StatusResolutionInput {
-            explicit_run_id: Some(run_id.clone()),
-            inbound_workflow_run_id: Some(run_id.clone()),
-            channel_profile_id: inbound.channel_profile_id.clone(),
-            conversation_id: inbound.conversation_id.clone(),
-        };
+        if matches!(
+            inbound_message.as_str(),
+            "status" | "progress" | "/status" | "/progress"
+        ) {
+            let status_input = StatusResolutionInput {
+                explicit_run_id: Some(run_id.clone()),
+                inbound_workflow_run_id: Some(run_id.clone()),
+                channel_profile_id: inbound.channel_profile_id.clone(),
+                conversation_id: inbound.conversation_id.clone(),
+            };
 
-        let pseudo_request = SelectorRequest {
-            selector_id: format!("status-{}", inbound.message_id),
-            channel_profile_id: inbound.channel_profile_id.clone().unwrap_or_default(),
-            message_id: inbound.message_id.clone(),
-            conversation_id: inbound.conversation_id.clone(),
-            user_message: inbound.message.clone(),
-            available_workflows: Vec::new(),
-            default_workflow: String::new(),
-            available_functions: functions.available_function_ids(),
-            available_function_schemas: functions.available_function_schemas(),
-        };
-        let status_result = SelectorResult {
-            selector_id: pseudo_request.selector_id.clone(),
-            status: SelectorStatus::Selected,
-            action: Some(SelectorAction::WorkflowStatus),
-            selected_workflow: None,
-            diagnostics_scope: None,
-            function_id: None,
-            function_args: None,
-            reason: None,
-        };
+            let pseudo_request = SelectorRequest {
+                selector_id: format!("status-{}", inbound.message_id),
+                channel_profile_id: inbound.channel_profile_id.clone().unwrap_or_default(),
+                message_id: inbound.message_id.clone(),
+                conversation_id: inbound.conversation_id.clone(),
+                user_message: inbound.message.clone(),
+                available_workflows: Vec::new(),
+                default_workflow: String::new(),
+                available_functions: functions.available_function_ids(),
+                available_function_schemas: functions.available_function_schemas(),
+            };
+            let status_result = SelectorResult {
+                selector_id: pseudo_request.selector_id.clone(),
+                status: SelectorStatus::Selected,
+                action: Some(SelectorAction::WorkflowStatus),
+                selected_workflow: None,
+                diagnostics_scope: None,
+                function_id: None,
+                function_args: None,
+                reason: None,
+            };
 
-        return route_selector_action(
-            &pseudo_request,
-            &status_result,
-            RouteContext {
-                status_input: &status_input,
-                active_conversation_runs,
-                functions,
-                run_store: &run_store,
-                orchestrator: &OrchestratorConfig {
-                    id: "status_only".to_string(),
-                    selector_agent: "none".to_string(),
-                    default_workflow: "none".to_string(),
-                    selection_max_retries: 1,
-                    selector_timeout_seconds: 30,
-                    agents: BTreeMap::new(),
-                    workflows: Vec::new(),
-                    workflow_orchestration: None,
+            return route_selector_action(
+                &pseudo_request,
+                &status_result,
+                RouteContext {
+                    status_input: &status_input,
+                    active_conversation_runs,
+                    functions,
+                    run_store: &run_store,
+                    orchestrator: &OrchestratorConfig {
+                        id: "status_only".to_string(),
+                        selector_agent: "none".to_string(),
+                        default_workflow: "none".to_string(),
+                        selection_max_retries: 1,
+                        selector_timeout_seconds: 30,
+                        agents: BTreeMap::new(),
+                        workflows: Vec::new(),
+                        workflow_orchestration: None,
+                    },
+                    workspace_access_context: None,
+                    runner_binaries: Some(runner_binaries.clone()),
+                    source_message_id: Some(&inbound.message_id),
+                    now,
                 },
-                workspace_access_context: None,
-                runner_binaries: Some(runner_binaries.clone()),
-                source_message_id: Some(&inbound.message_id),
-                now,
-            },
-        );
+            );
+        }
+
+        let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
+        let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
+        let workspace_context = match verify_orchestrator_workspace_access(
+            settings,
+            &orchestrator_id,
+            &orchestrator,
+        ) {
+            Ok(context) => context,
+            Err(err) => {
+                append_security_log(
+                        state_root,
+                        &format!(
+                            "workspace access denied for orchestrator `{orchestrator_id}` message `{}`: {err}",
+                            inbound.message_id
+                        ),
+                    );
+                return Err(err);
+            }
+        };
+
+        let engine = WorkflowEngine::new(run_store.clone(), orchestrator.clone())
+            .with_runner_binaries(runner_binaries.clone())
+            .with_workspace_access_context(workspace_context);
+        let resumed = match engine
+            .resume(run_id, now)
+            .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
+        {
+            Ok(run) => run,
+            Err(OrchestratorError::UnknownRunId { .. }) => {
+                return Ok(RoutedSelectorAction::WorkflowStatus {
+                    run_id: Some(run_id.to_string()),
+                    progress: None,
+                    message: format!("workflow run `{run_id}` was not found"),
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        let progress = match run_store
+            .load_progress(run_id)
+            .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
+        {
+            Ok(progress) => progress,
+            Err(OrchestratorError::UnknownRunId { .. }) => {
+                return Ok(RoutedSelectorAction::WorkflowStatus {
+                    run_id: Some(run_id.to_string()),
+                    progress: None,
+                    message: format!("workflow run `{run_id}` was not found"),
+                });
+            }
+            Err(err) => return Err(err),
+        };
+        return Ok(RoutedSelectorAction::WorkflowStatus {
+            run_id: Some(resumed.run_id),
+            progress: Some(progress),
+            message: "workflow progress loaded".to_string(),
+        });
     }
 
     let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;

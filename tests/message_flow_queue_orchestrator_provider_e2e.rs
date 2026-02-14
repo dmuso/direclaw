@@ -1,4 +1,5 @@
 use direclaw::config::Settings;
+use direclaw::orchestrator::WorkflowRunStore;
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::{IncomingMessage, QueuePaths};
 use direclaw::runtime::{
@@ -9,7 +10,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 fn write_script(path: &Path, body: &str) {
@@ -118,6 +119,13 @@ fn binaries(anthropic: impl Into<String>, openai: impl Into<String>) -> RunnerBi
     }
 }
 
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn read_outgoing_text(state_root: &Path) -> String {
     let out_dir = state_root.join("queue/outgoing");
     let mut files: Vec<PathBuf> = fs::read_dir(&out_dir)
@@ -171,6 +179,158 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
 }
 
 #[test]
+fn workflow_bound_message_resumes_run_execution_when_not_status_command() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+
+    let claude = dir.path().join("claude-mock");
+    let codex = dir.path().join("codex-mock");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_openai_success_script(&codex);
+
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-resume"),
+        "anthropic",
+        1,
+        30,
+    );
+    let run_store = WorkflowRunStore::new(&state_root);
+    run_store
+        .create_run("run-resume-1", "triage", now_secs())
+        .expect("create run");
+    let mut inbound = sample_message("msg-resume", "thread-resume");
+    inbound.workflow_run_id = Some("run-resume-1".to_string());
+    inbound.message = "please continue".to_string();
+    write_incoming(&queue, &inbound);
+
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        2,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain");
+    assert_eq!(processed, 1);
+
+    let run = run_store.load_run("run-resume-1").expect("load run");
+    assert_eq!(run.state, direclaw::orchestrator::RunState::Succeeded);
+    assert!(state_root
+        .join("workflows/runs/run-resume-1/steps/start/attempts/1/result.json")
+        .is_file());
+    let outgoing = read_outgoing_text(&state_root);
+    assert!(outgoing.contains("workflow progress loaded"));
+}
+
+#[test]
+fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-status-only"),
+        "anthropic",
+        1,
+        30,
+    );
+    let run_store = WorkflowRunStore::new(&state_root);
+    let mut run = run_store
+        .create_run("run-status-1", "triage", 1)
+        .expect("create run");
+    run_store
+        .transition_state(
+            &mut run,
+            direclaw::orchestrator::RunState::Running,
+            2,
+            "running",
+            false,
+            "execute next step",
+        )
+        .expect("transition");
+
+    let mut inbound = sample_message("msg-status-only", "thread-status");
+    inbound.workflow_run_id = Some("run-status-1".to_string());
+    inbound.message = "/status".to_string();
+    write_incoming(&queue, &inbound);
+
+    let processed =
+        drain_queue_once_with_binaries(&state_root, &settings, 1, &binaries("unused", "unused"))
+            .expect("drain");
+    assert_eq!(processed, 1);
+
+    assert!(!state_root
+        .join("workflows/runs/run-status-1/steps/start/attempts/1/result.json")
+        .exists());
+    let outgoing = read_outgoing_text(&state_root);
+    assert!(outgoing.contains("workflow progress loaded"));
+}
+
+#[test]
+fn workflow_bound_message_with_unknown_run_id_does_not_requeue_forever() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+
+    let claude = dir.path().join("claude-mock");
+    let codex = dir.path().join("codex-mock");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_openai_success_script(&codex);
+
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-missing-run"),
+        "anthropic",
+        1,
+        30,
+    );
+    let mut inbound = sample_message("msg-missing-run", "thread-missing-run");
+    inbound.workflow_run_id = Some("run-does-not-exist".to_string());
+    inbound.message = "continue please".to_string();
+    write_incoming(&queue, &inbound);
+
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        2,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain");
+    assert_eq!(processed, 1);
+
+    let outgoing = read_outgoing_text(&state_root);
+    assert!(outgoing.contains("workflow run `run-does-not-exist` was not found"));
+    assert!(fs::read_dir(&queue.processing)
+        .expect("processing")
+        .next()
+        .is_none());
+    assert!(fs::read_dir(&queue.incoming)
+        .expect("incoming")
+        .next()
+        .is_none());
+
+    let processed_again = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        2,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain second");
+    assert_eq!(processed_again, 0);
+}
+
+#[test]
 fn queue_failures_requeue_without_payload_loss_for_unknown_profile() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
@@ -212,6 +372,101 @@ channels: {{}}
         .expect("processing")
         .next()
         .is_none());
+}
+
+#[test]
+fn runtime_logs_and_persisted_progress_expose_failure_reason_for_limit_triggers() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+
+    let claude = dir.path().join("claude-reject");
+    let codex = dir.path().join("codex-ok");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-limit\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_openai_success_script(&codex);
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-limit"),
+        "anthropic",
+        1,
+        30,
+    );
+
+    fs::write(
+        dir.path().join("orch-limit/orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: triage
+    version: 1
+    limits:
+      max_total_iterations: 1
+    steps:
+      - id: review
+        type: agent_review
+        agent: worker
+        prompt: review
+        on_approve: done
+        on_reject: review
+      - id: done
+        type: agent_task
+        agent: worker
+        prompt: done
+"#,
+    )
+    .expect("overwrite orchestrator");
+    write_script(
+        &codex,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"decision\\\":\\\"reject\\\"}[/workflow_result]\"}}'\n",
+    );
+
+    write_incoming(&queue, &sample_message("msg-limit", "thread-limit"));
+    let err = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        1,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect_err("limit failure should bubble to queue worker");
+    assert!(err.contains("max total iterations"));
+
+    let mut incoming_files: Vec<PathBuf> = fs::read_dir(&queue.incoming)
+        .expect("incoming")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    incoming_files.sort();
+    assert_eq!(incoming_files.len(), 1);
+    let requeued = fs::read_to_string(&incoming_files[0]).expect("requeued");
+    assert!(requeued.contains("\"messageId\":\"msg-limit\""));
+
+    let run_root = state_root.join("workflows/runs");
+    let mut run_dirs: Vec<PathBuf> = fs::read_dir(&run_root)
+        .expect("run root")
+        .map(|e| e.expect("entry").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    run_dirs.sort();
+    let run_dir = run_dirs.pop().expect("run dir");
+    let progress = fs::read_to_string(run_dir.join("progress.json")).expect("read progress");
+    assert!(progress.contains("\"state\": \"failed\""));
+    assert!(progress.contains("max total iterations"));
+    let engine_log = fs::read_to_string(run_dir.join("engine.log")).expect("engine log");
+    assert!(engine_log.contains("transition=failed"));
 }
 
 #[test]
@@ -397,6 +652,61 @@ fn startup_recovery_moves_processing_back_to_incoming() {
         .expect("processing")
         .next()
         .is_none());
+}
+
+#[test]
+fn recovered_workflow_bound_message_resumes_existing_run_after_restart() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-recovered-resume"),
+        "anthropic",
+        1,
+        30,
+    );
+
+    let run_store = WorkflowRunStore::new(&state_root);
+    run_store
+        .create_run("run-recovered-1", "triage", now_secs())
+        .expect("create run");
+
+    let mut payload = sample_message("msg-recovered-resume", "thread-recovered-resume");
+    payload.workflow_run_id = Some("run-recovered-1".to_string());
+    payload.message = "continue".to_string();
+    fs::write(
+        queue.processing.join("stale-workflow-bound.json"),
+        serde_json::to_vec(&payload).expect("serialize"),
+    )
+    .expect("write stale processing");
+
+    let recovered = recover_processing_queue_entries(&state_root).expect("recover");
+    assert_eq!(recovered.len(), 1);
+
+    let claude = dir.path().join("claude-recovered-resume");
+    let codex = dir.path().join("codex-recovered-resume");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_openai_success_script(&codex);
+
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        1,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain");
+    assert_eq!(processed, 1);
+
+    let run = run_store.load_run("run-recovered-1").expect("run");
+    assert_eq!(run.state, direclaw::orchestrator::RunState::Succeeded);
+    assert!(state_root
+        .join("workflows/runs/run-recovered-1/steps/start/attempts/1/result.json")
+        .is_file());
 }
 
 #[test]
