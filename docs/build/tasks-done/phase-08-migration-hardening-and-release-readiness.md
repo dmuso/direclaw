@@ -32,7 +32,7 @@ Deliver migration tooling, reliability guarantees, and complete automated covera
 
 - Status: `todo` (`todo|in_progress|complete`)
 - Acceptance Criteria:
-  - Unit, integration, adapter, and E2E smoke suites cover requirements in `docs/spec/12-reliability-compat-testing.md`.
+  - Unit, integration, adapter, and E2E smoke suites cover requirements in `docs/build/spec/12-reliability-compat-testing.md`.
   - Reliability requirements are mapped to explicit test cases.
   - CI gates releases on passing suites and migration verification.
 - Automated Test Requirements:

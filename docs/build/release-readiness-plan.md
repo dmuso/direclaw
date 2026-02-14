@@ -32,7 +32,7 @@ Release posture for v1:
 - No `.github/workflows` for CI and release artifacts.
 
 6. Spec/doc path consistency is broken.
-- References point to `docs/spec/...`, but repository currently uses `docs/build/spec/...`.
+- References still use a legacy spec path, while the canonical path is `docs/build/spec/...`.
 
 7. Selector function parity is incomplete.
 - Function registry does not expose full command parity required by spec.
@@ -87,7 +87,7 @@ Release posture for v1:
 ### Phase 00: Scope Lock and Documentation Baseline
 
 - Lock v1 feature scope and explicitly defer non-v1 channels.
-- Resolve spec/doc path mismatch (`docs/spec` vs `docs/build/spec`).
+- Resolve spec/doc path mismatch with canonical `docs/build/spec` usage.
 - Establish requirement traceability from plan -> tasks -> tests.
 
 ### Phase 01: Runtime Supervisor and Worker Lifecycle
@@ -157,4 +157,3 @@ All conditions must be true before `v1.0.0` tag:
 5. GitHub release workflow publishes expected binaries and checksums.
 6. User docs and operator docs are complete and validated from clean environment install.
 7. Placeholder or misleading operational responses are removed.
-

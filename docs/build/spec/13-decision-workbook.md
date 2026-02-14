@@ -7,7 +7,7 @@ This document records the final decisions for previously open spec options and l
 ## 1) Workflow Orchestrator Runtime Shape
 
 - Status: `decided`
-- Spec reference: `docs/spec/01-runtime-filesystem.md`
+- Spec reference: `docs/build/spec/01-runtime-filesystem.md`
 - Decision: Support both `standalone` and `integrated` modes with `standalone` as default.
 - Rationale: Keeps simple and advanced deployment modes while preserving a canonical operational default.
 - Way Forward:
@@ -17,7 +17,7 @@ This document records the final decisions for previously open spec options and l
 ## 2) Process Supervision Mode
 
 - Status: `decided`
-- Spec reference: `docs/spec/01-runtime-filesystem.md`
+- Spec reference: `docs/build/spec/01-runtime-filesystem.md`
 - Decision: Native supervision and tmux-compatibility are both required; tmux support is mandatory for per-agent provider sessions.
 - Rationale: Required by user operating model using tmux for agent/provider execution.
 - Way Forward:
@@ -27,7 +27,7 @@ This document records the final decisions for previously open spec options and l
 ## 3) Private Workspace Provisioning Behavior
 
 - Status: `decided`
-- Spec reference: `docs/spec/01-runtime-filesystem.md`
+- Spec reference: `docs/build/spec/01-runtime-filesystem.md`
 - Decision: Create missing private workspace paths at startup/provisioning.
 - Rationale: Reduces setup friction and aligns with fail-fast validation for invalid paths while allowing bootstrap on clean installs.
 - Way Forward:
@@ -37,7 +37,7 @@ This document records the final decisions for previously open spec options and l
 ## 4) Workflow `workspace_mode` Default Rule
 
 - Status: `decided`
-- Spec reference: `docs/spec/05-workflow-orchestration.md`
+- Spec reference: `docs/build/spec/05-workflow-orchestration.md`
 - Decision: Default `workspace_mode` is `orchestrator_workspace`; supported explicit modes are `orchestrator_workspace`, `run_workspace`, and `agent_workspace`.
 - Rationale: Matches requirement that orchestration operates from orchestrator private workspace while still allowing per-step/run alternatives.
 - Way Forward:
@@ -47,7 +47,7 @@ This document records the final decisions for previously open spec options and l
 ## 5) Step Timeout Override Semantics
 
 - Status: `decided`
-- Spec reference: `docs/spec/05-workflow-orchestration.md`
+- Spec reference: `docs/build/spec/05-workflow-orchestration.md`
 - Decision: Option C, per-step overrides allowed and clamped by configured global max.
 - Rationale: Allows heterogeneous workflows without permitting unbounded step runtime.
 - Way Forward:
@@ -57,7 +57,7 @@ This document records the final decisions for previously open spec options and l
 ## 6) Reset Flag Scope and Precedence
 
 - Status: `decided`
-- Spec reference: `docs/spec/06-provider-integration.md`
+- Spec reference: `docs/build/spec/06-provider-integration.md`
 - Decision: Use per-agent reset flags only; orchestrator manages reset behavior.
 - Rationale: Eliminates ambiguous global/per-agent precedence and keeps reset control localized to agent execution context.
 - Way Forward:
@@ -67,7 +67,7 @@ This document records the final decisions for previously open spec options and l
 ## 7) Default Conversation Continuity Policy
 
 - Status: `decided`
-- Spec reference: `docs/spec/06-provider-integration.md`
+- Spec reference: `docs/build/spec/06-provider-integration.md`
 - Decision: Enforce fresh execution after failed workflow runs.
 - Rationale: Avoids failed-run context contamination while preserving continuity for normal execution.
 - Way Forward:
@@ -77,7 +77,7 @@ This document records the final decisions for previously open spec options and l
 ## 8) Slack Mention Requirement Toggle Contract
 
 - Status: `decided`
-- Spec reference: `docs/spec/07-channel-adapters.md`
+- Spec reference: `docs/build/spec/07-channel-adapters.md`
 - Decision: Targeted Slack app-user mentions route to the mapped orchestration agent/profile.
 - Rationale: Deterministic profile/orchestrator selection in multi-profile Slack deployments.
 - Way Forward:
@@ -87,7 +87,7 @@ This document records the final decisions for previously open spec options and l
 ## 9) `attach` Command Behavior Outside Supported Supervisors
 
 - Status: `decided`
-- Spec reference: `docs/spec/10-daemon-operations.md`
+- Spec reference: `docs/build/spec/10-daemon-operations.md`
 - Decision: If no attachable session exists, run orchestrator inspection and return workflow/process status summary.
 - Rationale: Preserves operational usefulness of `attach` in non-attachable environments.
 - Way Forward:

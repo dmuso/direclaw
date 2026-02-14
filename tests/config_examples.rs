@@ -2,10 +2,6 @@ use direclaw::config::{OrchestratorConfig, Settings, ValidationOptions};
 use std::path::Path;
 
 fn example_path(relative: &str) -> String {
-    let primary = format!("docs/spec/{relative}");
-    if Path::new(&primary).exists() {
-        return primary;
-    }
     format!("docs/build/spec/{relative}")
 }
 

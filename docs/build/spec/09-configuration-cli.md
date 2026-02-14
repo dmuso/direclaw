@@ -59,11 +59,11 @@ Per-orchestrator config requirements:
 
 Reference examples:
 
-- `docs/spec/examples/settings/minimal.settings.yaml`
-- `docs/spec/examples/settings/full.settings.yaml`
-- `docs/spec/examples/orchestrators/minimal.orchestrator.yaml`
-- `docs/spec/examples/orchestrators/engineering.orchestrator.yaml`
-- `docs/spec/examples/orchestrators/product.orchestrator.yaml`
+- `docs/build/spec/examples/settings/minimal.settings.yaml`
+- `docs/build/spec/examples/settings/full.settings.yaml`
+- `docs/build/spec/examples/orchestrators/minimal.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/engineering.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/product.orchestrator.yaml`
 
 ## Example Workspace Resolution
 
@@ -181,7 +181,7 @@ Required commands:
 
 ## Selector Function Exposure Contract
 
-- All supported CLI commands in this spec and `docs/spec/10-daemon-operations.md` must be exposed as selector-callable functions for natural-language chat routing.
+- All supported CLI commands in this spec and `docs/build/spec/10-daemon-operations.md` must be exposed as selector-callable functions for natural-language chat routing.
 - Function registry must be machine-readable and passed to selector as `availableFunctions`.
 - Each function entry must include:
   - stable `functionId`

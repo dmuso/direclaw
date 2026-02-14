@@ -4,8 +4,8 @@
 DireClaw is a Rust-based, file-backed multi-agent orchestration runtime. It processes channel events through a queue, routes execution through an orchestrator, and runs provider-backed agents with strict workspace and configuration controls.
 
 Primary source of truth for behavior:
-- `docs/spec/INDEX.md`
-- `docs/spec/01-runtime-filesystem.md` through `docs/spec/12-reliability-compat-testing.md`
+- `docs/build/spec/INDEX.md`
+- `docs/build/spec/01-runtime-filesystem.md` through `docs/build/spec/12-reliability-compat-testing.md`
 
 ## Tech Stack
 - Language: Rust
@@ -56,10 +56,10 @@ Prioritize automated coverage for:
 - CLI command parity and config validation
 - Adapter mappings and file round-trip behavior
 
-Use `docs/spec/12-reliability-compat-testing.md` as the acceptance baseline.
+Use `docs/build/spec/12-reliability-compat-testing.md` as the acceptance baseline.
 
 ## Implementation Workflow
-1. Read relevant spec section(s) in `docs/spec/` before implementing.
+1. Read relevant spec section(s) in `docs/build/spec/` before implementing.
 2. Implement the smallest coherent Rust slice.
 3. Add or update tests with each change.
 4. Run format, lint, and test in `nix-shell`.

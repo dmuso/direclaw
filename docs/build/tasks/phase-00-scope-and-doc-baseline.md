@@ -13,7 +13,7 @@ Primary reference:
 
 ### P00-T01 Lock v1 product scope and deferred items
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Update README and user-facing docs to explicitly state v1 channel support (Slack-only).
   - Add a short "Deferred After v1" section listing Discord/Telegram/WhatsApp as roadmap items.
@@ -24,22 +24,22 @@ Primary reference:
 - Automated Test Requirements:
   - Add a docs consistency check (script/test) that scans for forbidden unsupported-v1 claims.
 
-### P00-T02 Resolve `docs/spec` vs `docs/build/spec` source-of-truth mismatch
+### P00-T02 Resolve canonical spec source-of-truth mismatch
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Choose one canonical spec path for this repository.
   - Update references in README, task files, and internal docs to use only the canonical path.
   - If compatibility links are needed, add redirect notes or mirrored index stubs.
 - Acceptance Criteria:
   - All active references resolve to existing files.
-  - `AGENTS.md`, README, and task docs no longer point to missing `docs/spec/*` paths.
+  - `AGENTS.md`, README, and task docs use canonical `docs/build/spec/*` paths.
 - Automated Test Requirements:
   - Add link-check test for markdown docs used by contributors/operators.
 
 ### P00-T03 Create requirement traceability index
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Add a traceability table mapping:
     - Plan requirement -> phase task -> tests (file names/test IDs).
@@ -51,7 +51,7 @@ Primary reference:
 
 ### P00-T04 Establish task execution workflow for contributors
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Update `docs/build/tasks/README.tasks.md` with explicit "how to execute and update statuses" guidance.
   - Add a short "definition of complete" checklist for each task.
@@ -59,4 +59,3 @@ Primary reference:
   - A junior engineer can follow the workflow and update statuses without additional guidance.
 - Automated Test Requirements:
   - Add doc lint rule verifying each phase file contains status tokens, acceptance criteria, and automated test sections.
-

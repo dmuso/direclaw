@@ -44,7 +44,7 @@ Supported step types:
 
 Workflow step execution mechanism:
 
-- Every step attempt is executed by invoking the step agent's configured provider CLI (`claude` or `codex`) using `docs/spec/06-provider-integration.md`.
+- Every step attempt is executed by invoking the step agent's configured provider CLI (`claude` or `codex`) using `docs/build/spec/06-provider-integration.md`.
 - Orchestrator never bypasses provider CLI execution for any step type.
 
 ## Channel Entry Routing
@@ -90,9 +90,9 @@ Default subject-matter deployment pattern:
 
 Orchestrator config examples:
 
-- `docs/spec/examples/orchestrators/minimal.orchestrator.yaml`
-- `docs/spec/examples/orchestrators/engineering.orchestrator.yaml`
-- `docs/spec/examples/orchestrators/product.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/minimal.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/engineering.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/product.orchestrator.yaml`
 
 ## Workflow Definition Format
 
@@ -123,9 +123,9 @@ Optional fields:
 
 Reference examples:
 
-- `docs/spec/examples/orchestrators/minimal.orchestrator.yaml`
-- `docs/spec/examples/orchestrators/engineering.orchestrator.yaml`
-- `docs/spec/examples/orchestrators/product.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/minimal.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/engineering.orchestrator.yaml`
+- `docs/build/spec/examples/orchestrators/product.orchestrator.yaml`
 
 ## Template Interpolation
 
@@ -225,8 +225,8 @@ Selector prompts must use a deterministic template and require strict JSON outpu
 
 Template references:
 
-- `docs/spec/examples/prompts/workflow_selector_minimal.prompt.md`
-- `docs/spec/examples/prompts/workflow_selector_rich.prompt.md`
+- `docs/build/spec/examples/prompts/workflow_selector_minimal.prompt.md`
+- `docs/build/spec/examples/prompts/workflow_selector_rich.prompt.md`
 
 Required prompt inputs:
 

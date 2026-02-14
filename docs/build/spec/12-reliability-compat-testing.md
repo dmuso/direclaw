@@ -4,6 +4,9 @@
 
 Defines non-functional reliability requirements, migration compatibility constraints, and required test strategy.
 
+DireClaw v1 channel scope is Slack-only.
+Discord, Telegram, and WhatsApp compatibility and adapter testing are deferred after v1.
+
 ## Reliability Requirements
 
 System must guarantee:
@@ -80,6 +83,7 @@ Requirements:
 - workflow directives never leak to end-user channels
 - Slack thread progress posts are emitted every 15 minutes for active workflow runs
 - Slack thread diagnostics requests return natural-language findings and evidence summary
+- post-v1 adapters (Discord/Telegram/WhatsApp) add equivalent adapter suites when promoted into release scope
 
 ### End-to-End Smoke Tests
 
@@ -95,14 +99,14 @@ Requirements:
 1. Core settings and queue models
 2. Queue processor and routing
 3. Provider runners
-4. Discord and Telegram adapters
-5. WhatsApp and Slack adapters
-6. Agent/workspace commands and workflow definitions
-7. Workflow orchestrator runtime
-8. Heartbeat worker
-9. Daemon operations
-10. Installer/updater and migration tooling
-11. Hardening, workspace/workflow security, compatibility, and release readiness
+4. Slack adapter and worker lifecycle integration (v1)
+5. Agent/workspace commands and workflow definitions
+6. Workflow orchestrator runtime
+7. Heartbeat worker
+8. Daemon operations
+9. Installer/updater and migration tooling
+10. Hardening, workspace/workflow security, compatibility, and release readiness
+11. Post-v1 channel adapters (Discord/Telegram/WhatsApp)
 
 ## Acceptance Criteria
 

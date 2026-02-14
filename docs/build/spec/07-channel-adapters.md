@@ -1,19 +1,19 @@
-# Channel Adapters (Discord/Telegram/WhatsApp/Slack)
+# Channel Adapters
 
 ## Scope
 
-Defines shared adapter responsibilities and channel-specific behavior for inbound and outbound messaging.
+Defines adapter responsibilities and channel-specific behavior for inbound and outbound messaging.
 
-Supported channels:
+DireClaw v1 supports Slack only.
+Discord, Telegram, and WhatsApp are deferred after v1 and remain documented here as post-v1 targets.
 
-- `discord`
-- `telegram`
-- `whatsapp`
+## v1 Supported Channel
+
 - `slack`
 
 ## Common Adapter Requirements
 
-All adapters must:
+When implemented, each adapter must:
 
 - Accept text and media
 - Save inbound media to `~/.direclaw/files`
@@ -24,31 +24,6 @@ All adapters must:
 - Send files before text
 - Cleanup pending entries older than 10 minutes
 - Support `!agent` and `/agent` commands for configured-agent listing
-
-## Discord Adapter
-
-- Process direct messages only
-- Ignore guild messages
-- Download attachments from remote attachment URLs
-- Split outbound text into chunks of max 2000 chars
-- Send typing indicator immediately and refresh every 8s while processing
-
-## Telegram Adapter
-
-- Process private chats only
-- Ignore groups/channels
-- Support media types:
-  - `photo`, `document`, `audio`, `voice`, `video`, `video_note`, `sticker`
-- Split outbound text into chunks of max 4096 chars
-- Send typing indicator immediately and refresh every 4s while processing
-
-## WhatsApp Adapter
-
-- Ignore group chats
-- Support text and supported media message types
-- Persist auth session in `~/.direclaw/whatsapp-session`
-- Emit QR code to terminal and `~/.direclaw/channels/whatsapp_qr.txt`
-- Mark ready state via `~/.direclaw/channels/whatsapp_ready`
 
 ## Slack Adapter
 
@@ -73,9 +48,36 @@ All adapters must:
 - Support diagnostics intent in workflow threads (for example "why did this fail?" or "investigate what failed") and route to orchestrator `diagnostics_investigate`.
 - Exact commands (`status`, `progress`, `/status`, `/progress`) may use adapter/runtime fast-path handling only if behavior is equivalent to selector `workflow_status` action handling.
 
+## Deferred After v1 (Post-v1 Targets)
+
+### Discord Adapter
+
+- Process direct messages only
+- Ignore guild messages
+- Download attachments from remote attachment URLs
+- Split outbound text into chunks of max 2000 chars
+- Send typing indicator immediately and refresh every 8s while processing
+
+### Telegram Adapter
+
+- Process private chats only
+- Ignore groups/channels
+- Support media types:
+  - `photo`, `document`, `audio`, `voice`, `video`, `video_note`, `sticker`
+- Split outbound text into chunks of max 4096 chars
+- Send typing indicator immediately and refresh every 4s while processing
+
+### WhatsApp Adapter
+
+- Ignore group chats
+- Support text and supported media message types
+- Persist auth session in `~/.direclaw/whatsapp-session`
+- Emit QR code to terminal and `~/.direclaw/channels/whatsapp_qr.txt`
+- Mark ready state via `~/.direclaw/channels/whatsapp_ready`
+
 ## Acceptance Criteria
 
-- Inbound events for each channel map to queue payload schema.
-- Outbound responses preserve per-channel chunking and threading semantics.
+- v1 inbound/outbound behavior is fully supported for Slack.
+- Non-Slack adapter requirements are explicitly documented as deferred targets after v1.
 - Adapter commands (`/agent`, `!agent`) return configured agents for the resolved orchestrator/channel profile.
 - Workflow dispatch directives never leak directly to end-user channel messages.

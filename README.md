@@ -2,6 +2,16 @@
 
 DireClaw is an OpenClaw and TinyClaw inspired AI agent platform to get things done.
 
+## v1 Scope
+
+DireClaw v1 supports Slack as the only channel adapter.
+
+### Deferred After v1
+
+- Discord
+- Telegram
+- WhatsApp
+
 ## How DireClaw differs from OpenClaw
 
 DireClaw is influenced by both OpenClaw and TinyClaw. OpenClaw's complexity introduces many areas where things can break. TinyClaw's approach is to drastically simplify things, and start with a multi-agent approach.
@@ -191,7 +201,7 @@ cargo --version
 ```
 
 ### Core workflow
-1. Read relevant specs in `docs/spec/` before implementing.
+1. Read relevant specs in `docs/build/spec/` before implementing.
 2. Make the smallest coherent Rust change.
 3. Add or update tests for the behavior.
 4. Run quality checks from inside `nix-shell`:
@@ -210,8 +220,8 @@ cargo test --all
 - Keep CLI behavior aligned with the spec-defined command surface.
 
 ### Spec references
-- Index: `docs/spec/INDEX.md`
-- Runtime/filesystem: `docs/spec/01-runtime-filesystem.md`
-- Queue processing: `docs/spec/02-queue-processing.md`
-- Configuration and CLI: `docs/spec/09-configuration-cli.md`
-- Reliability/testing baseline: `docs/spec/12-reliability-compat-testing.md`
+- Index: `docs/build/spec/INDEX.md`
+- Runtime/filesystem: `docs/build/spec/01-runtime-filesystem.md`
+- Queue processing: `docs/build/spec/02-queue-processing.md`
+- Configuration and CLI: `docs/build/spec/09-configuration-cli.md`
+- Reliability/testing baseline: `docs/build/spec/12-reliability-compat-testing.md`
