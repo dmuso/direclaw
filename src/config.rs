@@ -439,7 +439,6 @@ impl std::fmt::Display for WorkflowStepType {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Settings {
-    #[serde(alias = "workspace_path")]
     pub workspaces_path: PathBuf,
     #[serde(default)]
     pub shared_workspaces: BTreeMap<String, PathBuf>,
@@ -597,12 +596,12 @@ impl<'de> Deserialize<'de> for WorkflowStepConfig {
         let raw = WorkflowStepConfigRaw::deserialize(deserializer)?;
         let outputs = raw.outputs.ok_or_else(|| {
             D::Error::custom(
-                "workflow step is missing required `outputs`; migrate config to include explicit `outputs` and `output_files` contract fields",
+                "workflow step is missing required `outputs`; include explicit `outputs` and `output_files` contract fields",
             )
         })?;
         let output_files = raw.output_files.ok_or_else(|| {
             D::Error::custom(
-                "workflow step is missing required `output_files`; migrate config to include explicit `outputs` and `output_files` contract fields",
+                "workflow step is missing required `output_files`; include explicit `outputs` and `output_files` contract fields",
             )
         })?;
         Ok(Self {
@@ -1408,7 +1407,7 @@ steps:
     }
 
     #[test]
-    fn workflow_inputs_reject_legacy_mapping_shape() {
+    fn workflow_inputs_reject_mapping_shape() {
         let err = serde_yaml::from_str::<WorkflowConfig>(
             r#"
 id: triage
@@ -1426,7 +1425,7 @@ steps:
       summary: outputs/summary.txt
 "#,
         )
-        .expect_err("legacy mapping inputs should fail");
+        .expect_err("mapping inputs should fail");
         assert!(err.to_string().contains("sequence of string keys"));
     }
 
@@ -1463,7 +1462,6 @@ prompt: hello
         )
         .expect_err("missing output contract fields must fail");
         let message = err.to_string();
-        assert!(message.contains("migrate config"));
         assert!(message.contains("outputs"));
         assert!(message.contains("output_files"));
     }

@@ -53,7 +53,7 @@ fn specs_reference_current_config_paths_and_supported_command_surface() {
         let text = read(&project_root().join(spec));
         assert!(
             !text.contains("~/.direclaw.yaml"),
-            "spec still references legacy config path: {spec}"
+            "spec still references deprecated config path: {spec}"
         );
         assert!(
             text.contains("~/.direclaw/config.yaml"),

@@ -4428,7 +4428,7 @@ ignored
         );
 
         let minimal = r#"{
-          "runId":"legacy-run",
+          "runId":"run-minimal",
           "workflowId":"wf",
           "state":"queued",
           "startedAt":1,
