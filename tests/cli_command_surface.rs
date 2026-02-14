@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -40,6 +41,14 @@ fn assert_err_contains(output: &Output, needle: &str) {
         text.contains(needle),
         "expected error to contain `{needle}`, got:\n{text}"
     );
+}
+
+fn kv_lines(output: &Output) -> BTreeMap<String, String> {
+    stdout(output)
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 fn write_settings(home: &Path, include_shared_docs: bool) {
@@ -93,11 +102,28 @@ fn daemon_command_surface_works() {
 
     let status = run(temp.path(), &["status"]);
     assert_ok(&status);
-    assert!(stdout(&status).contains("running=true"));
+    let status_contract = kv_lines(&status);
+    for required in [
+        "ownership",
+        "running",
+        "pid",
+        "started_at",
+        "stopped_at",
+        "last_error",
+    ] {
+        assert!(
+            status_contract.contains_key(required),
+            "status output missing `{required}`:\n{}",
+            stdout(&status)
+        );
+    }
 
     assert_ok(&run(temp.path(), &["logs"]));
     assert_ok(&run(temp.path(), &["attach"]));
-    assert_ok(&run(temp.path(), &["update", "check"]));
+    let update = run(temp.path(), &["update", "check"]);
+    assert_err_contains(&update, "update is not implemented in this build");
+    assert_err_contains(&update, "remediation:");
+    assert_ok(&run(temp.path(), &["doctor"]));
     assert_ok(&run(temp.path(), &["channels", "reset"]));
     assert_ok(&run(temp.path(), &["auth", "sync"]));
     let send_missing_profile = run(temp.path(), &["send", "missing-profile", "hello"]);
@@ -106,6 +132,127 @@ fn daemon_command_surface_works() {
     assert_ok(&run(temp.path(), &["stop"]));
     assert_ok(&run(temp.path(), &["restart"]));
     assert_ok(&run(temp.path(), &["stop"]));
+}
+
+#[test]
+fn doctor_reports_healthy_and_unhealthy_permutations() {
+    let temp = tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("create workspace");
+    fs::write(
+        temp.path().join(".direclaw.yaml"),
+        format!(
+            r#"
+workspace_path: {workspace}
+shared_workspaces: {{}}
+orchestrators: {{}}
+channel_profiles: {{}}
+monitoring: {{}}
+channels:
+  slack:
+    enabled: false
+"#,
+            workspace = workspace.display()
+        ),
+    )
+    .expect("write settings");
+
+    let unhealthy = Command::new(env!("CARGO_BIN_EXE_direclaw"))
+        .arg("doctor")
+        .env("HOME", temp.path())
+        .env("PATH", "")
+        .output()
+        .expect("run unhealthy doctor");
+    assert_ok(&unhealthy);
+    let unhealthy_out = stdout(&unhealthy);
+    assert!(unhealthy_out.contains("summary=unhealthy"));
+    assert!(unhealthy_out.contains("check:binary.anthropic=fail"));
+    assert!(unhealthy_out.contains("check:binary.openai=fail"));
+
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    for name in ["claude", "codex"] {
+        let path = bin_dir.join(name);
+        fs::write(&path, "#!/bin/sh\necho ok\n").expect("write shim");
+    }
+    let non_exec = Command::new(env!("CARGO_BIN_EXE_direclaw"))
+        .arg("doctor")
+        .env("HOME", temp.path())
+        .env("PATH", bin_dir.display().to_string())
+        .output()
+        .expect("run non-executable doctor");
+    assert_ok(&non_exec);
+    let non_exec_out = stdout(&non_exec);
+    assert!(non_exec_out.contains("summary=unhealthy"));
+    assert!(non_exec_out.contains("check:binary.anthropic=fail"));
+    assert!(non_exec_out.contains("check:binary.openai=fail"));
+
+    for name in ["claude", "codex"] {
+        let path = bin_dir.join(name);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).expect("chmod");
+        }
+    }
+    let healthy = Command::new(env!("CARGO_BIN_EXE_direclaw"))
+        .arg("doctor")
+        .env("HOME", temp.path())
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .output()
+        .expect("run healthy doctor");
+    assert_ok(&healthy);
+    let healthy_out = stdout(&healthy);
+    assert!(healthy_out.contains("summary=healthy"));
+    assert!(healthy_out.contains("checks_failed=0"));
+}
+
+#[test]
+fn cli_output_contracts_include_structured_health_and_remediation() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["setup"]));
+
+    let status = run(temp.path(), &["status"]);
+    assert_ok(&status);
+    let status_contract = kv_lines(&status);
+    assert!(status_contract.contains_key("ownership"));
+    assert!(status_contract.contains_key("running"));
+    assert!(status_contract.contains_key("pid"));
+
+    let update = run(temp.path(), &["update", "apply"]);
+    assert_err_contains(&update, "update is not implemented in this build");
+    assert_err_contains(
+        &update,
+        "remediation: visit release notes and install the target binary manually",
+    );
+
+    let doctor = run(temp.path(), &["doctor"]);
+    assert_ok(&doctor);
+    let doctor_out = stdout(&doctor);
+    for required in [
+        "summary=",
+        "checks_total=",
+        "checks_failed=",
+        "check:config.path=",
+    ] {
+        assert!(
+            doctor_out.contains(required),
+            "doctor output missing `{required}`:\n{doctor_out}"
+        );
+    }
+
+    let bad_update = run(temp.path(), &["update", "bogus"]);
+    assert_err_contains(&bad_update, "usage: update [check|apply]");
 }
 
 #[test]

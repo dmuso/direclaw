@@ -90,6 +90,12 @@ fn sample_selector_request() -> SelectorRequest {
             "workflow.cancel".to_string(),
             "orchestrator.list".to_string(),
         ],
+        available_function_schemas: FunctionRegistry::new(vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ])
+        .available_function_schemas(),
     }
 }
 
@@ -628,6 +634,42 @@ fn malicious_output_file_template_is_blocked_before_step_execution() {
     let err = resolve_step_output_paths(&state_root, "run-malicious", step, 1)
         .expect_err("must block traversal");
     assert!(err.to_string().contains("output path validation failed"));
+}
+
+#[test]
+fn command_invoke_validation_enforces_schema_and_allowlist() {
+    let request = SelectorRequest {
+        selector_id: "selector-1".to_string(),
+        channel_profile_id: "engineering".to_string(),
+        message_id: "message-1".to_string(),
+        conversation_id: Some("thread-1".to_string()),
+        user_message: "cancel".to_string(),
+        available_workflows: vec!["engineering_default".to_string()],
+        default_workflow: "engineering_default".to_string(),
+        available_functions: vec!["workflow.cancel".to_string()],
+        available_function_schemas: FunctionRegistry::new(vec!["workflow.cancel".to_string()])
+            .available_function_schemas(),
+    };
+
+    let unknown_key = r#"{
+      "selectorId":"selector-1",
+      "status":"selected",
+      "action":"command_invoke",
+      "functionId":"workflow.cancel",
+      "functionArgs":{"runId":"run-1","extra":"nope"}
+    }"#;
+    let err = parse_and_validate_selector_result(unknown_key, &request).expect_err("must fail");
+    assert!(err.to_string().contains("unknown argument"));
+
+    let wrong_type = r#"{
+      "selectorId":"selector-1",
+      "status":"selected",
+      "action":"command_invoke",
+      "functionId":"workflow.cancel",
+      "functionArgs":{"runId":10}
+    }"#;
+    let err = parse_and_validate_selector_result(wrong_type, &request).expect_err("must fail");
+    assert!(err.to_string().contains("must be string"));
 }
 
 #[test]

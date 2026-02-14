@@ -1,3 +1,4 @@
+use crate::cli;
 use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, Settings,
     WorkflowConfig, WorkflowStepConfig,
@@ -24,6 +25,14 @@ pub enum OrchestratorError {
     UnknownFunction { function_id: String },
     #[error("missing required function argument `{arg}`")]
     MissingFunctionArg { arg: String },
+    #[error("unknown function argument `{arg}` for `{function_id}`")]
+    UnknownFunctionArg { function_id: String, arg: String },
+    #[error("invalid argument type for `{function_id}.{arg}`; expected {expected}")]
+    InvalidFunctionArgType {
+        function_id: String,
+        arg: String,
+        expected: String,
+    },
     #[error("workflow run `{run_id}` not found")]
     UnknownRunId { run_id: String },
     #[error("workflow run state transition `{from}` -> `{to}` is invalid")]
@@ -131,6 +140,56 @@ pub fn resolve_orchestrator_id(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FunctionArgType {
+    String,
+    Boolean,
+    Integer,
+    Object,
+}
+
+impl FunctionArgType {
+    fn matches(&self, value: &Value) -> bool {
+        match self {
+            Self::String => value.is_string(),
+            Self::Boolean => value.is_boolean(),
+            Self::Integer => value.is_i64() || value.is_u64(),
+            Self::Object => value.is_object(),
+        }
+    }
+}
+
+impl std::fmt::Display for FunctionArgType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::String => write!(f, "string"),
+            Self::Boolean => write!(f, "boolean"),
+            Self::Integer => write!(f, "integer"),
+            Self::Object => write!(f, "object"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionArgSchema {
+    #[serde(rename = "type")]
+    pub arg_type: FunctionArgType,
+    pub required: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionSchema {
+    pub function_id: String,
+    pub description: String,
+    #[serde(default)]
+    pub args: BTreeMap<String, FunctionArgSchema>,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectorRequest {
     pub selector_id: String,
@@ -143,6 +202,8 @@ pub struct SelectorRequest {
     pub default_workflow: String,
     #[serde(default)]
     pub available_functions: Vec<String>,
+    #[serde(default)]
+    pub available_function_schemas: Vec<FunctionSchema>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,6 +296,37 @@ pub fn parse_and_validate_selector_result(
                         return Err(OrchestratorError::SelectorValidation(
                             "command_invoke requires functionArgs object".to_string(),
                         ));
+                    }
+                    if let Some(schema) = request
+                        .available_function_schemas
+                        .iter()
+                        .find(|schema| schema.function_id == *function_id)
+                    {
+                        let args = result.function_args.as_ref().expect("checked above");
+                        for key in args.keys() {
+                            if !schema.args.contains_key(key) {
+                                return Err(OrchestratorError::SelectorValidation(format!(
+                                    "command_invoke has unknown argument `{key}` for function `{function_id}`"
+                                )));
+                            }
+                        }
+                        for (arg, arg_schema) in &schema.args {
+                            match args.get(arg) {
+                                Some(value) if arg_schema.arg_type.matches(value) => {}
+                                Some(_) => {
+                                    return Err(OrchestratorError::SelectorValidation(format!(
+                                        "command_invoke argument `{arg}` for function `{function_id}` must be {}",
+                                        arg_schema.arg_type
+                                    )))
+                                }
+                                None if arg_schema.required => {
+                                    return Err(OrchestratorError::SelectorValidation(format!(
+                                        "command_invoke missing required argument `{arg}` for function `{function_id}`"
+                                    )))
+                                }
+                                None => {}
+                            }
+                        }
                     }
                 }
             }
@@ -1193,7 +1285,9 @@ pub struct FunctionCall {
 #[derive(Debug, Clone)]
 pub struct FunctionRegistry {
     allowed: BTreeSet<String>,
+    catalog: BTreeMap<String, FunctionSchema>,
     run_store: Option<WorkflowRunStore>,
+    settings: Option<Settings>,
 }
 
 impl Default for FunctionRegistry {
@@ -1203,13 +1297,558 @@ impl Default for FunctionRegistry {
 }
 
 impl FunctionRegistry {
+    fn v1_catalog() -> BTreeMap<String, FunctionSchema> {
+        let mut catalog = BTreeMap::new();
+        let mut register = |function_id: &str,
+                            description: &str,
+                            args: Vec<(&str, FunctionArgType, bool, &str)>,
+                            read_only: bool| {
+            catalog.insert(
+                function_id.to_string(),
+                FunctionSchema {
+                    function_id: function_id.to_string(),
+                    description: description.to_string(),
+                    args: args
+                        .into_iter()
+                        .map(|(name, arg_type, required, arg_desc)| {
+                            (
+                                name.to_string(),
+                                FunctionArgSchema {
+                                    arg_type,
+                                    required,
+                                    description: arg_desc.to_string(),
+                                },
+                            )
+                        })
+                        .collect(),
+                    read_only,
+                },
+            );
+        };
+
+        register("daemon.start", "Start runtime workers", Vec::new(), false);
+        register("daemon.stop", "Stop runtime workers", Vec::new(), false);
+        register(
+            "daemon.restart",
+            "Restart runtime workers",
+            Vec::new(),
+            false,
+        );
+        register(
+            "daemon.status",
+            "Read runtime status and worker health",
+            Vec::new(),
+            true,
+        );
+        register("daemon.logs", "Read recent runtime logs", Vec::new(), true);
+        register(
+            "daemon.setup",
+            "Create default config and state root",
+            Vec::new(),
+            false,
+        );
+        register(
+            "daemon.send",
+            "Send message to channel profile",
+            vec![
+                (
+                    "channelProfileId",
+                    FunctionArgType::String,
+                    true,
+                    "Target channel profile id",
+                ),
+                ("message", FunctionArgType::String, true, "Message content"),
+            ],
+            false,
+        );
+        register(
+            "channels.reset",
+            "Reset channel state directories",
+            Vec::new(),
+            false,
+        );
+        register(
+            "channels.slack_sync",
+            "Run one Slack sync pass",
+            Vec::new(),
+            false,
+        );
+        register(
+            "provider.show",
+            "Show current provider/model preferences",
+            Vec::new(),
+            true,
+        );
+        register(
+            "provider.set",
+            "Set provider preference and optional model",
+            vec![
+                (
+                    "provider",
+                    FunctionArgType::String,
+                    true,
+                    "Provider id: anthropic or openai",
+                ),
+                (
+                    "model",
+                    FunctionArgType::String,
+                    false,
+                    "Optional model identifier",
+                ),
+            ],
+            false,
+        );
+        register(
+            "model.show",
+            "Show current model preference",
+            Vec::new(),
+            true,
+        );
+        register(
+            "model.set",
+            "Set model preference",
+            vec![("model", FunctionArgType::String, true, "Model identifier")],
+            false,
+        );
+        register(
+            "agent.list",
+            "List orchestrator agent ids",
+            vec![(
+                "orchestratorId",
+                FunctionArgType::String,
+                true,
+                "Target orchestrator id",
+            )],
+            true,
+        );
+        register(
+            "agent.add",
+            "Add orchestrator-local agent",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("agentId", FunctionArgType::String, true, "Agent id"),
+            ],
+            false,
+        );
+        register(
+            "agent.show",
+            "Show orchestrator-local agent",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("agentId", FunctionArgType::String, true, "Agent id"),
+            ],
+            true,
+        );
+        register(
+            "agent.remove",
+            "Remove orchestrator-local agent",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("agentId", FunctionArgType::String, true, "Agent id"),
+            ],
+            false,
+        );
+        register(
+            "agent.reset",
+            "Reset orchestrator-local agent defaults",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("agentId", FunctionArgType::String, true, "Agent id"),
+            ],
+            false,
+        );
+        register(
+            "orchestrator.list",
+            "List orchestrator ids",
+            Vec::new(),
+            true,
+        );
+        register(
+            "orchestrator.add",
+            "Add orchestrator and bootstrap config",
+            vec![(
+                "orchestratorId",
+                FunctionArgType::String,
+                true,
+                "Orchestrator id",
+            )],
+            false,
+        );
+        register(
+            "orchestrator.show",
+            "Show one orchestrator configuration summary",
+            vec![(
+                "orchestratorId",
+                FunctionArgType::String,
+                true,
+                "Target orchestrator id",
+            )],
+            true,
+        );
+        register(
+            "orchestrator.remove",
+            "Remove orchestrator from settings",
+            vec![(
+                "orchestratorId",
+                FunctionArgType::String,
+                true,
+                "Target orchestrator id",
+            )],
+            false,
+        );
+        register(
+            "orchestrator.set_private_workspace",
+            "Set orchestrator private workspace path",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                (
+                    "path",
+                    FunctionArgType::String,
+                    true,
+                    "Absolute private workspace path",
+                ),
+            ],
+            false,
+        );
+        register(
+            "orchestrator.grant_shared_access",
+            "Grant shared workspace key to orchestrator",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                (
+                    "sharedKey",
+                    FunctionArgType::String,
+                    true,
+                    "Shared workspace key",
+                ),
+            ],
+            false,
+        );
+        register(
+            "orchestrator.revoke_shared_access",
+            "Revoke shared workspace key from orchestrator",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                (
+                    "sharedKey",
+                    FunctionArgType::String,
+                    true,
+                    "Shared workspace key",
+                ),
+            ],
+            false,
+        );
+        register(
+            "orchestrator.set_selector_agent",
+            "Set orchestrator selector agent id",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                (
+                    "agentId",
+                    FunctionArgType::String,
+                    true,
+                    "Selector agent id",
+                ),
+            ],
+            false,
+        );
+        register(
+            "orchestrator.set_default_workflow",
+            "Set orchestrator default workflow id",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("workflowId", FunctionArgType::String, true, "Workflow id"),
+            ],
+            false,
+        );
+        register(
+            "orchestrator.set_selection_max_retries",
+            "Set selector retry limit",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("count", FunctionArgType::Integer, true, "Retry count >= 1"),
+            ],
+            false,
+        );
+        register(
+            "workflow.list",
+            "List workflows for an orchestrator",
+            vec![(
+                "orchestratorId",
+                FunctionArgType::String,
+                true,
+                "Target orchestrator id",
+            )],
+            true,
+        );
+        register(
+            "workflow.show",
+            "Show one workflow definition",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                (
+                    "workflowId",
+                    FunctionArgType::String,
+                    true,
+                    "Workflow id in orchestrator scope",
+                ),
+            ],
+            true,
+        );
+        register(
+            "workflow.add",
+            "Add workflow to orchestrator config",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("workflowId", FunctionArgType::String, true, "Workflow id"),
+            ],
+            false,
+        );
+        register(
+            "workflow.remove",
+            "Remove workflow from orchestrator config",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("workflowId", FunctionArgType::String, true, "Workflow id"),
+            ],
+            false,
+        );
+        register(
+            "workflow.run",
+            "Start a workflow run",
+            vec![
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Target orchestrator id",
+                ),
+                ("workflowId", FunctionArgType::String, true, "Workflow id"),
+                (
+                    "inputs",
+                    FunctionArgType::Object,
+                    false,
+                    "Optional key/value workflow inputs",
+                ),
+            ],
+            false,
+        );
+        register(
+            "workflow.status",
+            "Read workflow run status summary",
+            vec![("runId", FunctionArgType::String, true, "Workflow run id")],
+            true,
+        );
+        register(
+            "workflow.progress",
+            "Read full workflow progress payload",
+            vec![("runId", FunctionArgType::String, true, "Workflow run id")],
+            true,
+        );
+        register(
+            "workflow.cancel",
+            "Cancel a workflow run",
+            vec![("runId", FunctionArgType::String, true, "Workflow run id")],
+            false,
+        );
+        register(
+            "channel_profile.list",
+            "List configured channel profile ids",
+            Vec::new(),
+            true,
+        );
+        register(
+            "channel_profile.add",
+            "Add channel profile mapping",
+            vec![
+                (
+                    "channelProfileId",
+                    FunctionArgType::String,
+                    true,
+                    "Channel profile id",
+                ),
+                (
+                    "channel",
+                    FunctionArgType::String,
+                    true,
+                    "Channel backend id",
+                ),
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Mapped orchestrator id",
+                ),
+                (
+                    "slackAppUserId",
+                    FunctionArgType::String,
+                    false,
+                    "Slack bot user id",
+                ),
+                (
+                    "requireMentionInChannels",
+                    FunctionArgType::Boolean,
+                    false,
+                    "Slack mention requirement in channels",
+                ),
+            ],
+            false,
+        );
+        register(
+            "channel_profile.show",
+            "Show one channel profile mapping",
+            vec![(
+                "channelProfileId",
+                FunctionArgType::String,
+                true,
+                "Channel profile id",
+            )],
+            true,
+        );
+        register(
+            "channel_profile.remove",
+            "Remove channel profile mapping",
+            vec![(
+                "channelProfileId",
+                FunctionArgType::String,
+                true,
+                "Channel profile id",
+            )],
+            false,
+        );
+        register(
+            "channel_profile.set_orchestrator",
+            "Update channel profile orchestrator mapping",
+            vec![
+                (
+                    "channelProfileId",
+                    FunctionArgType::String,
+                    true,
+                    "Channel profile id",
+                ),
+                (
+                    "orchestratorId",
+                    FunctionArgType::String,
+                    true,
+                    "Mapped orchestrator id",
+                ),
+            ],
+            false,
+        );
+        register("update.check", "Check for updates", Vec::new(), true);
+        register(
+            "update.apply",
+            "Apply update (unsupported in this build)",
+            Vec::new(),
+            false,
+        );
+        register(
+            "daemon.attach",
+            "Attach to supervisor or return workflow summary",
+            Vec::new(),
+            true,
+        );
+
+        catalog
+    }
+
+    fn invoke_cli(&self, args: Vec<String>) -> Result<Value, OrchestratorError> {
+        let command = args.join(" ");
+        let output = cli::run(args).map_err(OrchestratorError::SelectorValidation)?;
+        Ok(Value::Object(Map::from_iter([
+            ("command".to_string(), Value::String(command)),
+            ("output".to_string(), Value::String(output)),
+        ])))
+    }
+
+    fn normalize_allowlist<I>(
+        function_ids: I,
+        catalog: &BTreeMap<String, FunctionSchema>,
+    ) -> BTreeSet<String>
+    where
+        I: IntoIterator<Item = String>,
+    {
+        function_ids
+            .into_iter()
+            .filter(|id| catalog.contains_key(id))
+            .collect()
+    }
+
     pub fn new<I>(function_ids: I) -> Self
     where
         I: IntoIterator<Item = String>,
     {
+        let catalog = Self::v1_catalog();
         Self {
-            allowed: function_ids.into_iter().collect(),
+            allowed: Self::normalize_allowlist(function_ids, &catalog),
+            catalog,
             run_store: None,
+            settings: None,
         }
     }
 
@@ -1217,9 +1856,40 @@ impl FunctionRegistry {
     where
         I: IntoIterator<Item = String>,
     {
+        let catalog = Self::v1_catalog();
         Self {
-            allowed: function_ids.into_iter().collect(),
+            allowed: Self::normalize_allowlist(function_ids, &catalog),
+            catalog,
             run_store: Some(run_store),
+            settings: None,
+        }
+    }
+
+    pub fn with_context<I>(
+        function_ids: I,
+        run_store: Option<WorkflowRunStore>,
+        settings: Option<Settings>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let catalog = Self::v1_catalog();
+        Self {
+            allowed: Self::normalize_allowlist(function_ids, &catalog),
+            catalog,
+            run_store,
+            settings,
+        }
+    }
+
+    pub fn v1_defaults(run_store: WorkflowRunStore, settings: &Settings) -> Self {
+        let catalog = Self::v1_catalog();
+        let allowed = catalog.keys().cloned().collect();
+        Self {
+            allowed,
+            catalog,
+            run_store: Some(run_store),
+            settings: Some(settings.clone()),
         }
     }
 
@@ -1231,19 +1901,264 @@ impl FunctionRegistry {
         self.allowed.iter().cloned().collect()
     }
 
+    pub fn available_function_schemas(&self) -> Vec<FunctionSchema> {
+        self.allowed
+            .iter()
+            .filter_map(|id| self.catalog.get(id))
+            .cloned()
+            .collect()
+    }
+
+    fn validate_args(
+        &self,
+        call: &FunctionCall,
+        schema: &FunctionSchema,
+    ) -> Result<(), OrchestratorError> {
+        for key in call.args.keys() {
+            if !schema.args.contains_key(key) {
+                return Err(OrchestratorError::UnknownFunctionArg {
+                    function_id: call.function_id.clone(),
+                    arg: key.clone(),
+                });
+            }
+        }
+        for (arg, arg_schema) in &schema.args {
+            match call.args.get(arg) {
+                Some(value) => {
+                    if !arg_schema.arg_type.matches(value) {
+                        return Err(OrchestratorError::InvalidFunctionArgType {
+                            function_id: call.function_id.clone(),
+                            arg: arg.clone(),
+                            expected: arg_schema.arg_type.to_string(),
+                        });
+                    }
+                }
+                None if arg_schema.required => {
+                    return Err(OrchestratorError::MissingFunctionArg { arg: arg.clone() })
+                }
+                None => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn invoke(&self, call: &FunctionCall) -> Result<Value, OrchestratorError> {
         if !self.contains(&call.function_id) {
             return Err(OrchestratorError::UnknownFunction {
                 function_id: call.function_id.clone(),
             });
         }
+        let schema = self.catalog.get(&call.function_id).ok_or_else(|| {
+            OrchestratorError::UnknownFunction {
+                function_id: call.function_id.clone(),
+            }
+        })?;
+        self.validate_args(call, schema)?;
 
         match call.function_id.as_str() {
+            "daemon.start" => self.invoke_cli(vec!["start".to_string()]),
+            "daemon.stop" => self.invoke_cli(vec!["stop".to_string()]),
+            "daemon.restart" => self.invoke_cli(vec!["restart".to_string()]),
+            "daemon.status" => self.invoke_cli(vec!["status".to_string()]),
+            "daemon.logs" => self.invoke_cli(vec!["logs".to_string()]),
+            "daemon.setup" => self.invoke_cli(vec!["setup".to_string()]),
+            "daemon.send" => {
+                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
+                let message = parse_required_string_arg(&call.args, "message")?;
+                self.invoke_cli(vec!["send".to_string(), profile_id, message])
+            }
+            "channels.reset" => self.invoke_cli(vec!["channels".to_string(), "reset".to_string()]),
+            "channels.slack_sync" => self.invoke_cli(vec![
+                "channels".to_string(),
+                "slack".to_string(),
+                "sync".to_string(),
+            ]),
+            "provider.show" => self.invoke_cli(vec!["provider".to_string()]),
+            "provider.set" => {
+                let provider = parse_required_string_arg(&call.args, "provider")?;
+                let mut args = vec!["provider".to_string(), provider];
+                if let Some(model) = parse_optional_string_arg(&call.args, "model")? {
+                    args.push("--model".to_string());
+                    args.push(model);
+                }
+                self.invoke_cli(args)
+            }
+            "model.show" => self.invoke_cli(vec!["model".to_string()]),
+            "model.set" => {
+                let model = parse_required_string_arg(&call.args, "model")?;
+                self.invoke_cli(vec!["model".to_string(), model])
+            }
+            "agent.list" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                self.invoke_cli(vec![
+                    "agent".to_string(),
+                    "list".to_string(),
+                    orchestrator_id,
+                ])
+            }
+            "agent.add" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
+                self.invoke_cli(vec![
+                    "agent".to_string(),
+                    "add".to_string(),
+                    orchestrator_id,
+                    agent_id,
+                ])
+            }
+            "agent.show" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
+                self.invoke_cli(vec![
+                    "agent".to_string(),
+                    "show".to_string(),
+                    orchestrator_id,
+                    agent_id,
+                ])
+            }
+            "agent.remove" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
+                self.invoke_cli(vec![
+                    "agent".to_string(),
+                    "remove".to_string(),
+                    orchestrator_id,
+                    agent_id,
+                ])
+            }
+            "agent.reset" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
+                self.invoke_cli(vec![
+                    "agent".to_string(),
+                    "reset".to_string(),
+                    orchestrator_id,
+                    agent_id,
+                ])
+            }
+            "orchestrator.add" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "add".to_string(),
+                    orchestrator_id,
+                ])
+            }
+            "workflow.list" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let settings = self.settings.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "workflow.list requires settings context".to_string(),
+                    )
+                })?;
+                let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
+                Ok(Value::Object(Map::from_iter([
+                    ("orchestratorId".to_string(), Value::String(orchestrator_id)),
+                    (
+                        "workflows".to_string(),
+                        Value::Array(
+                            orchestrator
+                                .workflows
+                                .iter()
+                                .map(|w| Value::String(w.id.clone()))
+                                .collect(),
+                        ),
+                    ),
+                ])))
+            }
+            "workflow.show" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
+                let settings = self.settings.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "workflow.show requires settings context".to_string(),
+                    )
+                })?;
+                let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
+                let workflow = orchestrator
+                    .workflows
+                    .iter()
+                    .find(|w| w.id == workflow_id)
+                    .ok_or_else(|| {
+                        OrchestratorError::SelectorValidation(format!(
+                            "workflow `{workflow_id}` not found in orchestrator `{orchestrator_id}`"
+                        ))
+                    })?;
+                Ok(Value::Object(Map::from_iter([
+                    ("orchestratorId".to_string(), Value::String(orchestrator_id)),
+                    ("workflowId".to_string(), Value::String(workflow_id)),
+                    (
+                        "workflow".to_string(),
+                        serde_json::to_value(workflow)
+                            .map_err(|e| OrchestratorError::SelectorJson(e.to_string()))?,
+                    ),
+                ])))
+            }
+            "workflow.add" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
+                self.invoke_cli(vec![
+                    "workflow".to_string(),
+                    "add".to_string(),
+                    orchestrator_id,
+                    workflow_id,
+                ])
+            }
+            "workflow.remove" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
+                self.invoke_cli(vec![
+                    "workflow".to_string(),
+                    "remove".to_string(),
+                    orchestrator_id,
+                    workflow_id,
+                ])
+            }
+            "workflow.run" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
+                let mut args = vec![
+                    "workflow".to_string(),
+                    "run".to_string(),
+                    orchestrator_id,
+                    workflow_id,
+                ];
+                if let Some(inputs) = parse_optional_object_arg(&call.args, "inputs") {
+                    for (key, value) in inputs {
+                        let encoded = value
+                            .as_str()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| value.to_string());
+                        args.push("--input".to_string());
+                        args.push(format!("{key}={encoded}"));
+                    }
+                }
+                self.invoke_cli(args)
+            }
             "workflow.status" => {
                 let run_id = parse_run_id_arg(&call.args)?;
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "workflow.status requires workflow run store".to_string(),
+                    )
+                })?;
+                let progress = run_store
+                    .load_progress(&run_id)
+                    .map_err(|e| missing_run_for_io(&run_id, &e).unwrap_or(e))?;
+                Ok(Value::Object(Map::from_iter([
+                    ("runId".to_string(), Value::String(run_id)),
+                    (
+                        "progress".to_string(),
+                        serde_json::to_value(progress)
+                            .map_err(|e| OrchestratorError::SelectorJson(e.to_string()))?,
+                    ),
+                ])))
+            }
+            "workflow.progress" => {
+                let run_id = parse_run_id_arg(&call.args)?;
+                let run_store = self.run_store.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "workflow.progress requires workflow run store".to_string(),
                     )
                 })?;
                 let progress = run_store
@@ -1284,16 +2199,228 @@ impl FunctionRegistry {
                     ("state".to_string(), Value::String(run.state.to_string())),
                 ])))
             }
-            "orchestrator.list" => Ok(Value::Object(Map::from_iter([(
-                "availableFunctions".to_string(),
-                Value::Array(
-                    self.allowed
-                        .iter()
-                        .cloned()
-                        .map(Value::String)
-                        .collect::<Vec<_>>(),
-                ),
-            )]))),
+            "orchestrator.list" => {
+                let settings = self.settings.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "orchestrator.list requires settings context".to_string(),
+                    )
+                })?;
+                Ok(Value::Object(Map::from_iter([(
+                    "orchestrators".to_string(),
+                    Value::Array(
+                        settings
+                            .orchestrators
+                            .keys()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                )])))
+            }
+            "orchestrator.show" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let settings = self.settings.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "orchestrator.show requires settings context".to_string(),
+                    )
+                })?;
+                let entry = settings
+                    .orchestrators
+                    .get(&orchestrator_id)
+                    .ok_or_else(|| {
+                        OrchestratorError::SelectorValidation(format!(
+                            "unknown orchestrator `{orchestrator_id}`"
+                        ))
+                    })?;
+                let private_workspace = settings.resolve_private_workspace(&orchestrator_id)?;
+                Ok(Value::Object(Map::from_iter([
+                    ("orchestratorId".to_string(), Value::String(orchestrator_id)),
+                    (
+                        "privateWorkspace".to_string(),
+                        Value::String(private_workspace.display().to_string()),
+                    ),
+                    (
+                        "sharedAccess".to_string(),
+                        Value::Array(
+                            entry
+                                .shared_access
+                                .iter()
+                                .cloned()
+                                .map(Value::String)
+                                .collect(),
+                        ),
+                    ),
+                ])))
+            }
+            "orchestrator.remove" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "remove".to_string(),
+                    orchestrator_id,
+                ])
+            }
+            "orchestrator.set_private_workspace" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let path = parse_required_string_arg(&call.args, "path")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "set-private-workspace".to_string(),
+                    orchestrator_id,
+                    path,
+                ])
+            }
+            "orchestrator.grant_shared_access" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let shared_key = parse_required_string_arg(&call.args, "sharedKey")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "grant-shared-access".to_string(),
+                    orchestrator_id,
+                    shared_key,
+                ])
+            }
+            "orchestrator.revoke_shared_access" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let shared_key = parse_required_string_arg(&call.args, "sharedKey")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "revoke-shared-access".to_string(),
+                    orchestrator_id,
+                    shared_key,
+                ])
+            }
+            "orchestrator.set_selector_agent" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "set-selector-agent".to_string(),
+                    orchestrator_id,
+                    agent_id,
+                ])
+            }
+            "orchestrator.set_default_workflow" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "set-default-workflow".to_string(),
+                    orchestrator_id,
+                    workflow_id,
+                ])
+            }
+            "orchestrator.set_selection_max_retries" => {
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let count = parse_required_u32_arg(&call.args, "count")?;
+                self.invoke_cli(vec![
+                    "orchestrator".to_string(),
+                    "set-selection-max-retries".to_string(),
+                    orchestrator_id,
+                    count.to_string(),
+                ])
+            }
+            "channel_profile.list" => {
+                let settings = self.settings.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "channel_profile.list requires settings context".to_string(),
+                    )
+                })?;
+                Ok(Value::Object(Map::from_iter([(
+                    "channelProfiles".to_string(),
+                    Value::Array(
+                        settings
+                            .channel_profiles
+                            .keys()
+                            .cloned()
+                            .map(Value::String)
+                            .collect(),
+                    ),
+                )])))
+            }
+            "channel_profile.show" => {
+                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
+                let settings = self.settings.as_ref().ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(
+                        "channel_profile.show requires settings context".to_string(),
+                    )
+                })?;
+                let profile = settings.channel_profiles.get(&profile_id).ok_or_else(|| {
+                    OrchestratorError::SelectorValidation(format!(
+                        "unknown channel profile `{profile_id}`"
+                    ))
+                })?;
+                Ok(Value::Object(Map::from_iter([
+                    ("channelProfileId".to_string(), Value::String(profile_id)),
+                    (
+                        "channel".to_string(),
+                        Value::String(profile.channel.clone()),
+                    ),
+                    (
+                        "orchestratorId".to_string(),
+                        Value::String(profile.orchestrator_id.clone()),
+                    ),
+                    (
+                        "slackAppUserId".to_string(),
+                        profile
+                            .slack_app_user_id
+                            .as_ref()
+                            .map(|v| Value::String(v.clone()))
+                            .unwrap_or(Value::Null),
+                    ),
+                    (
+                        "requireMentionInChannels".to_string(),
+                        profile
+                            .require_mention_in_channels
+                            .map(Value::Bool)
+                            .unwrap_or(Value::Null),
+                    ),
+                ])))
+            }
+            "channel_profile.add" => {
+                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
+                let channel = parse_required_string_arg(&call.args, "channel")?;
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                let mut args = vec![
+                    "channel-profile".to_string(),
+                    "add".to_string(),
+                    profile_id,
+                    channel,
+                    orchestrator_id,
+                ];
+                if let Some(user_id) = parse_optional_string_arg(&call.args, "slackAppUserId")? {
+                    args.push("--slack-app-user-id".to_string());
+                    args.push(user_id);
+                }
+                if let Some(require_mention) =
+                    parse_optional_bool_arg(&call.args, "requireMentionInChannels")?
+                {
+                    args.push("--require-mention-in-channels".to_string());
+                    args.push(require_mention.to_string());
+                }
+                self.invoke_cli(args)
+            }
+            "channel_profile.remove" => {
+                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
+                self.invoke_cli(vec![
+                    "channel-profile".to_string(),
+                    "remove".to_string(),
+                    profile_id,
+                ])
+            }
+            "channel_profile.set_orchestrator" => {
+                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
+                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+                self.invoke_cli(vec![
+                    "channel-profile".to_string(),
+                    "set-orchestrator".to_string(),
+                    profile_id,
+                    orchestrator_id,
+                ])
+            }
+            "update.check" => self.invoke_cli(vec!["update".to_string(), "check".to_string()]),
+            "update.apply" => self.invoke_cli(vec!["update".to_string(), "apply".to_string()]),
+            "daemon.attach" => self.invoke_cli(vec!["attach".to_string()]),
             _ => Err(OrchestratorError::SelectorValidation(format!(
                 "function `{}` is allowed but has no implementation",
                 call.function_id
@@ -1303,13 +2430,67 @@ impl FunctionRegistry {
 }
 
 fn parse_run_id_arg(args: &Map<String, Value>) -> Result<String, OrchestratorError> {
-    args.get("runId")
+    parse_required_string_arg(args, "runId")
+}
+
+fn parse_required_string_arg(
+    args: &Map<String, Value>,
+    arg: &str,
+) -> Result<String, OrchestratorError> {
+    args.get(arg)
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
         .ok_or_else(|| OrchestratorError::MissingFunctionArg {
-            arg: "runId".to_string(),
+            arg: arg.to_string(),
         })
+}
+
+fn parse_optional_string_arg(
+    args: &Map<String, Value>,
+    arg: &str,
+) -> Result<Option<String>, OrchestratorError> {
+    match args.get(arg) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+        Some(Value::String(_)) => Err(OrchestratorError::MissingFunctionArg {
+            arg: arg.to_string(),
+        }),
+        Some(_) => Err(OrchestratorError::SelectorValidation(format!(
+            "argument `{arg}` must be a non-empty string"
+        ))),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_bool_arg(
+    args: &Map<String, Value>,
+    arg: &str,
+) -> Result<Option<bool>, OrchestratorError> {
+    match args.get(arg) {
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(OrchestratorError::SelectorValidation(format!(
+            "argument `{arg}` must be boolean"
+        ))),
+        None => Ok(None),
+    }
+}
+
+fn parse_required_u32_arg(args: &Map<String, Value>, arg: &str) -> Result<u32, OrchestratorError> {
+    let value = args.get(arg).and_then(Value::as_u64).ok_or_else(|| {
+        OrchestratorError::MissingFunctionArg {
+            arg: arg.to_string(),
+        }
+    })?;
+    u32::try_from(value).map_err(|_| {
+        OrchestratorError::SelectorValidation(format!("argument `{arg}` is out of range for u32"))
+    })
+}
+
+fn parse_optional_object_arg<'a>(
+    args: &'a Map<String, Value>,
+    arg: &str,
+) -> Option<&'a Map<String, Value>> {
+    args.get(arg).and_then(Value::as_object)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1651,6 +2832,7 @@ where
             available_workflows: Vec::new(),
             default_workflow: String::new(),
             available_functions: functions.available_function_ids(),
+            available_function_schemas: functions.available_function_schemas(),
         };
         let status_result = SelectorResult {
             selector_id: pseudo_request.selector_id.clone(),
@@ -1718,6 +2900,7 @@ where
             .collect(),
         default_workflow: orchestrator.default_workflow.clone(),
         available_functions: functions.available_function_ids(),
+        available_function_schemas: functions.available_function_schemas(),
     };
 
     let artifact_store = SelectorArtifactStore::new(state_root);
@@ -1816,6 +2999,7 @@ channels: {}
             available_workflows: vec!["wf".to_string()],
             default_workflow: "wf".to_string(),
             available_functions: vec!["workflow.status".to_string()],
+            available_function_schemas: Vec::new(),
         };
         let raw = r#"{
           "selectorId":"sel-1",
@@ -1929,5 +3113,137 @@ channels: {}
         let err =
             resolve_step_output_paths(&state_root, "run-123", &bad_step, 1).expect_err("blocked");
         assert!(err.to_string().contains("output path validation failed"));
+    }
+
+    #[test]
+    fn function_registry_exposes_machine_readable_schemas_for_v1_scope() {
+        let expected_ids = vec![
+            "daemon.start",
+            "daemon.stop",
+            "daemon.restart",
+            "daemon.status",
+            "daemon.logs",
+            "daemon.setup",
+            "daemon.send",
+            "channels.reset",
+            "channels.slack_sync",
+            "provider.show",
+            "provider.set",
+            "model.show",
+            "model.set",
+            "agent.list",
+            "agent.add",
+            "agent.show",
+            "agent.remove",
+            "agent.reset",
+            "orchestrator.list",
+            "orchestrator.add",
+            "orchestrator.show",
+            "orchestrator.remove",
+            "orchestrator.set_private_workspace",
+            "orchestrator.grant_shared_access",
+            "orchestrator.revoke_shared_access",
+            "orchestrator.set_selector_agent",
+            "orchestrator.set_default_workflow",
+            "orchestrator.set_selection_max_retries",
+            "workflow.list",
+            "workflow.show",
+            "workflow.add",
+            "workflow.remove",
+            "workflow.run",
+            "workflow.status",
+            "workflow.progress",
+            "workflow.cancel",
+            "channel_profile.list",
+            "channel_profile.add",
+            "channel_profile.show",
+            "channel_profile.remove",
+            "channel_profile.set_orchestrator",
+            "update.check",
+            "update.apply",
+            "daemon.attach",
+        ];
+        let registry = FunctionRegistry::new(expected_ids.iter().map(|id| id.to_string()));
+        let schemas = registry.available_function_schemas();
+        assert_eq!(schemas.len(), expected_ids.len());
+        for expected in &expected_ids {
+            assert!(
+                schemas.iter().any(|f| &f.function_id == expected),
+                "missing function schema for {expected}"
+            );
+        }
+        assert!(schemas
+            .iter()
+            .any(|f| f.function_id == "workflow.progress" && f.read_only));
+        assert!(schemas.iter().any(|f| {
+            f.function_id == "workflow.cancel" && !f.read_only && f.args.contains_key("runId")
+        }));
+        assert!(schemas.iter().any(
+            |f| f.function_id == "orchestrator.set_selection_max_retries"
+                && f.args.contains_key("count")
+        ));
+    }
+
+    #[test]
+    fn function_registry_rejects_unknown_and_invalid_args() {
+        let registry = FunctionRegistry::new(vec!["workflow.status".to_string()]);
+        let unknown_arg = FunctionCall {
+            function_id: "workflow.status".to_string(),
+            args: Map::from_iter([("extra".to_string(), Value::String("x".to_string()))]),
+        };
+        let err = registry.invoke(&unknown_arg).expect_err("unknown arg");
+        assert!(err.to_string().contains("unknown function argument"));
+
+        let invalid_type = FunctionCall {
+            function_id: "workflow.status".to_string(),
+            args: Map::from_iter([("runId".to_string(), Value::Bool(true))]),
+        };
+        let err = registry.invoke(&invalid_type).expect_err("invalid type");
+        assert!(err.to_string().contains("invalid argument type"));
+    }
+
+    #[test]
+    fn workflow_status_and_progress_commands_are_read_only() {
+        let temp = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(temp.path());
+        let run_id = "run-readonly";
+        let mut run = store.create_run(run_id, "wf", 10).expect("create run");
+        store
+            .transition_state(
+                &mut run,
+                RunState::Running,
+                11,
+                "running",
+                false,
+                "continue",
+            )
+            .expect("running");
+        let before = store.load_run(run_id).expect("before");
+
+        let registry = FunctionRegistry::with_run_store(
+            vec![
+                "workflow.status".to_string(),
+                "workflow.progress".to_string(),
+            ],
+            store.clone(),
+        );
+        registry
+            .invoke(&FunctionCall {
+                function_id: "workflow.status".to_string(),
+                args: Map::from_iter([("runId".to_string(), Value::String(run_id.to_string()))]),
+            })
+            .expect("status call");
+        registry
+            .invoke(&FunctionCall {
+                function_id: "workflow.progress".to_string(),
+                args: Map::from_iter([("runId".to_string(), Value::String(run_id.to_string()))]),
+            })
+            .expect("progress call");
+
+        let after = store.load_run(run_id).expect("after");
+        assert_eq!(before.updated_at, after.updated_at);
+        assert_eq!(before.state, after.state);
+        assert_eq!(before.current_step_id, after.current_step_id);
+        assert_eq!(before.current_attempt, after.current_attempt);
     }
 }

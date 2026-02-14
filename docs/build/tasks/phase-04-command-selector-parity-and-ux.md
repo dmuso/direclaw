@@ -13,7 +13,7 @@ Primary reference:
 
 ### P04-T01 Expand function registry for command parity (v1 scope)
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Define function IDs for supported v1 commands (workflow, orchestrator, channel-profile, status/progress actions).
   - Keep naming stable and command-aligned.
@@ -27,7 +27,7 @@ Primary reference:
 
 ### P04-T02 Harden command invocation validation and safety
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Validate required args, type constraints, and reject unknown arg keys.
   - Ensure read-only commands (status/progress) never mutate state.
@@ -39,7 +39,7 @@ Primary reference:
 
 ### P04-T03 Improve CLI operational output quality
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Standardize success/error output shape across commands.
   - Ensure high-signal error messages include concrete remediation hints.
@@ -52,7 +52,7 @@ Primary reference:
 
 ### P04-T04 Implement runtime readiness diagnostics command
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Add `direclaw doctor` to validate environment prerequisites:
     - config paths
@@ -64,4 +64,3 @@ Primary reference:
   - Fresh installs can run one command to identify setup blockers.
 - Automated Test Requirements:
   - Integration tests for healthy and unhealthy environment permutations.
-

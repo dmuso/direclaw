@@ -1130,14 +1130,7 @@ fn process_claimed_message(
 ) -> Result<(), String> {
     let queue_paths = QueuePaths::from_state_root(state_root);
     let run_store = WorkflowRunStore::new(state_root);
-    let functions = FunctionRegistry::with_run_store(
-        vec![
-            "workflow.status".to_string(),
-            "workflow.cancel".to_string(),
-            "orchestrator.list".to_string(),
-        ],
-        run_store,
-    );
+    let functions = FunctionRegistry::v1_defaults(run_store, settings);
 
     let action = orchestrator::process_queued_message(
         state_root,
