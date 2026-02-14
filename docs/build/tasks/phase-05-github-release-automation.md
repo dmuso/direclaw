@@ -13,7 +13,7 @@ Primary reference:
 
 ### P05-T01 Implement required CI workflows
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Add PR CI workflow in `.github/workflows`.
   - Run required checks:
@@ -28,7 +28,7 @@ Primary reference:
 
 ### P05-T02 Implement release build matrix and artifact packaging
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Build binaries for:
     - macOS arm64
@@ -43,7 +43,7 @@ Primary reference:
 
 ### P05-T03 Publish GitHub Releases with validated notes
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Create release notes template including install steps and known limits.
   - Attach all artifacts and checksums to GitHub Release.
@@ -55,7 +55,7 @@ Primary reference:
 
 ### P05-T04 Define update command behavior aligned with release system
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - `update check` must query real release metadata.
   - `update apply` must be either implemented safely or fail explicitly as unsupported.
@@ -64,4 +64,3 @@ Primary reference:
   - Update outputs reflect real release state and never mislead users.
 - Automated Test Requirements:
   - Unit/integration tests for update metadata parsing and unsupported/apply behavior.
-

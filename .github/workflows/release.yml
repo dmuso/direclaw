@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to use for artifact naming (for example v1.0.0)'
+        required: true
+        type: string
+      publish:
+        description: 'Publish a GitHub Release'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Release Tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Build
+        shell: bash
+        run: |
+          nix-shell --run "cargo build --release --locked --target ${{ matrix.target }}"
+
+      - name: Smoke Test Binary
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/direclaw"
+          TMP_HOME="$(mktemp -d)"
+          HOME="$TMP_HOME" "$BIN" --help >/dev/null
+          HOME="$TMP_HOME" "$BIN" setup >/dev/null
+          HOME="$TMP_HOME" "$BIN" status >/dev/null
+
+      - name: Package Artifact
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.value }}"
+          TARGET="${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/direclaw" dist/direclaw
+          TAR_NAME="direclaw-${TAG_NAME}-${TARGET}.tar.gz"
+          tar -C dist -czf "dist/${TAR_NAME}" direclaw
+          rm dist/direclaw
+
+      - name: Smoke Test Archive Install
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.value }}"
+          TARGET="${{ matrix.target }}"
+          TAR_NAME="dist/direclaw-${TAG_NAME}-${TARGET}.tar.gz"
+          INSTALL_ROOT="$(mktemp -d)"
+          tar -C "$INSTALL_ROOT" -xzf "$TAR_NAME"
+          BIN="$INSTALL_ROOT/direclaw"
+          TMP_HOME="$(mktemp -d)"
+          HOME="$TMP_HOME" "$BIN" --help >/dev/null
+          HOME="$TMP_HOME" "$BIN" setup >/dev/null
+          HOME="$TMP_HOME" "$BIN" status >/dev/null
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: direclaw-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Validate, Checksum, and Publish
+    runs-on: ubuntu-22.04
+    needs: build
+    permissions:
+      contents: write
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve Release Tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Validate Artifact Names
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.value }}"
+          EXPECTED=(
+            "direclaw-${TAG_NAME}-aarch64-apple-darwin.tar.gz"
+            "direclaw-${TAG_NAME}-x86_64-unknown-linux-gnu.tar.gz"
+            "direclaw-${TAG_NAME}-aarch64-unknown-linux-gnu.tar.gz"
+          )
+          cd dist
+          mapfile -t FOUND < <(find . -maxdepth 1 -type f -name 'direclaw-*.tar.gz' -printf '%f\n' | sort)
+          if [[ "${#FOUND[@]}" -ne 3 ]]; then
+            echo "expected 3 tarballs, found ${#FOUND[@]}"
+            printf '%s\n' "${FOUND[@]}"
+            exit 1
+          fi
+          for expected in "${EXPECTED[@]}"; do
+            if [[ ! -f "$expected" ]]; then
+              echo "missing expected artifact: $expected"
+              exit 1
+            fi
+          done
+
+      - name: Generate Checksums
+        shell: bash
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f -name 'direclaw-*.tar.gz' -printf '%f\n' | sort | xargs shasum -a 256 > checksums.txt
+
+      - name: Verify Checksums
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 -c checksums.txt
+
+      - name: Generate Release Notes
+        shell: bash
+        run: |
+          TAG_NAME="${{ steps.tag.outputs.value }}"
+          VERSION="${TAG_NAME#v}"
+          sed -e "s/{{TAG}}/${TAG_NAME}/g" -e "s/{{VERSION}}/${VERSION}/g" \
+            .github/release-notes-template.md > dist/release-notes.md
+
+      - name: Validate Release Notes
+        shell: bash
+        run: |
+          NOTES="dist/release-notes.md"
+          grep -q '^## Install$' "$NOTES"
+          grep -q '^## SHA256 Verification$' "$NOTES"
+          grep -q '^## Known Limits$' "$NOTES"
+          if grep -q '{{' "$NOTES"; then
+            echo "release notes still contain unreplaced template placeholders"
+            exit 1
+          fi
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' || inputs.publish == true
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: dist/release-notes.md
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          fail_on_unmatched_files: true

@@ -12,6 +12,15 @@ fn run(home: &Path, args: &[&str]) -> Output {
         .expect("run direclaw")
 }
 
+fn run_with_env(home: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_direclaw"));
+    cmd.args(args).env("HOME", home);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("run direclaw")
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
@@ -120,9 +129,19 @@ fn daemon_command_surface_works() {
 
     assert_ok(&run(temp.path(), &["logs"]));
     assert_ok(&run(temp.path(), &["attach"]));
-    let update = run(temp.path(), &["update", "check"]);
-    assert_err_contains(&update, "update is not implemented in this build");
-    assert_err_contains(&update, "remediation:");
+    let update = run_with_env(
+        temp.path(),
+        &["update", "check"],
+        &[
+            ("DIRECLAW_UPDATE_API_URL", "http://127.0.0.1:1"),
+            ("DIRECLAW_UPDATE_REPO", "dharper/rustyclaw"),
+        ],
+    );
+    assert_err_contains(&update, "update check failed");
+    assert_err_contains(
+        &update,
+        "remediation: verify network access and set DIRECLAW_UPDATE_REPO/DIRECLAW_UPDATE_API_URL if needed",
+    );
     assert_ok(&run(temp.path(), &["doctor"]));
     assert_ok(&run(temp.path(), &["channels", "reset"]));
     assert_ok(&run(temp.path(), &["auth", "sync"]));
@@ -230,10 +249,13 @@ fn cli_output_contracts_include_structured_health_and_remediation() {
     assert!(status_contract.contains_key("pid"));
 
     let update = run(temp.path(), &["update", "apply"]);
-    assert_err_contains(&update, "update is not implemented in this build");
     assert_err_contains(
         &update,
-        "remediation: visit release notes and install the target binary manually",
+        "update apply is unsupported in this build to avoid unsafe in-place upgrades",
+    );
+    assert_err_contains(
+        &update,
+        "remediation: visit GitHub Releases, download the target archive, verify SHA256, and replace the binary manually",
     );
 
     let doctor = run(temp.path(), &["doctor"]);

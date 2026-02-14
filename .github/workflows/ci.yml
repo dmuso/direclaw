@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  checks:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Format Check
+        run: nix-shell --run 'cargo fmt --all -- --check'
+
+      - name: Lint Check
+        run: nix-shell --run 'cargo clippy --all-targets --all-features -- -D warnings'
+
+      - name: Test Suite
+        run: nix-shell --run 'cargo test --all'
+
+      - name: Docs Link Check
+        run: nix-shell --run 'cargo test --test docs_phase00_baseline markdown_links_and_paths_resolve_for_contributor_and_operator_docs'
