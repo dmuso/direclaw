@@ -5,7 +5,7 @@ use direclaw::orchestrator::{
     resolve_step_output_paths, route_selector_action, ExecutionSafetyLimits, FunctionRegistry,
     RouteContext, RoutedSelectorAction, RunState, SelectorAction, SelectorArtifactStore,
     SelectorRequest, SelectorResult, SelectorStatus, StatusResolutionInput, StepAttemptRecord,
-    WorkflowRunStore,
+    WorkflowEngine, WorkflowRunStore,
 };
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::{bootstrap_state_root, StatePaths};
@@ -230,11 +230,40 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
     };
 
     let run = store.load_run(&run_id).expect("load run");
-    assert_eq!(run.state, RunState::Running);
+    assert_eq!(run.state, RunState::Succeeded);
     assert_eq!(run.source_message_id.as_deref(), Some("message-1"));
     assert_eq!(run.selector_id.as_deref(), Some("selector-1"));
     assert_eq!(run.selected_workflow.as_deref(), Some("fix_issue"));
     assert_eq!(run.status_conversation_id.as_deref(), Some("thread-1"));
+    assert_eq!(
+        run.inputs.get("user_message"),
+        Some(&Value::String("please fix this bug".to_string()))
+    );
+    assert!(state_root
+        .join(format!(
+            "workflows/runs/{run_id}/steps/plan/attempts/1/result.json"
+        ))
+        .is_file());
+    assert!(state_root
+        .join(format!(
+            "workflows/runs/{run_id}/steps/review/attempts/1/result.json"
+        ))
+        .is_file());
+    assert!(state_root
+        .join(format!(
+            "workflows/runs/{run_id}/steps/done/attempts/1/result.json"
+        ))
+        .is_file());
+    let engine_log_path = state_root.join(format!("workflows/runs/{run_id}/engine.log"));
+    assert!(engine_log_path.is_file());
+    let engine_log = fs::read_to_string(engine_log_path).expect("read engine log");
+    assert!(engine_log.contains(&format!("run_id={run_id}")));
+    assert!(engine_log.contains("step_id=plan"));
+    assert!(engine_log.contains("attempt=1"));
+
+    let progress = store.load_progress(&run_id).expect("progress");
+    assert_eq!(progress.input_count, run.inputs.len());
+    assert!(progress.input_keys.contains(&"user_message".to_string()));
 
     let before = store.load_run(&run_id).expect("before status");
     let status_result = SelectorResult {
@@ -275,7 +304,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             ..
         } => {
             assert_eq!(found, run_id);
-            assert_eq!(progress.state, RunState::Running);
+            assert_eq!(progress.state, RunState::Succeeded);
         }
         other => panic!("unexpected status route: {other:?}"),
     }
@@ -334,6 +363,68 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
     let err = parse_and_validate_selector_result(unknown_function, &request)
         .expect_err("reject unknown function");
     assert!(err.to_string().contains("availableFunctions"));
+}
+
+#[test]
+fn workflow_engine_resume_replays_persisted_in_progress_attempt() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let store = WorkflowRunStore::new(&state_root);
+    let mut run = store
+        .create_run("run-resume", "fix_issue", 10)
+        .expect("create run");
+    store
+        .transition_state(
+            &mut run,
+            RunState::Running,
+            11,
+            "running",
+            false,
+            "execute next step",
+        )
+        .expect("running");
+    store
+        .mark_step_attempt_started(&mut run, "plan", 1, 12)
+        .expect("mark started");
+
+    let engine = WorkflowEngine::new(store.clone(), sample_orchestrator());
+    let resumed = engine.resume("run-resume", 13).expect("resume");
+    assert_eq!(resumed.state, RunState::Succeeded);
+    assert_eq!(resumed.current_step_id, None);
+    assert_eq!(resumed.current_attempt, None);
+    assert!(state_root
+        .join("workflows/runs/run-resume/steps/plan/attempts/1/result.json")
+        .is_file());
+    assert!(state_root
+        .join("workflows/runs/run-resume/steps/review/attempts/1/result.json")
+        .is_file());
+    assert!(state_root
+        .join("workflows/runs/run-resume/steps/done/attempts/1/result.json")
+        .is_file());
+}
+
+#[test]
+fn workflow_engine_start_failure_transitions_run_to_failed() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let store = WorkflowRunStore::new(&state_root);
+    store
+        .create_run("run-bad", "missing_workflow", 20)
+        .expect("create run");
+
+    let engine = WorkflowEngine::new(store.clone(), sample_orchestrator());
+    let err = engine.start("run-bad", 21).expect_err("start should fail");
+    assert!(err.to_string().contains("not declared"));
+
+    let failed = store.load_run("run-bad").expect("load failed run");
+    assert_eq!(failed.state, RunState::Failed);
+    let progress = store.load_progress("run-bad").expect("progress");
+    assert_eq!(progress.state, RunState::Failed);
+    assert!(progress.summary.contains("engine start failed"));
 }
 
 #[test]

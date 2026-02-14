@@ -4,7 +4,7 @@ use crate::config::{
     Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig,
     WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
 };
-use crate::orchestrator::{RunState, WorkflowRunStore};
+use crate::orchestrator::{RunState, WorkflowEngine, WorkflowRunStore};
 use crate::queue::IncomingMessage;
 use crate::runtime::{
     append_runtime_log, bootstrap_state_root, cleanup_stale_supervisor, default_state_root_path,
@@ -1683,18 +1683,12 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
             let paths = ensure_runtime_root()?;
             let store = WorkflowRunStore::new(&paths.root);
             let run_id = format!("run-{}-{}-{}", orchestrator_id, workflow_id, now_nanos());
-            let mut run = store
-                .create_run(run_id.clone(), workflow_id.clone(), now_secs())
-                .map_err(|e| e.to_string())?;
             store
-                .transition_state(
-                    &mut run,
-                    RunState::Running,
-                    now_secs(),
-                    format!("workflow started with {} inputs", input_map.len()),
-                    false,
-                    "continue workflow",
-                )
+                .create_run_with_inputs(run_id.clone(), workflow_id.clone(), input_map, now_secs())
+                .map_err(|e| e.to_string())?;
+            let engine = WorkflowEngine::new(store.clone(), orchestrator.clone());
+            engine
+                .start(&run_id, now_secs())
                 .map_err(|e| e.to_string())?;
             Ok(format!("workflow started\nrun_id={run_id}"))
         }
@@ -1704,10 +1698,17 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
             }
             let paths = ensure_runtime_root()?;
             let store = WorkflowRunStore::new(&paths.root);
+            let run = store.load_run(&args[1]).map_err(|e| e.to_string())?;
             let progress = store.load_progress(&args[1]).map_err(|e| e.to_string())?;
+            let mut input_keys = run.inputs.keys().cloned().collect::<Vec<_>>();
+            input_keys.sort();
             Ok(format!(
-                "run_id={}\nstate={}\nsummary={}",
-                progress.run_id, progress.state, progress.summary
+                "run_id={}\nstate={}\nsummary={}\ninput_count={}\ninput_keys={}",
+                progress.run_id,
+                progress.state,
+                progress.summary,
+                run.inputs.len(),
+                input_keys.join(",")
             ))
         }
         "progress" => {

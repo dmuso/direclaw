@@ -360,8 +360,36 @@ fn workflow_commands_work() {
     assert_ok(&run_output);
     let run_id = run_id_from(&run_output);
 
-    assert_ok(&run(temp.path(), &["workflow", "status", &run_id]));
-    assert_ok(&run(temp.path(), &["workflow", "progress", &run_id]));
+    let status = run(temp.path(), &["workflow", "status", &run_id]);
+    assert_ok(&status);
+    let status_text = String::from_utf8_lossy(&status.stdout);
+    assert!(status_text.contains("state=succeeded"));
+    assert!(status_text.contains("input_count=1"));
+    assert!(status_text.contains("input_keys=ticket"));
+
+    let progress = run(temp.path(), &["workflow", "progress", &run_id]);
+    assert_ok(&progress);
+    let progress_stdout = String::from_utf8_lossy(&progress.stdout);
+    let progress_json_start = progress_stdout
+        .find('{')
+        .expect("progress output should include json object");
+    let progress_json: serde_json::Value =
+        serde_json::from_str(&progress_stdout[progress_json_start..]).expect("parse progress json");
+    assert_eq!(progress_json["inputCount"], serde_json::Value::from(1));
+    assert_eq!(progress_json["inputKeys"], serde_json::json!(["ticket"]));
+
+    let run_record_path = temp
+        .path()
+        .join(".direclaw/workflows/runs")
+        .join(format!("{run_id}.json"));
+    let run_record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&run_record_path).expect("read run record"))
+            .expect("parse run record");
+    assert_eq!(
+        run_record["inputs"]["ticket"],
+        serde_json::Value::String("123".to_string())
+    );
+
     assert_ok(&run(temp.path(), &["workflow", "cancel", &run_id]));
 }
 

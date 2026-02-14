@@ -493,6 +493,7 @@ impl RunState {
         matches!(
             (self, next),
             (RunState::Queued, RunState::Running)
+                | (RunState::Queued, RunState::Failed)
                 | (RunState::Queued, RunState::Canceled)
                 | (RunState::Running, RunState::Waiting)
                 | (RunState::Running, RunState::Succeeded)
@@ -532,6 +533,8 @@ pub struct WorkflowRunRecord {
     pub workflow_id: String,
     pub state: RunState,
     #[serde(default)]
+    pub inputs: Map<String, Value>,
+    #[serde(default)]
     pub current_step_id: Option<String>,
     #[serde(default)]
     pub current_attempt: Option<u32>,
@@ -554,6 +557,10 @@ pub struct ProgressSnapshot {
     pub run_id: String,
     pub workflow_id: String,
     pub state: RunState,
+    #[serde(default)]
+    pub input_count: usize,
+    #[serde(default)]
+    pub input_keys: Vec<String>,
     #[serde(default)]
     pub current_step_id: Option<String>,
     #[serde(default)]
@@ -611,10 +618,21 @@ impl WorkflowRunStore {
         workflow_id: impl Into<String>,
         now: i64,
     ) -> Result<WorkflowRunRecord, OrchestratorError> {
+        self.create_run_with_inputs(run_id, workflow_id, Map::new(), now)
+    }
+
+    pub fn create_run_with_inputs(
+        &self,
+        run_id: impl Into<String>,
+        workflow_id: impl Into<String>,
+        inputs: Map<String, Value>,
+        now: i64,
+    ) -> Result<WorkflowRunRecord, OrchestratorError> {
         self.create_run_with_metadata(
             run_id,
             workflow_id,
             SelectorStartedRunMetadata::default(),
+            inputs,
             now,
         )
     }
@@ -624,12 +642,15 @@ impl WorkflowRunStore {
         run_id: impl Into<String>,
         workflow_id: impl Into<String>,
         metadata: SelectorStartedRunMetadata,
+        inputs: Map<String, Value>,
         now: i64,
     ) -> Result<WorkflowRunRecord, OrchestratorError> {
+        let input_keys = sorted_input_keys(&inputs);
         let run = WorkflowRunRecord {
             run_id: run_id.into(),
             workflow_id: workflow_id.into(),
             state: RunState::Queued,
+            inputs,
             current_step_id: None,
             current_attempt: None,
             started_at: now,
@@ -645,6 +666,8 @@ impl WorkflowRunStore {
             run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             state: run.state.clone(),
+            input_count: run.inputs.len(),
+            input_keys,
             current_step_id: None,
             current_attempt: None,
             started_at: run.started_at,
@@ -708,6 +731,8 @@ impl WorkflowRunStore {
             run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             state: run.state.clone(),
+            input_count: run.inputs.len(),
+            input_keys: sorted_input_keys(&run.inputs),
             current_step_id: run.current_step_id.clone(),
             current_attempt: run.current_attempt,
             started_at: run.started_at,
@@ -729,6 +754,8 @@ impl WorkflowRunStore {
             run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             state: run.state.clone(),
+            input_count: run.inputs.len(),
+            input_keys: sorted_input_keys(&run.inputs),
             current_step_id: run.current_step_id.clone(),
             current_attempt: run.current_attempt,
             started_at: run.started_at,
@@ -759,6 +786,8 @@ impl WorkflowRunStore {
             run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             state: run.state.clone(),
+            input_count: run.inputs.len(),
+            input_keys: sorted_input_keys(&run.inputs),
             current_step_id: run.current_step_id.clone(),
             current_attempt: run.current_attempt,
             started_at: run.started_at,
@@ -810,6 +839,8 @@ impl WorkflowRunStore {
             run_id: run.run_id.clone(),
             workflow_id: run.workflow_id.clone(),
             state: run.state.clone(),
+            input_count: run.inputs.len(),
+            input_keys: sorted_input_keys(&run.inputs),
             current_step_id: Some(attempt.step_id.clone()),
             current_attempt: Some(attempt.attempt),
             started_at: run.started_at,
@@ -841,6 +872,359 @@ impl WorkflowRunStore {
 
     fn progress_path(&self, run_id: &str) -> PathBuf {
         self.run_dir(run_id).join("progress.json")
+    }
+
+    fn engine_log_path(&self, run_id: &str) -> PathBuf {
+        self.run_dir(run_id).join("engine.log")
+    }
+
+    pub fn append_engine_log(
+        &self,
+        run_id: &str,
+        now: i64,
+        message: impl AsRef<str>,
+    ) -> Result<(), OrchestratorError> {
+        let path = self.engine_log_path(run_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| io_error(&path, e))?;
+        writeln!(file, "ts={now} {}", message.as_ref()).map_err(|e| io_error(&path, e))
+    }
+
+    pub fn load_step_attempt(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        attempt: u32,
+    ) -> Result<StepAttemptRecord, OrchestratorError> {
+        let path = self
+            .run_dir(run_id)
+            .join("steps")
+            .join(step_id)
+            .join("attempts")
+            .join(attempt.to_string())
+            .join("result.json");
+        let raw = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+        serde_json::from_str(&raw).map_err(|e| json_error(&path, e))
+    }
+
+    pub fn checkpoint(
+        &self,
+        run: &mut WorkflowRunRecord,
+        now: i64,
+        summary: impl Into<String>,
+        pending_human_input: bool,
+        next_expected_action: impl Into<String>,
+    ) -> Result<(), OrchestratorError> {
+        run.updated_at = now;
+        self.persist_run(run)?;
+        self.persist_progress(&ProgressSnapshot {
+            run_id: run.run_id.clone(),
+            workflow_id: run.workflow_id.clone(),
+            state: run.state.clone(),
+            input_count: run.inputs.len(),
+            input_keys: sorted_input_keys(&run.inputs),
+            current_step_id: run.current_step_id.clone(),
+            current_attempt: run.current_attempt,
+            started_at: run.started_at,
+            updated_at: now,
+            last_progress_at: now,
+            summary: summary.into(),
+            pending_human_input,
+            next_expected_action: next_expected_action.into(),
+        })
+    }
+}
+
+fn sorted_input_keys(inputs: &Map<String, Value>) -> Vec<String> {
+    let mut keys = inputs.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowEngine {
+    run_store: WorkflowRunStore,
+    orchestrator: OrchestratorConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NextStepPointer {
+    step_id: String,
+    attempt: u32,
+}
+
+impl WorkflowEngine {
+    pub fn new(run_store: WorkflowRunStore, orchestrator: OrchestratorConfig) -> Self {
+        Self {
+            run_store,
+            orchestrator,
+        }
+    }
+
+    pub fn start(&self, run_id: &str, now: i64) -> Result<WorkflowRunRecord, OrchestratorError> {
+        let mut run = self.run_store.load_run(run_id)?;
+        if run.state == RunState::Queued {
+            let workflow_id = run.workflow_id.clone();
+            self.run_store.transition_state(
+                &mut run,
+                RunState::Running,
+                now,
+                format!("workflow {workflow_id} started"),
+                false,
+                "execute next step",
+            )?;
+        }
+        self.run_until_non_running(&mut run, now.saturating_add(1))?;
+        self.run_store.load_run(run_id)
+    }
+
+    pub fn resume(&self, run_id: &str, now: i64) -> Result<WorkflowRunRecord, OrchestratorError> {
+        let mut run = self.run_store.load_run(run_id)?;
+        if run.state.clone().is_terminal() {
+            return Ok(run);
+        }
+        if run.state == RunState::Queued || run.state == RunState::Waiting {
+            let workflow_id = run.workflow_id.clone();
+            self.run_store.transition_state(
+                &mut run,
+                RunState::Running,
+                now,
+                format!("workflow {workflow_id} resumed"),
+                false,
+                "execute next step",
+            )?;
+        }
+        self.run_until_non_running(&mut run, now.saturating_add(1))?;
+        self.run_store.load_run(run_id)
+    }
+
+    fn run_until_non_running(
+        &self,
+        run: &mut WorkflowRunRecord,
+        start_now: i64,
+    ) -> Result<(), OrchestratorError> {
+        let mut now = start_now;
+        // Guard against accidental infinite loops in malformed workflows.
+        let max_cycles = 10_000u32;
+        let mut cycles = 0u32;
+
+        while run.state == RunState::Running {
+            if cycles >= max_cycles {
+                return Err(OrchestratorError::SelectorValidation(
+                    "workflow engine exceeded maximum execution cycles".to_string(),
+                ));
+            }
+            let previous_iterations = run.total_iterations;
+            self.execute_or_fail(run, now)?;
+            *run = self.run_store.load_run(&run.run_id)?;
+            if run.state == RunState::Running && run.total_iterations == previous_iterations {
+                return Err(OrchestratorError::SelectorValidation(
+                    "workflow engine made no progress while running".to_string(),
+                ));
+            }
+            cycles = cycles.saturating_add(1);
+            now = now.saturating_add(2);
+        }
+
+        Ok(())
+    }
+
+    pub fn execute_next(
+        &self,
+        run: &mut WorkflowRunRecord,
+        now: i64,
+    ) -> Result<(), OrchestratorError> {
+        let workflow = self.workflow_for_run(run)?;
+        let Some(pointer) = self.resolve_next_step_pointer(run, workflow)? else {
+            run.current_step_id = None;
+            run.current_attempt = None;
+            return self.run_store.transition_state(
+                run,
+                RunState::Succeeded,
+                now,
+                "workflow completed",
+                false,
+                "none",
+            );
+        };
+
+        let step = workflow
+            .steps
+            .iter()
+            .find(|step| step.id == pointer.step_id)
+            .ok_or_else(|| {
+                OrchestratorError::SelectorValidation(format!(
+                    "workflow `{}` missing step `{}`",
+                    workflow.id, pointer.step_id
+                ))
+            })?;
+
+        self.run_store.append_engine_log(
+            &run.run_id,
+            now,
+            format!(
+                "run_id={} decision=execute_next step_id={} attempt={} state={}",
+                run.run_id, step.id, pointer.attempt, run.state
+            ),
+        )?;
+        self.run_store
+            .mark_step_attempt_started(run, &step.id, pointer.attempt, now)?;
+
+        let next_step_id = step
+            .next
+            .clone()
+            .or_else(|| next_step_in_workflow(workflow, &step.id));
+        let attempt_state = "skeleton_succeeded".to_string();
+        self.run_store.persist_step_attempt(&StepAttemptRecord {
+            run_id: run.run_id.clone(),
+            step_id: step.id.clone(),
+            attempt: pointer.attempt,
+            started_at: now,
+            ended_at: now.saturating_add(1),
+            state: attempt_state.clone(),
+            outputs: Map::new(),
+            next_step_id: next_step_id.clone(),
+        })?;
+        *run = self.run_store.load_run(&run.run_id)?;
+
+        self.run_store.append_engine_log(
+            &run.run_id,
+            now.saturating_add(1),
+            format!(
+                "run_id={} step_id={} attempt={} transition={} next={}",
+                run.run_id,
+                step.id,
+                pointer.attempt,
+                attempt_state,
+                next_step_id
+                    .clone()
+                    .unwrap_or_else(|| "terminal".to_string())
+            ),
+        )?;
+
+        if let Some(next) = next_step_id {
+            run.current_step_id = Some(next.clone());
+            run.current_attempt = None;
+            self.run_store.checkpoint(
+                run,
+                now.saturating_add(1),
+                format!(
+                    "step {} attempt {} finished; next {}",
+                    step.id, pointer.attempt, next
+                ),
+                false,
+                format!("execute step {next}"),
+            )?;
+        } else {
+            run.current_step_id = None;
+            run.current_attempt = None;
+            self.run_store.transition_state(
+                run,
+                RunState::Succeeded,
+                now.saturating_add(1),
+                format!("step {} attempt {} finished", step.id, pointer.attempt),
+                false,
+                "none",
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn execute_or_fail(
+        &self,
+        run: &mut WorkflowRunRecord,
+        now: i64,
+    ) -> Result<(), OrchestratorError> {
+        match self.execute_next(run, now) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let reason = format!("engine start failed: {err}");
+                self.run_store.append_engine_log(
+                    &run.run_id,
+                    now,
+                    format!("run_id={} transition=failed reason={reason}", run.run_id),
+                )?;
+                if !run.state.clone().is_terminal() {
+                    self.run_store.transition_state(
+                        run,
+                        RunState::Failed,
+                        now,
+                        reason,
+                        false,
+                        "inspect workflow run artifacts",
+                    )?;
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn workflow_for_run<'a>(
+        &'a self,
+        run: &WorkflowRunRecord,
+    ) -> Result<&'a WorkflowConfig, OrchestratorError> {
+        self.orchestrator
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == run.workflow_id)
+            .ok_or_else(|| {
+                OrchestratorError::SelectorValidation(format!(
+                    "workflow `{}` is not declared in orchestrator",
+                    run.workflow_id
+                ))
+            })
+    }
+
+    fn resolve_next_step_pointer(
+        &self,
+        run: &WorkflowRunRecord,
+        workflow: &WorkflowConfig,
+    ) -> Result<Option<NextStepPointer>, OrchestratorError> {
+        let Some(current_step) = run.current_step_id.as_ref() else {
+            return Ok(workflow.steps.first().map(|step| NextStepPointer {
+                step_id: step.id.clone(),
+                attempt: 1,
+            }));
+        };
+
+        let Some(current_attempt) = run.current_attempt else {
+            return Ok(Some(NextStepPointer {
+                step_id: current_step.clone(),
+                attempt: 1,
+            }));
+        };
+
+        let persisted =
+            self.run_store
+                .load_step_attempt(&run.run_id, current_step, current_attempt);
+        match persisted {
+            Ok(attempt_record) => {
+                if let Some(next) = attempt_record.next_step_id {
+                    Ok(Some(NextStepPointer {
+                        step_id: next,
+                        attempt: 1,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(OrchestratorError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(Some(NextStepPointer {
+                    step_id: current_step.clone(),
+                    attempt: current_attempt,
+                }))
+            }
+            Err(other) => Err(other),
+        }
     }
 }
 
@@ -2501,6 +2885,42 @@ pub struct StatusResolutionInput {
     pub conversation_id: Option<String>,
 }
 
+fn selector_start_inputs(
+    request: &SelectorRequest,
+    source_message_id: Option<&str>,
+) -> Map<String, Value> {
+    let mut inputs = Map::new();
+    inputs.insert(
+        "user_message".to_string(),
+        Value::String(request.user_message.clone()),
+    );
+    inputs.insert(
+        "channel_profile_id".to_string(),
+        Value::String(request.channel_profile_id.clone()),
+    );
+    inputs.insert(
+        "selector_id".to_string(),
+        Value::String(request.selector_id.clone()),
+    );
+    inputs.insert(
+        "message_id".to_string(),
+        Value::String(request.message_id.clone()),
+    );
+    if let Some(conversation_id) = request.conversation_id.as_ref() {
+        inputs.insert(
+            "conversation_id".to_string(),
+            Value::String(conversation_id.clone()),
+        );
+    }
+    if let Some(source_message_id) = source_message_id {
+        inputs.insert(
+            "source_message_id".to_string(),
+            Value::String(source_message_id.to_string()),
+        );
+    }
+    inputs
+}
+
 pub fn resolve_status_run_id(
     input: &StatusResolutionInput,
     active_conversation_runs: &BTreeMap<(String, String), String>,
@@ -2611,7 +3031,7 @@ pub fn route_selector_action(
                 );
                 return Err(err);
             }
-            let mut run = ctx.run_store.create_run_with_metadata(
+            ctx.run_store.create_run_with_metadata(
                 run_id.clone(),
                 workflow_id.clone(),
                 SelectorStartedRunMetadata {
@@ -2620,16 +3040,11 @@ pub fn route_selector_action(
                     selected_workflow: Some(workflow_id.clone()),
                     status_conversation_id: request.conversation_id.clone(),
                 },
+                selector_start_inputs(request, ctx.source_message_id),
                 ctx.now,
             )?;
-            ctx.run_store.transition_state(
-                &mut run,
-                RunState::Running,
-                ctx.now,
-                format!("workflow {workflow_id} started"),
-                false,
-                "execute first step",
-            )?;
+            let engine = WorkflowEngine::new(ctx.run_store.clone(), ctx.orchestrator.clone());
+            engine.start(&run_id, ctx.now)?;
 
             Ok(RoutedSelectorAction::WorkflowStart {
                 run_id,
@@ -3031,6 +3446,42 @@ ignored
         assert!(RunState::Queued.can_transition_to(RunState::Running));
         assert!(!RunState::Succeeded.can_transition_to(RunState::Running));
         assert!(!RunState::Failed.can_transition_to(RunState::Running));
+    }
+
+    #[test]
+    fn workflow_run_record_inputs_round_trip_and_backward_compat() {
+        let run = WorkflowRunRecord {
+            run_id: "run-inputs".to_string(),
+            workflow_id: "wf".to_string(),
+            state: RunState::Running,
+            inputs: Map::from_iter([("ticket".to_string(), Value::String("123".to_string()))]),
+            current_step_id: Some("step-1".to_string()),
+            current_attempt: Some(1),
+            started_at: 10,
+            updated_at: 11,
+            total_iterations: 1,
+            source_message_id: None,
+            selector_id: None,
+            selected_workflow: None,
+            status_conversation_id: None,
+        };
+        let encoded = serde_json::to_string(&run).expect("encode");
+        let decoded: WorkflowRunRecord = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(
+            decoded.inputs.get("ticket"),
+            Some(&Value::String("123".to_string()))
+        );
+
+        let legacy = r#"{
+          "runId":"legacy-run",
+          "workflowId":"wf",
+          "state":"queued",
+          "startedAt":1,
+          "updatedAt":1,
+          "totalIterations":0
+        }"#;
+        let legacy_decoded: WorkflowRunRecord = serde_json::from_str(legacy).expect("legacy");
+        assert!(legacy_decoded.inputs.is_empty());
     }
 
     #[test]
