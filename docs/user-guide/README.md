@@ -58,7 +58,7 @@ direclaw setup
 ```
 
 This initializes runtime state under `~/.direclaw` and writes `~/.direclaw/config.yaml` when absent.
-In interactive terminals, `setup` opens a full-screen menu to view/edit workspace, orchestrator, provider/model, and workflow bundle choices.
+In interactive terminals, `setup` opens a full-screen menu to view/edit workspace, orchestrators, provider/model defaults, and workflow template choices.
 
 ### 3. Verify your orchestrator
 

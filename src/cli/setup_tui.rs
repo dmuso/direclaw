@@ -67,7 +67,7 @@ pub(super) fn cmd_setup() -> Result<String, String> {
                 &bootstrap.orchestrator_id,
                 &bootstrap.provider,
                 &bootstrap.model,
-                bootstrap.bundle,
+                bootstrap.workflow_template,
             )
         });
     let orchestrator_path = save_orchestrator_registry(&settings, &bootstrap.orchestrator_configs)?;
@@ -77,12 +77,12 @@ pub(super) fn cmd_setup() -> Result<String, String> {
     };
     save_preferences(&paths, &prefs)?;
     Ok(format!(
-        "setup complete\nconfig={}\nstate_root={}\nworkspace={}\norchestrator={}\nworkflow_bundle={}\nprovider={}\nmodel={}\norchestrator_config={}",
+        "setup complete\nconfig={}\nstate_root={}\nworkspace={}\norchestrator={}\nnew_workflow_template={}\nprovider={}\nmodel={}\norchestrator_config={}",
         path.display(),
         paths.root.display(),
         bootstrap.workspaces_path.display(),
         bootstrap.orchestrator_id,
-        bootstrap.bundle.as_str(),
+        bootstrap.workflow_template.as_str(),
         bootstrap.provider,
         bootstrap.model,
         orchestrator_path.display()
@@ -90,18 +90,18 @@ pub(super) fn cmd_setup() -> Result<String, String> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum SetupWorkflowBundle {
+pub(super) enum SetupWorkflowTemplate {
     Minimal,
     Engineering,
     Product,
 }
 
-impl SetupWorkflowBundle {
+impl SetupWorkflowTemplate {
     fn as_str(self) -> &'static str {
         match self {
-            SetupWorkflowBundle::Minimal => "minimal",
-            SetupWorkflowBundle::Engineering => "engineering",
-            SetupWorkflowBundle::Product => "product",
+            SetupWorkflowTemplate::Minimal => "minimal",
+            SetupWorkflowTemplate::Engineering => "engineering",
+            SetupWorkflowTemplate::Product => "product",
         }
     }
 }
@@ -112,7 +112,7 @@ struct SetupBootstrap {
     orchestrator_id: String,
     provider: String,
     model: String,
-    bundle: SetupWorkflowBundle,
+    workflow_template: SetupWorkflowTemplate,
     orchestrators: BTreeMap<String, SettingsOrchestrator>,
     orchestrator_configs: BTreeMap<String, OrchestratorConfig>,
 }
@@ -142,18 +142,18 @@ fn parse_provider(value: &str) -> Result<String, String> {
     Err("provider must be one of: anthropic, openai".to_string())
 }
 
-fn infer_bundle(orchestrator: &OrchestratorConfig) -> SetupWorkflowBundle {
+fn infer_workflow_template(orchestrator: &OrchestratorConfig) -> SetupWorkflowTemplate {
     if orchestrator.agents.contains_key("planner")
         && orchestrator.agents.contains_key("builder")
         && orchestrator.agents.contains_key("reviewer")
     {
-        return SetupWorkflowBundle::Engineering;
+        return SetupWorkflowTemplate::Engineering;
     }
     if orchestrator.agents.contains_key("researcher") && orchestrator.agents.contains_key("writer")
     {
-        return SetupWorkflowBundle::Product;
+        return SetupWorkflowTemplate::Product;
     }
-    SetupWorkflowBundle::Minimal
+    SetupWorkflowTemplate::Minimal
 }
 
 fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
@@ -163,7 +163,7 @@ fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
         orchestrator_id: "main".to_string(),
         provider: "anthropic".to_string(),
         model: "sonnet".to_string(),
-        bundle: SetupWorkflowBundle::Minimal,
+        workflow_template: SetupWorkflowTemplate::Minimal,
         orchestrators: BTreeMap::from_iter([(
             "main".to_string(),
             SettingsOrchestrator {
@@ -177,7 +177,7 @@ fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
                 "main",
                 "anthropic",
                 "sonnet",
-                SetupWorkflowBundle::Minimal,
+                SetupWorkflowTemplate::Minimal,
             ),
         )]),
     };
@@ -204,7 +204,7 @@ fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
                 orchestrator_id,
                 &bootstrap.provider,
                 &bootstrap.model,
-                SetupWorkflowBundle::Minimal,
+                SetupWorkflowTemplate::Minimal,
             )
         });
     }
@@ -221,18 +221,17 @@ fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
                     bootstrap.model = agent.model.clone();
                 }
             }
-            bootstrap.bundle = infer_bundle(orchestrator);
+            bootstrap.workflow_template = infer_workflow_template(orchestrator);
         }
     }
 
     Ok(bootstrap)
 }
 
-const SETUP_MENU_ITEMS: [&str; 6] = [
+const SETUP_MENU_ITEMS: [&str; 5] = [
     "Workspaces",
     "Orchestrators",
     "Initial Agent Defaults",
-    "Workflow Bundle",
     "Save Setup",
     "Cancel",
 ];
@@ -304,14 +303,7 @@ fn run_setup_tui_loop(
                         status = message;
                     }
                 }
-                3 => {
-                    if let Some(message) =
-                        run_workflow_bundle_tui(terminal, bootstrap, config_exists)?
-                    {
-                        status = message;
-                    }
-                }
-                4 => return Ok(SetupExit::Save),
+                3 => return Ok(SetupExit::Save),
                 _ => return Ok(SetupExit::Cancel),
             },
             _ => {}
@@ -428,33 +420,59 @@ fn run_initial_defaults_tui(
     }
 }
 
-fn run_workflow_bundle_tui(
+fn setup_workflow_template_index(template: SetupWorkflowTemplate) -> usize {
+    match template {
+        SetupWorkflowTemplate::Minimal => 0,
+        SetupWorkflowTemplate::Engineering => 1,
+        SetupWorkflowTemplate::Product => 2,
+    }
+}
+
+fn workflow_template_from_index(index: usize) -> SetupWorkflowTemplate {
+    match index {
+        0 => SetupWorkflowTemplate::Minimal,
+        1 => SetupWorkflowTemplate::Engineering,
+        _ => SetupWorkflowTemplate::Product,
+    }
+}
+
+fn workflow_template_options() -> Vec<String> {
+    vec![
+        "minimal: default agent + default workflow (single-step baseline)".to_string(),
+        "engineering: planner/builder/reviewer + feature_delivery, quick_answer".to_string(),
+        "product: researcher/writer + prd_draft, release_notes".to_string(),
+    ]
+}
+
+struct TemplatePickerUi<'a> {
+    title: &'a str,
+    closed_message: &'a str,
+    apply_message_prefix: &'a str,
+    status_text: &'a str,
+    hint_text: &'a str,
+}
+
+fn run_template_picker_tui(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupBootstrap,
+    initial: SetupWorkflowTemplate,
+    ui: TemplatePickerUi<'_>,
     config_exists: bool,
-) -> Result<Option<String>, String> {
-    let mut selected = match bootstrap.bundle {
-        SetupWorkflowBundle::Minimal => 0usize,
-        SetupWorkflowBundle::Engineering => 1usize,
-        SetupWorkflowBundle::Product => 2usize,
-    };
-    let mut status = "Select a bundle and press Enter. Esc back.".to_string();
+) -> Result<(Option<SetupWorkflowTemplate>, String), String> {
+    let mut selected = setup_workflow_template_index(initial);
+    let status = ui.status_text.to_string();
     loop {
-        let items = vec![
-            "minimal".to_string(),
-            "engineering".to_string(),
-            "product".to_string(),
-        ];
+        let items = workflow_template_options();
         draw_list_screen(
             terminal,
-            "Setup > Workflow Bundle",
+            ui.title,
             config_exists,
             &items,
             selected,
             &status,
-            "Up/Down move | Enter select | Esc back",
+            ui.hint_text,
         )?;
-        let ev = event::read().map_err(|e| format!("failed to read workflow bundle input: {e}"))?;
+        let ev =
+            event::read().map_err(|e| format!("failed to read workflow template input: {e}"))?;
         let Event::Key(key) = ev else {
             continue;
         };
@@ -462,20 +480,41 @@ fn run_workflow_bundle_tui(
             continue;
         }
         match key.code {
-            KeyCode::Esc => return Ok(Some("Closed Workflow Bundle.".to_string())),
+            KeyCode::Esc => return Ok((None, ui.closed_message.to_string())),
             KeyCode::Up => selected = selected.saturating_sub(1),
             KeyCode::Down => selected = std::cmp::min(selected + 1, 2),
             KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
-                bootstrap.bundle = match selected {
-                    0 => SetupWorkflowBundle::Minimal,
-                    1 => SetupWorkflowBundle::Engineering,
-                    _ => SetupWorkflowBundle::Product,
-                };
-                status = format!("workflow bundle set to {}", bootstrap.bundle.as_str());
+                let template = workflow_template_from_index(selected);
+                let message = format!("{} {}", ui.apply_message_prefix, template.as_str());
+                return Ok((Some(template), message));
             }
             _ => {}
         }
     }
+}
+
+fn run_new_workflow_template_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupBootstrap,
+    config_exists: bool,
+) -> Result<Option<String>, String> {
+    let (selection, message) = run_template_picker_tui(
+        terminal,
+        bootstrap.workflow_template,
+        TemplatePickerUi {
+            title: "Setup > Orchestrators > Default New-Orchestrator Workflow Template",
+            closed_message: "Closed workflow template selector.",
+            apply_message_prefix: "new workflow template set to",
+            status_text:
+                "Workflow template used when creating orchestrators. Enter sets default template. Esc back.",
+            hint_text: "Up/Down move | Enter set default template | Esc back",
+        },
+        config_exists,
+    )?;
+    if let Some(template) = selection {
+        bootstrap.workflow_template = template;
+    }
+    Ok(Some(message))
 }
 
 fn run_orchestrator_manager_tui(
@@ -484,8 +523,7 @@ fn run_orchestrator_manager_tui(
     config_exists: bool,
 ) -> Result<Option<String>, String> {
     let mut selected = 0usize;
-    let mut status =
-        "Enter open orchestrator. a add, d delete, e set primary. Esc back.".to_string();
+    let mut status = "Enter open orchestrator. a add, d delete, e set primary, t set default workflow template. Esc back.".to_string();
     loop {
         let mut ids: Vec<String> = bootstrap.orchestrators.keys().cloned().collect();
         if ids.is_empty() {
@@ -503,7 +541,7 @@ fn run_orchestrator_manager_tui(
                     &id,
                     &bootstrap.provider,
                     &bootstrap.model,
-                    bootstrap.bundle,
+                    bootstrap.workflow_template,
                 ),
             );
             bootstrap.orchestrator_id = id.clone();
@@ -529,7 +567,7 @@ fn run_orchestrator_manager_tui(
             &items,
             selected,
             &status,
-            "Up/Down move | Enter open | a add | d delete | e set primary | Esc back",
+            "Up/Down move | Enter open | a add | d delete | e set primary | t set default workflow template | Esc back",
         )?;
 
         if !event::poll(Duration::from_millis(250))
@@ -563,6 +601,13 @@ fn run_orchestrator_manager_tui(
                 bootstrap.orchestrator_id = selected_id.clone();
                 status = "Primary orchestrator updated.".to_string();
             }
+            KeyCode::Char('t') => {
+                if let Some(message) =
+                    run_new_workflow_template_tui(terminal, bootstrap, config_exists)?
+                {
+                    status = message;
+                }
+            }
             KeyCode::Char('a') => {
                 if let Some(id) = prompt_line_tui(
                     terminal,
@@ -589,7 +634,7 @@ fn run_orchestrator_manager_tui(
                                 &id,
                                 &bootstrap.provider,
                                 &bootstrap.model,
-                                bootstrap.bundle,
+                                bootstrap.workflow_template,
                             ),
                         );
                         bootstrap.orchestrator_id = id.clone();
@@ -724,6 +769,38 @@ fn run_orchestrator_detail_tui(
                     }
                 }
                 4 => {
+                    let current_template = bootstrap
+                        .orchestrator_configs
+                        .get(orchestrator_id)
+                        .map(infer_workflow_template)
+                        .unwrap_or(SetupWorkflowTemplate::Minimal);
+                    let (selection, message) = run_template_picker_tui(
+                        terminal,
+                        current_template,
+                        TemplatePickerUi {
+                            title: &format!(
+                                "Setup > Orchestrators > {orchestrator_id} > Add Starter Workflows"
+                            ),
+                            closed_message: "Closed template picker (no changes).",
+                            apply_message_prefix: &format!(
+                                "applied starter workflow template to orchestrator {orchestrator_id}:"
+                            ),
+                            status_text:
+                                "Non-destructive: adds template workflows and missing agents; does not remove existing config.",
+                            hint_text: "Up/Down move | Enter add starter workflows | Esc back",
+                        },
+                        config_exists,
+                    )?;
+                    if let Some(template) = selection {
+                        apply_workflow_template_to_orchestrator(
+                            bootstrap,
+                            orchestrator_id,
+                            template,
+                        )?;
+                    }
+                    status = message;
+                }
+                5 => {
                     let current = bootstrap
                         .orchestrator_configs
                         .get(orchestrator_id)
@@ -748,7 +825,7 @@ fn run_orchestrator_detail_tui(
                         }
                     }
                 }
-                5 => {
+                6 => {
                     let current = bootstrap
                         .orchestrator_configs
                         .get(orchestrator_id)
@@ -773,6 +850,26 @@ fn run_orchestrator_detail_tui(
                         }
                     }
                 }
+                7 => {
+                    if let Some(message) = run_workflow_orchestration_tui(
+                        terminal,
+                        bootstrap,
+                        config_exists,
+                        orchestrator_id,
+                    )? {
+                        status = message;
+                    }
+                }
+                8 => {
+                    if let Some(message) = run_workflow_manager_tui(
+                        terminal,
+                        bootstrap,
+                        config_exists,
+                        orchestrator_id,
+                    )? {
+                        status = message;
+                    }
+                }
                 _ => {
                     if let Some(message) =
                         run_agent_manager_tui(terminal, bootstrap, config_exists, orchestrator_id)?
@@ -784,6 +881,79 @@ fn run_orchestrator_detail_tui(
             _ => {}
         }
     }
+}
+
+fn provider_model_for_orchestrator(
+    bootstrap: &SetupBootstrap,
+    orchestrator_id: &str,
+) -> (String, String) {
+    if let Some(cfg) = bootstrap.orchestrator_configs.get(orchestrator_id) {
+        if let Some(selector) = cfg.agents.get(&cfg.selector_agent) {
+            if let Ok(provider) = parse_provider(&selector.provider) {
+                return (provider, selector.model.clone());
+            }
+        }
+        if let Some((_, agent)) = cfg.agents.iter().next() {
+            if let Ok(provider) = parse_provider(&agent.provider) {
+                return (provider, agent.model.clone());
+            }
+        }
+    }
+    (bootstrap.provider.clone(), bootstrap.model.clone())
+}
+
+fn unique_workflow_id(existing: &BTreeMap<String, WorkflowConfig>, base: &str) -> String {
+    if !existing.contains_key(base) {
+        return base.to_string();
+    }
+    let mut idx = 2usize;
+    loop {
+        let candidate = format!("{base}_{idx}");
+        if !existing.contains_key(&candidate) {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
+fn apply_workflow_template_to_orchestrator(
+    bootstrap: &mut SetupBootstrap,
+    orchestrator_id: &str,
+    workflow_template: SetupWorkflowTemplate,
+) -> Result<(), String> {
+    let (provider, model) = provider_model_for_orchestrator(bootstrap, orchestrator_id);
+    let template =
+        initial_orchestrator_config(orchestrator_id, &provider, &model, workflow_template);
+    let target = bootstrap
+        .orchestrator_configs
+        .get_mut(orchestrator_id)
+        .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+
+    for (agent_id, agent_cfg) in template.agents {
+        target.agents.entry(agent_id).or_insert(agent_cfg);
+    }
+
+    let mut existing_workflows = BTreeMap::from_iter(
+        target
+            .workflows
+            .iter()
+            .map(|wf| (wf.id.clone(), wf.clone())),
+    );
+    let mut new_default_workflow = None::<String>;
+    for mut workflow in template.workflows {
+        let original_id = workflow.id.clone();
+        let mapped_id = unique_workflow_id(&existing_workflows, &workflow.id);
+        workflow.id = mapped_id.clone();
+        if original_id == template.default_workflow {
+            new_default_workflow = Some(mapped_id.clone());
+        }
+        existing_workflows.insert(mapped_id, workflow);
+    }
+    target.workflows = existing_workflows.into_values().collect();
+    if let Some(workflow_id) = new_default_workflow {
+        target.default_workflow = workflow_id;
+    }
+    Ok(())
 }
 
 struct SetupFieldRow {
@@ -849,10 +1019,1324 @@ fn orchestrator_detail_menu_rows(
         field_row("Private Workspace", Some(private_workspace)),
         field_row("Shared Access", Some(shared_access)),
         field_row("Default Workflow", Some(default_workflow)),
+        field_row(
+            "Add Starter Workflows",
+            bootstrap
+                .orchestrator_configs
+                .get(orchestrator_id)
+                .map(infer_workflow_template)
+                .map(|template| format!("suggested workflow template: {}", template.as_str())),
+        ),
         field_row("Selection Max Retries", Some(selection_max_retries)),
         field_row("Selector Timeout Seconds", Some(selector_timeout_seconds)),
+        field_row("Workflow Orchestration Limits", None),
+        field_row("Workflows", None),
         field_row("Agents", None),
     ]
+}
+
+fn workflow_orchestration_menu_rows(
+    bootstrap: &SetupBootstrap,
+    orchestrator_id: &str,
+) -> Vec<SetupFieldRow> {
+    let orchestration = bootstrap
+        .orchestrator_configs
+        .get(orchestrator_id)
+        .and_then(|cfg| cfg.workflow_orchestration.as_ref());
+    vec![
+        field_row(
+            "Max Total Iterations",
+            Some(
+                orchestration
+                    .and_then(|o| o.max_total_iterations)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row(
+            "Default Run Timeout Seconds",
+            Some(
+                orchestration
+                    .and_then(|o| o.default_run_timeout_seconds)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row(
+            "Default Step Timeout Seconds",
+            Some(
+                orchestration
+                    .and_then(|o| o.default_step_timeout_seconds)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row(
+            "Max Step Timeout Seconds",
+            Some(
+                orchestration
+                    .and_then(|o| o.max_step_timeout_seconds)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+    ]
+}
+
+fn run_workflow_orchestration_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupBootstrap,
+    config_exists: bool,
+    orchestrator_id: &str,
+) -> Result<Option<String>, String> {
+    let mut selected = 0usize;
+    let mut status = "Enter to edit selected limit. Esc back.".to_string();
+    loop {
+        let rows = workflow_orchestration_menu_rows(bootstrap, orchestrator_id);
+        draw_field_screen(
+            terminal,
+            &format!("Setup > Orchestrators > {orchestrator_id} > Workflow Orchestration Limits"),
+            config_exists,
+            &rows,
+            selected,
+            &status,
+            "Up/Down move | Enter edit | Esc back",
+        )?;
+        let ev = event::read()
+            .map_err(|e| format!("failed to read workflow orchestration input: {e}"))?;
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => return Ok(Some("Closed workflow orchestration limits.".to_string())),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => selected = std::cmp::min(selected + 1, rows.len().saturating_sub(1)),
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                let (label, prompt) = match selected {
+                    0 => (
+                        "Max Total Iterations",
+                        "Set max_total_iterations (empty clears, >=1):",
+                    ),
+                    1 => (
+                        "Default Run Timeout Seconds",
+                        "Set default_run_timeout_seconds (empty clears, >=1):",
+                    ),
+                    2 => (
+                        "Default Step Timeout Seconds",
+                        "Set default_step_timeout_seconds (empty clears, >=1):",
+                    ),
+                    _ => (
+                        "Max Step Timeout Seconds",
+                        "Set max_step_timeout_seconds (empty clears, >=1):",
+                    ),
+                };
+                let current = rows
+                    .get(selected)
+                    .and_then(|row| row.value.clone())
+                    .unwrap_or_default();
+                let initial = if current == "<none>" { "" } else { &current };
+                if let Some(value) = prompt_line_tui(terminal, label, prompt, initial)? {
+                    let cfg = bootstrap
+                        .orchestrator_configs
+                        .get_mut(orchestrator_id)
+                        .ok_or_else(|| "orchestrator missing".to_string())?;
+                    if value.trim().is_empty() {
+                        if let Some(orchestration) = cfg.workflow_orchestration.as_mut() {
+                            match selected {
+                                0 => orchestration.max_total_iterations = None,
+                                1 => orchestration.default_run_timeout_seconds = None,
+                                2 => orchestration.default_step_timeout_seconds = None,
+                                _ => orchestration.max_step_timeout_seconds = None,
+                            }
+                            if orchestration.max_total_iterations.is_none()
+                                && orchestration.default_run_timeout_seconds.is_none()
+                                && orchestration.default_step_timeout_seconds.is_none()
+                                && orchestration.max_step_timeout_seconds.is_none()
+                            {
+                                cfg.workflow_orchestration = None;
+                            }
+                        }
+                        status = "workflow orchestration limit cleared".to_string();
+                        continue;
+                    }
+                    let parsed = match value.trim().parse::<u64>() {
+                        Ok(v) if v >= 1 => v,
+                        _ => {
+                            status = "value must be >= 1".to_string();
+                            continue;
+                        }
+                    };
+                    let orchestration =
+                        cfg.workflow_orchestration
+                            .get_or_insert(WorkflowOrchestrationConfig {
+                                max_total_iterations: None,
+                                default_run_timeout_seconds: None,
+                                default_step_timeout_seconds: None,
+                                max_step_timeout_seconds: None,
+                            });
+                    match selected {
+                        0 => {
+                            if parsed > u32::MAX as u64 {
+                                status = "max_total_iterations exceeds u32 range".to_string();
+                                continue;
+                            }
+                            orchestration.max_total_iterations = Some(parsed as u32);
+                        }
+                        1 => orchestration.default_run_timeout_seconds = Some(parsed),
+                        2 => orchestration.default_step_timeout_seconds = Some(parsed),
+                        _ => orchestration.max_step_timeout_seconds = Some(parsed),
+                    }
+                    status = "workflow orchestration limit updated".to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn run_workflow_manager_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupBootstrap,
+    config_exists: bool,
+    orchestrator_id: &str,
+) -> Result<Option<String>, String> {
+    let mut selected = 0usize;
+    let mut status =
+        "Enter opens workflow settings. f set default, a add, d delete. Esc back.".to_string();
+    loop {
+        let cfg = bootstrap
+            .orchestrator_configs
+            .get(orchestrator_id)
+            .ok_or_else(|| format!("orchestrator `{orchestrator_id}` missing in setup state"))?;
+        let workflow_ids: Vec<String> = cfg.workflows.iter().map(|w| w.id.clone()).collect();
+        if !workflow_ids.is_empty() {
+            selected = selected.min(workflow_ids.len().saturating_sub(1));
+        } else {
+            selected = 0;
+        }
+        let selected_workflow = workflow_ids.get(selected).cloned().unwrap_or_default();
+        let items = workflow_ids
+            .iter()
+            .map(|id| {
+                if *id == cfg.default_workflow {
+                    format!("{id} (default)")
+                } else {
+                    id.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        draw_list_screen(
+            terminal,
+            &format!("Setup > Orchestrators > {orchestrator_id} > Workflows"),
+            config_exists,
+            &items,
+            selected,
+            &status,
+            "Up/Down move | Enter open | f set default | a add | d delete | Esc back",
+        )?;
+        if !event::poll(Duration::from_millis(250))
+            .map_err(|e| format!("failed to poll workflow manager input: {e}"))?
+        {
+            continue;
+        }
+        let ev =
+            event::read().map_err(|e| format!("failed to read workflow manager input: {e}"))?;
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            return Ok(None);
+        }
+        match key.code {
+            KeyCode::Esc => return Ok(Some("Closed workflows.".to_string())),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => {
+                selected = std::cmp::min(selected + 1, workflow_ids.len().saturating_sub(1))
+            }
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                if workflow_ids.is_empty() {
+                    status = "no workflows configured".to_string();
+                } else if let Some(message) = run_workflow_detail_tui(
+                    terminal,
+                    bootstrap,
+                    config_exists,
+                    orchestrator_id,
+                    &selected_workflow,
+                )? {
+                    status = message;
+                }
+            }
+            KeyCode::Char('f') => {
+                if workflow_ids.is_empty() {
+                    status = "no workflows configured".to_string();
+                } else if let Some(orchestrator) =
+                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
+                {
+                    orchestrator.default_workflow = selected_workflow;
+                    status = "default workflow updated".to_string();
+                }
+            }
+            KeyCode::Char('a') => {
+                if let Some(workflow_id) = prompt_line_tui(
+                    terminal,
+                    "Add Workflow",
+                    "New workflow id (slug, non-empty):",
+                    "",
+                )? {
+                    let workflow_id = workflow_id.trim().to_string();
+                    if workflow_id.is_empty() {
+                        status = "workflow id must be non-empty".to_string();
+                        continue;
+                    }
+                    let Some(orchestrator) =
+                        bootstrap.orchestrator_configs.get_mut(orchestrator_id)
+                    else {
+                        return Err("orchestrator missing".to_string());
+                    };
+                    if orchestrator.workflows.iter().any(|w| w.id == workflow_id) {
+                        status = "workflow id already exists".to_string();
+                        continue;
+                    }
+                    let selector_agent = orchestrator.selector_agent.clone();
+                    orchestrator.workflows.push(WorkflowConfig {
+                        id: workflow_id,
+                        version: 1,
+                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        limits: None,
+                        steps: vec![WorkflowStepConfig {
+                            id: "step_1".to_string(),
+                            step_type: "agent_task".to_string(),
+                            agent: selector_agent,
+                            prompt: "You are the default workflow step.".to_string(),
+                            next: None,
+                            on_approve: None,
+                            on_reject: None,
+                            outputs: None,
+                            output_files: None,
+                            limits: None,
+                        }],
+                    });
+                    status = "workflow added".to_string();
+                }
+            }
+            KeyCode::Char('d') => {
+                if workflow_ids.is_empty() {
+                    status = "no workflows to delete".to_string();
+                    continue;
+                }
+                let Some(orchestrator) = bootstrap.orchestrator_configs.get_mut(orchestrator_id)
+                else {
+                    return Err("orchestrator missing".to_string());
+                };
+                if orchestrator.workflows.len() <= 1 {
+                    status = "at least one workflow must remain".to_string();
+                    continue;
+                }
+                orchestrator.workflows.retain(|w| w.id != selected_workflow);
+                if orchestrator.default_workflow == selected_workflow {
+                    if let Some(next) = orchestrator.workflows.first() {
+                        orchestrator.default_workflow = next.id.clone();
+                    }
+                }
+                selected = selected.saturating_sub(1);
+                status = "workflow removed".to_string();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn workflow_detail_menu_rows(
+    bootstrap: &SetupBootstrap,
+    orchestrator_id: &str,
+    workflow_id: &str,
+) -> Vec<SetupFieldRow> {
+    let Some(cfg) = bootstrap.orchestrator_configs.get(orchestrator_id) else {
+        return vec![
+            field_row("Set As Default", Some("no".to_string())),
+            field_row("Workflow ID", Some("<missing>".to_string())),
+            field_row("Version", Some("<missing>".to_string())),
+            field_row("Max Total Iterations", Some("<none>".to_string())),
+            field_row("Run Timeout Seconds", Some("<none>".to_string())),
+        ];
+    };
+    let Some(workflow) = cfg.workflows.iter().find(|w| w.id == workflow_id) else {
+        return vec![
+            field_row("Set As Default", Some("no".to_string())),
+            field_row("Workflow ID", Some("<missing>".to_string())),
+            field_row("Version", Some("<missing>".to_string())),
+            field_row("Max Total Iterations", Some("<none>".to_string())),
+            field_row("Run Timeout Seconds", Some("<none>".to_string())),
+        ];
+    };
+
+    let max_total_iterations = workflow
+        .limits
+        .as_ref()
+        .and_then(|l| l.max_total_iterations)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    let run_timeout_seconds = workflow
+        .limits
+        .as_ref()
+        .and_then(|l| l.run_timeout_seconds)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    let inputs = workflow_inputs_as_csv(&workflow.inputs);
+    let step_count = workflow.steps.len().to_string();
+
+    vec![
+        field_row(
+            "Set As Default",
+            Some(if cfg.default_workflow == workflow_id {
+                "yes".to_string()
+            } else {
+                "no".to_string()
+            }),
+        ),
+        field_row("Workflow ID", Some(workflow.id.clone())),
+        field_row("Version", Some(workflow.version.to_string())),
+        field_row("Inputs", Some(inputs)),
+        field_row("Max Total Iterations", Some(max_total_iterations)),
+        field_row("Run Timeout Seconds", Some(run_timeout_seconds)),
+        field_row("Steps", Some(step_count)),
+    ]
+}
+
+fn workflow_inputs_as_csv(inputs: &serde_yaml::Value) -> String {
+    match inputs {
+        serde_yaml::Value::Sequence(values) => {
+            let parts: Vec<String> = values
+                .iter()
+                .filter_map(|value| value.as_str().map(|v| v.trim().to_string()))
+                .filter(|v| !v.is_empty())
+                .collect();
+            if parts.is_empty() {
+                "<none>".to_string()
+            } else {
+                parts.join(",")
+            }
+        }
+        _ => "<none>".to_string(),
+    }
+}
+
+fn parse_csv_values(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn output_files_as_csv(output_files: Option<&BTreeMap<String, String>>) -> String {
+    let Some(output_files) = output_files else {
+        return "<none>".to_string();
+    };
+    if output_files.is_empty() {
+        return "<none>".to_string();
+    }
+    output_files
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_output_files(raw: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut output_files = BTreeMap::new();
+    for entry in parse_csv_values(raw) {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| "output_files must use key=path entries".to_string())?;
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            return Err("output_files entries require non-empty key and path".to_string());
+        }
+        output_files.insert(key.to_string(), value.to_string());
+    }
+    Ok(output_files)
+}
+
+fn unique_step_id(existing: &[WorkflowStepConfig], base: &str) -> String {
+    if !existing.iter().any(|step| step.id == base) {
+        return base.to_string();
+    }
+    let mut idx = 2usize;
+    loop {
+        let candidate = format!("{base}_{idx}");
+        if !existing.iter().any(|step| step.id == candidate) {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
+fn run_workflow_detail_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupBootstrap,
+    config_exists: bool,
+    orchestrator_id: &str,
+    workflow_id: &str,
+) -> Result<Option<String>, String> {
+    let mut selected = 0usize;
+    let mut current_workflow_id = workflow_id.to_string();
+    let mut status = "Enter to edit selected option. Esc back.".to_string();
+    loop {
+        let rows = workflow_detail_menu_rows(bootstrap, orchestrator_id, &current_workflow_id);
+        draw_field_screen(
+            terminal,
+            &format!(
+                "Setup > Orchestrators > {orchestrator_id} > Workflows > {current_workflow_id}"
+            ),
+            config_exists,
+            &rows,
+            selected,
+            &status,
+            "Up/Down move | Enter select | Esc back",
+        )?;
+        let ev = event::read().map_err(|e| format!("failed to read workflow detail input: {e}"))?;
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => return Ok(Some("Closed workflow view.".to_string())),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => selected = std::cmp::min(selected + 1, rows.len().saturating_sub(1)),
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => match selected {
+                0 => {
+                    let cfg = bootstrap
+                        .orchestrator_configs
+                        .get_mut(orchestrator_id)
+                        .ok_or_else(|| "orchestrator missing".to_string())?;
+                    cfg.default_workflow = current_workflow_id.clone();
+                    status = "default workflow updated".to_string();
+                }
+                1 => {
+                    let current = current_workflow_id.clone();
+                    if let Some(value) =
+                        prompt_line_tui(terminal, "Workflow ID", "Set workflow id:", &current)?
+                    {
+                        let next_id = value.trim().to_string();
+                        if next_id.is_empty() {
+                            status = "workflow id must be non-empty".to_string();
+                            continue;
+                        }
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if cfg
+                            .workflows
+                            .iter()
+                            .any(|w| w.id == next_id && w.id != current_workflow_id)
+                        {
+                            status = "workflow id already exists".to_string();
+                            continue;
+                        }
+                        if let Some(workflow) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == current_workflow_id)
+                        {
+                            workflow.id = next_id.clone();
+                            if cfg.default_workflow == current_workflow_id {
+                                cfg.default_workflow = next_id.clone();
+                            }
+                            current_workflow_id = next_id;
+                            status = "workflow id updated".to_string();
+                        } else {
+                            status = "workflow no longer exists".to_string();
+                        }
+                    }
+                }
+                2 => {
+                    let current = bootstrap
+                        .orchestrator_configs
+                        .get(orchestrator_id)
+                        .and_then(|cfg| cfg.workflows.iter().find(|w| w.id == current_workflow_id))
+                        .map(|w| w.version.to_string())
+                        .unwrap_or_else(|| "1".to_string());
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Workflow Version",
+                        "Set version (>=1):",
+                        &current,
+                    )? {
+                        match value.trim().parse::<u32>() {
+                            Ok(v) if v >= 1 => {
+                                if let Some(cfg) =
+                                    bootstrap.orchestrator_configs.get_mut(orchestrator_id)
+                                {
+                                    if let Some(workflow) = cfg
+                                        .workflows
+                                        .iter_mut()
+                                        .find(|w| w.id == current_workflow_id)
+                                    {
+                                        workflow.version = v;
+                                        status = "workflow version updated".to_string();
+                                    }
+                                }
+                            }
+                            _ => status = "version must be >= 1".to_string(),
+                        }
+                    }
+                }
+                3 => {
+                    let current = bootstrap
+                        .orchestrator_configs
+                        .get(orchestrator_id)
+                        .and_then(|cfg| cfg.workflows.iter().find(|w| w.id == current_workflow_id))
+                        .map(|w| workflow_inputs_as_csv(&w.inputs))
+                        .unwrap_or_else(|| "<none>".to_string());
+                    let initial = if current == "<none>" { "" } else { &current };
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Workflow Inputs",
+                        "Comma-separated input keys (empty clears):",
+                        initial,
+                    )? {
+                        if let Some(cfg) = bootstrap.orchestrator_configs.get_mut(orchestrator_id) {
+                            if let Some(workflow) = cfg
+                                .workflows
+                                .iter_mut()
+                                .find(|w| w.id == current_workflow_id)
+                            {
+                                let parsed = parse_csv_values(&value);
+                                workflow.inputs = serde_yaml::Value::Sequence(
+                                    parsed.into_iter().map(serde_yaml::Value::String).collect(),
+                                );
+                                status = "workflow inputs updated".to_string();
+                            }
+                        }
+                    }
+                }
+                4 => {
+                    let current = bootstrap
+                        .orchestrator_configs
+                        .get(orchestrator_id)
+                        .and_then(|cfg| cfg.workflows.iter().find(|w| w.id == current_workflow_id))
+                        .and_then(|w| w.limits.as_ref())
+                        .and_then(|l| l.max_total_iterations)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Max Total Iterations",
+                        "Set max_total_iterations (empty clears, >=1):",
+                        &current,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        let Some(workflow) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == current_workflow_id)
+                        else {
+                            status = "workflow no longer exists".to_string();
+                            continue;
+                        };
+                        if value.trim().is_empty() {
+                            if let Some(limits) = workflow.limits.as_mut() {
+                                limits.max_total_iterations = None;
+                                if limits.run_timeout_seconds.is_none() {
+                                    workflow.limits = None;
+                                }
+                            }
+                            status = "max_total_iterations cleared".to_string();
+                        } else {
+                            match value.trim().parse::<u32>() {
+                                Ok(v) if v >= 1 => {
+                                    let limits =
+                                        workflow.limits.get_or_insert(WorkflowLimitsConfig {
+                                            max_total_iterations: None,
+                                            run_timeout_seconds: None,
+                                        });
+                                    limits.max_total_iterations = Some(v);
+                                    status = "max_total_iterations updated".to_string();
+                                }
+                                _ => status = "max_total_iterations must be >= 1".to_string(),
+                            }
+                        }
+                    }
+                }
+                5 => {
+                    let current = bootstrap
+                        .orchestrator_configs
+                        .get(orchestrator_id)
+                        .and_then(|cfg| cfg.workflows.iter().find(|w| w.id == current_workflow_id))
+                        .and_then(|w| w.limits.as_ref())
+                        .and_then(|l| l.run_timeout_seconds)
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Run Timeout Seconds",
+                        "Set run_timeout_seconds (empty clears, >=1):",
+                        &current,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        let Some(workflow) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == current_workflow_id)
+                        else {
+                            status = "workflow no longer exists".to_string();
+                            continue;
+                        };
+                        if value.trim().is_empty() {
+                            if let Some(limits) = workflow.limits.as_mut() {
+                                limits.run_timeout_seconds = None;
+                                if limits.max_total_iterations.is_none() {
+                                    workflow.limits = None;
+                                }
+                            }
+                            status = "run_timeout_seconds cleared".to_string();
+                        } else {
+                            match value.trim().parse::<u64>() {
+                                Ok(v) if v >= 1 => {
+                                    let limits =
+                                        workflow.limits.get_or_insert(WorkflowLimitsConfig {
+                                            max_total_iterations: None,
+                                            run_timeout_seconds: None,
+                                        });
+                                    limits.run_timeout_seconds = Some(v);
+                                    status = "run_timeout_seconds updated".to_string();
+                                }
+                                _ => status = "run_timeout_seconds must be >= 1".to_string(),
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    if let Some(message) = run_workflow_steps_tui(
+                        terminal,
+                        bootstrap,
+                        config_exists,
+                        orchestrator_id,
+                        &current_workflow_id,
+                    )? {
+                        status = message;
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
+fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
+    let outputs = step
+        .outputs
+        .as_ref()
+        .map(|values| {
+            if values.is_empty() {
+                "<none>".to_string()
+            } else {
+                values.join(",")
+            }
+        })
+        .unwrap_or_else(|| "<none>".to_string());
+    let max_retries = step
+        .limits
+        .as_ref()
+        .and_then(|limits| limits.max_retries)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    vec![
+        field_row("Step ID", Some(step.id.clone())),
+        field_row("Step Type", Some(step.step_type.clone())),
+        field_row("Agent", Some(step.agent.clone())),
+        field_row("Prompt", Some(step.prompt.clone())),
+        field_row(
+            "Next",
+            Some(step.next.clone().unwrap_or_else(|| "<none>".to_string())),
+        ),
+        field_row(
+            "On Approve",
+            Some(
+                step.on_approve
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row(
+            "On Reject",
+            Some(
+                step.on_reject
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row("Outputs", Some(outputs)),
+        field_row(
+            "Output Files",
+            Some(output_files_as_csv(step.output_files.as_ref())),
+        ),
+        field_row("Max Retries", Some(max_retries)),
+    ]
+}
+
+fn run_workflow_steps_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupBootstrap,
+    config_exists: bool,
+    orchestrator_id: &str,
+    workflow_id: &str,
+) -> Result<Option<String>, String> {
+    let mut selected = 0usize;
+    let mut status = "Enter opens step settings. a add, d delete. Esc back.".to_string();
+    loop {
+        let cfg = bootstrap
+            .orchestrator_configs
+            .get(orchestrator_id)
+            .ok_or_else(|| "orchestrator missing".to_string())?;
+        let workflow = cfg
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == workflow_id)
+            .ok_or_else(|| "workflow missing".to_string())?;
+        let step_ids: Vec<String> = workflow.steps.iter().map(|step| step.id.clone()).collect();
+        if !step_ids.is_empty() {
+            selected = selected.min(step_ids.len().saturating_sub(1));
+        } else {
+            selected = 0;
+        }
+        let selected_step = step_ids.get(selected).cloned().unwrap_or_default();
+        let items = workflow
+            .steps
+            .iter()
+            .map(|step| format!("{} [{}] {}", step.id, step.step_type, step.agent))
+            .collect::<Vec<_>>();
+        draw_list_screen(
+            terminal,
+            &format!(
+                "Setup > Orchestrators > {orchestrator_id} > Workflows > {workflow_id} > Steps"
+            ),
+            config_exists,
+            &items,
+            selected,
+            &status,
+            "Up/Down move | Enter open | a add | d delete | Esc back",
+        )?;
+        if !event::poll(Duration::from_millis(250))
+            .map_err(|e| format!("failed to poll workflow steps input: {e}"))?
+        {
+            continue;
+        }
+        let ev = event::read().map_err(|e| format!("failed to read workflow steps input: {e}"))?;
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => return Ok(Some("Closed workflow steps.".to_string())),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => {
+                selected = std::cmp::min(selected + 1, step_ids.len().saturating_sub(1))
+            }
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                if step_ids.is_empty() {
+                    status = "no steps configured".to_string();
+                } else if let Some(message) = run_workflow_step_detail_tui(
+                    terminal,
+                    bootstrap,
+                    config_exists,
+                    orchestrator_id,
+                    workflow_id,
+                    &selected_step,
+                )? {
+                    status = message;
+                }
+            }
+            KeyCode::Char('a') => {
+                let suggested = unique_step_id(&workflow.steps, "step");
+                if let Some(step_id) =
+                    prompt_line_tui(terminal, "Add Step", "New step id (non-empty):", &suggested)?
+                {
+                    let step_id = step_id.trim().to_string();
+                    if step_id.is_empty() {
+                        status = "step id must be non-empty".to_string();
+                        continue;
+                    }
+                    let cfg = bootstrap
+                        .orchestrator_configs
+                        .get_mut(orchestrator_id)
+                        .ok_or_else(|| "orchestrator missing".to_string())?;
+                    let selector_agent = cfg.selector_agent.clone();
+                    let Some(workflow) = cfg.workflows.iter_mut().find(|w| w.id == workflow_id)
+                    else {
+                        status = "workflow no longer exists".to_string();
+                        continue;
+                    };
+                    if workflow.steps.iter().any(|step| step.id == step_id) {
+                        status = "step id already exists".to_string();
+                        continue;
+                    }
+                    workflow.steps.push(WorkflowStepConfig {
+                        id: step_id,
+                        step_type: "agent_task".to_string(),
+                        agent: selector_agent,
+                        prompt: "You are the workflow step.".to_string(),
+                        next: None,
+                        on_approve: None,
+                        on_reject: None,
+                        outputs: None,
+                        output_files: None,
+                        limits: None,
+                    });
+                    status = "step added".to_string();
+                }
+            }
+            KeyCode::Char('d') => {
+                if step_ids.is_empty() {
+                    status = "no steps to delete".to_string();
+                    continue;
+                }
+                let cfg = bootstrap
+                    .orchestrator_configs
+                    .get_mut(orchestrator_id)
+                    .ok_or_else(|| "orchestrator missing".to_string())?;
+                let Some(workflow) = cfg.workflows.iter_mut().find(|w| w.id == workflow_id) else {
+                    status = "workflow no longer exists".to_string();
+                    continue;
+                };
+                if workflow.steps.len() <= 1 {
+                    status = "at least one step must remain".to_string();
+                    continue;
+                }
+                workflow.steps.retain(|step| step.id != selected_step);
+                selected = selected.saturating_sub(1);
+                status = "step removed".to_string();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn run_workflow_step_detail_tui(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    bootstrap: &mut SetupBootstrap,
+    config_exists: bool,
+    orchestrator_id: &str,
+    workflow_id: &str,
+    step_id: &str,
+) -> Result<Option<String>, String> {
+    let mut selected = 0usize;
+    let mut current_step_id = step_id.to_string();
+    let mut status = "Enter to edit selected option. Esc back.".to_string();
+    loop {
+        let step = bootstrap
+            .orchestrator_configs
+            .get(orchestrator_id)
+            .and_then(|cfg| cfg.workflows.iter().find(|w| w.id == workflow_id))
+            .and_then(|workflow| {
+                workflow
+                    .steps
+                    .iter()
+                    .find(|step| step.id == current_step_id)
+            })
+            .cloned();
+        let Some(step) = step else {
+            return Ok(Some("Step no longer exists.".to_string()));
+        };
+        let rows = workflow_step_menu_rows(&step);
+        draw_field_screen(
+            terminal,
+            &format!(
+                "Setup > Orchestrators > {orchestrator_id} > Workflows > {workflow_id} > Steps > {current_step_id}"
+            ),
+            config_exists,
+            &rows,
+            selected,
+            &status,
+            "Up/Down move | Enter select | Esc back",
+        )?;
+        let ev =
+            event::read().map_err(|e| format!("failed to read workflow step detail input: {e}"))?;
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => return Ok(Some("Closed workflow step view.".to_string())),
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => selected = std::cmp::min(selected + 1, rows.len().saturating_sub(1)),
+            KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r') => match selected {
+                0 => {
+                    if let Some(value) =
+                        prompt_line_tui(terminal, "Step ID", "Set step id:", &current_step_id)?
+                    {
+                        let next_id = value.trim().to_string();
+                        if next_id.is_empty() {
+                            status = "step id must be non-empty".to_string();
+                            continue;
+                        }
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        let Some(workflow) = cfg.workflows.iter_mut().find(|w| w.id == workflow_id)
+                        else {
+                            status = "workflow no longer exists".to_string();
+                            continue;
+                        };
+                        if workflow
+                            .steps
+                            .iter()
+                            .any(|step| step.id == next_id && step.id != current_step_id)
+                        {
+                            status = "step id already exists".to_string();
+                            continue;
+                        }
+                        if let Some(step) = workflow
+                            .steps
+                            .iter_mut()
+                            .find(|step| step.id == current_step_id)
+                        {
+                            step.id = next_id.clone();
+                            current_step_id = next_id;
+                            status = "step id updated".to_string();
+                        }
+                    }
+                }
+                1 => {
+                    let cfg = bootstrap
+                        .orchestrator_configs
+                        .get_mut(orchestrator_id)
+                        .ok_or_else(|| "orchestrator missing".to_string())?;
+                    if let Some(step) = cfg
+                        .workflows
+                        .iter_mut()
+                        .find(|w| w.id == workflow_id)
+                        .and_then(|workflow| {
+                            workflow
+                                .steps
+                                .iter_mut()
+                                .find(|step| step.id == current_step_id)
+                        })
+                    {
+                        step.step_type = if step.step_type == "agent_task" {
+                            "agent_review".to_string()
+                        } else {
+                            "agent_task".to_string()
+                        };
+                        status = "step type toggled".to_string();
+                    }
+                }
+                2 => {
+                    if let Some(value) =
+                        prompt_line_tui(terminal, "Step Agent", "Set agent id:", &step.agent)?
+                    {
+                        if value.trim().is_empty() {
+                            status = "agent must be non-empty".to_string();
+                            continue;
+                        }
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.agent = value.trim().to_string();
+                            status = "step agent updated".to_string();
+                        }
+                    }
+                }
+                3 => {
+                    if let Some(value) =
+                        prompt_line_tui(terminal, "Step Prompt", "Set step prompt:", &step.prompt)?
+                    {
+                        if value.trim().is_empty() {
+                            status = "prompt must be non-empty".to_string();
+                            continue;
+                        }
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.prompt = value;
+                            status = "step prompt updated".to_string();
+                        }
+                    }
+                }
+                4 => {
+                    let current = step.next.clone().unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Next Step",
+                        "Set next step id (empty clears):",
+                        &current,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.next = if value.trim().is_empty() {
+                                None
+                            } else {
+                                Some(value.trim().to_string())
+                            };
+                            status = "step next updated".to_string();
+                        }
+                    }
+                }
+                5 => {
+                    let current = step.on_approve.clone().unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "On Approve",
+                        "Set on_approve step id (empty clears):",
+                        &current,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.on_approve = if value.trim().is_empty() {
+                                None
+                            } else {
+                                Some(value.trim().to_string())
+                            };
+                            status = "step on_approve updated".to_string();
+                        }
+                    }
+                }
+                6 => {
+                    let current = step.on_reject.clone().unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "On Reject",
+                        "Set on_reject step id (empty clears):",
+                        &current,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.on_reject = if value.trim().is_empty() {
+                                None
+                            } else {
+                                Some(value.trim().to_string())
+                            };
+                            status = "step on_reject updated".to_string();
+                        }
+                    }
+                }
+                7 => {
+                    let current = step
+                        .outputs
+                        .as_ref()
+                        .map(|outputs| outputs.join(","))
+                        .unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Outputs",
+                        "Comma-separated output keys (empty clears):",
+                        &current,
+                    )? {
+                        let parsed = parse_csv_values(&value);
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.outputs = if parsed.is_empty() {
+                                None
+                            } else {
+                                Some(parsed)
+                            };
+                            status = "step outputs updated".to_string();
+                        }
+                    }
+                }
+                8 => {
+                    let current = output_files_as_csv(step.output_files.as_ref());
+                    let initial = if current == "<none>" { "" } else { &current };
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Output Files",
+                        "Comma-separated key=path mappings (empty clears):",
+                        initial,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if value.trim().is_empty() {
+                            if let Some(step) = cfg
+                                .workflows
+                                .iter_mut()
+                                .find(|w| w.id == workflow_id)
+                                .and_then(|workflow| {
+                                    workflow
+                                        .steps
+                                        .iter_mut()
+                                        .find(|step| step.id == current_step_id)
+                                })
+                            {
+                                step.output_files = None;
+                                status = "step output_files cleared".to_string();
+                            }
+                            continue;
+                        }
+                        let parsed = match parse_output_files(&value) {
+                            Ok(parsed) => parsed,
+                            Err(err) => {
+                                status = err;
+                                continue;
+                            }
+                        };
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            step.output_files = Some(parsed);
+                            status = "step output_files updated".to_string();
+                        }
+                    }
+                }
+                _ => {
+                    let current = step
+                        .limits
+                        .as_ref()
+                        .and_then(|limits| limits.max_retries)
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    if let Some(value) = prompt_line_tui(
+                        terminal,
+                        "Step Max Retries",
+                        "Set max_retries (empty clears, >=1):",
+                        &current,
+                    )? {
+                        let cfg = bootstrap
+                            .orchestrator_configs
+                            .get_mut(orchestrator_id)
+                            .ok_or_else(|| "orchestrator missing".to_string())?;
+                        if let Some(step) = cfg
+                            .workflows
+                            .iter_mut()
+                            .find(|w| w.id == workflow_id)
+                            .and_then(|workflow| {
+                                workflow
+                                    .steps
+                                    .iter_mut()
+                                    .find(|step| step.id == current_step_id)
+                            })
+                        {
+                            if value.trim().is_empty() {
+                                if let Some(limits) = step.limits.as_mut() {
+                                    limits.max_retries = None;
+                                }
+                                step.limits = None;
+                                status = "step max_retries cleared".to_string();
+                                continue;
+                            }
+                            match value.trim().parse::<u32>() {
+                                Ok(parsed) if parsed >= 1 => {
+                                    let limits = step
+                                        .limits
+                                        .get_or_insert(StepLimitsConfig { max_retries: None });
+                                    limits.max_retries = Some(parsed);
+                                    status = "step max_retries updated".to_string();
+                                }
+                                _ => status = "max_retries must be >= 1".to_string(),
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
 }
 
 fn run_agent_manager_tui(
@@ -1475,4 +2959,34 @@ fn main_panel_block() -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .padding(Padding::new(3, 3, 2, 2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_csv_values_trims_and_filters_empty() {
+        assert_eq!(
+            parse_csv_values(" alpha, ,beta,gamma  "),
+            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_output_files_requires_key_value_pairs() {
+        let parsed = parse_output_files("result=output/result.md,summary=out/summary.md")
+            .expect("valid output files");
+        assert_eq!(parsed.get("result"), Some(&"output/result.md".to_string()));
+        assert_eq!(parsed.get("summary"), Some(&"out/summary.md".to_string()));
+        assert!(parse_output_files("missing_equals").is_err());
+    }
+
+    #[test]
+    fn workflow_inputs_as_csv_handles_empty_sequence() {
+        assert_eq!(
+            workflow_inputs_as_csv(&serde_yaml::Value::Sequence(Vec::new())),
+            "<none>"
+        );
+    }
 }

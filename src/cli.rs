@@ -1,7 +1,8 @@
 use crate::config::{
     default_global_config_path, default_orchestrators_config_path, load_orchestrator_config,
     AgentConfig, AuthSyncConfig, AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig,
-    Settings, SettingsOrchestrator, ValidationOptions, WorkflowConfig, WorkflowStepConfig,
+    Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig,
+    WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
 };
 use crate::orchestrator::{RunState, WorkflowRunStore};
 use crate::queue::IncomingMessage;
@@ -24,7 +25,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod setup_tui;
-use self::setup_tui::SetupWorkflowBundle;
+use self::setup_tui::SetupWorkflowTemplate;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RuntimePreferences {
@@ -1948,15 +1949,15 @@ fn initial_orchestrator_config(
     id: &str,
     provider: &str,
     model: &str,
-    bundle: SetupWorkflowBundle,
+    workflow_template: SetupWorkflowTemplate,
 ) -> OrchestratorConfig {
     let selector = "default".to_string();
     let mut agents = BTreeMap::from_iter([(
         selector.clone(),
         agent_config(provider, model, "agents/default", true),
     )]);
-    let (default_workflow, workflows) = match bundle {
-        SetupWorkflowBundle::Minimal => {
+    let (default_workflow, workflows) = match workflow_template {
+        SetupWorkflowTemplate::Minimal => {
             let workflow_id = "default".to_string();
             let steps = vec![workflow_step(
                 "step_1",
@@ -1975,7 +1976,7 @@ fn initial_orchestrator_config(
                 }],
             )
         }
-        SetupWorkflowBundle::Engineering => {
+        SetupWorkflowTemplate::Engineering => {
             agents.insert(
                 "planner".to_string(),
                 agent_config(provider, model, "agents/planner", false),
@@ -2050,7 +2051,7 @@ fn initial_orchestrator_config(
                 ],
             )
         }
-        SetupWorkflowBundle::Product => {
+        SetupWorkflowTemplate::Product => {
             agents.insert(
                 "researcher".to_string(),
                 agent_config(provider, model, "agents/researcher", false),
@@ -2117,5 +2118,5 @@ fn initial_orchestrator_config(
 }
 
 fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
-    initial_orchestrator_config(id, "anthropic", "sonnet", SetupWorkflowBundle::Minimal)
+    initial_orchestrator_config(id, "anthropic", "sonnet", SetupWorkflowTemplate::Minimal)
 }

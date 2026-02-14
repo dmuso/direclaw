@@ -33,6 +33,14 @@ cargo --version
 - Fail fast on invalid config paths and orchestrator/workspace definitions.
 - Keep CLI behavior aligned with spec-defined command surface.
 
+## The Domain
+- A Slack bot is 1:1 with an Orchestrator
+- An Orchestrator has many Workflows
+- An Orchestrator has many Agents
+- Workflow steps have one Agent assigned
+- Agents have one configured Provider and Model
+- Workflows can be complex, so choosing from a Workflow Templates is a nice thing
+
 ## Configuration and Runtime Expectations
 Implement configuration and runtime behavior to match spec requirements, including:
 - State root layout under `~/.direclaw`
