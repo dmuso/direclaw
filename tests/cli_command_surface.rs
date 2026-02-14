@@ -60,14 +60,14 @@ fn kv_lines(output: &Output) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn write_settings(home: &Path, include_shared_docs: bool) {
+fn write_settings(home: &Path, include_shared_workspace: bool) {
     let workspace = home.join("workspace");
     fs::create_dir_all(&workspace).expect("create workspace");
-    let docs = home.join("docs");
-    fs::create_dir_all(&docs).expect("create docs");
+    let shared_workspace = home.join("shared-workspace");
+    fs::create_dir_all(&shared_workspace).expect("create shared workspace");
 
-    let shared = if include_shared_docs {
-        format!("  docs: {}", docs.display())
+    let shared = if include_shared_workspace {
+        format!("  shared: {}", shared_workspace.display())
     } else {
         String::new()
     };
@@ -300,11 +300,11 @@ fn orchestrator_and_agent_commands_work() {
     ));
     assert_ok(&run(
         temp.path(),
-        &["orchestrator", "grant-shared-access", "alpha", "docs"],
+        &["orchestrator", "grant-shared-access", "alpha", "shared"],
     ));
     assert_ok(&run(
         temp.path(),
-        &["orchestrator", "revoke-shared-access", "alpha", "docs"],
+        &["orchestrator", "revoke-shared-access", "alpha", "shared"],
     ));
     assert_ok(&run(
         temp.path(),

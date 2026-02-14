@@ -2,16 +2,6 @@
 
 DireClaw is an OpenClaw and TinyClaw inspired AI agent platform to get things done.
 
-## v1 Scope
-
-DireClaw v1 supports Slack as the only channel adapter.
-
-### Deferred After v1
-
-- Discord
-- Telegram
-- WhatsApp
-
 ## How DireClaw differs from OpenClaw
 
 DireClaw is influenced by both OpenClaw and TinyClaw. OpenClaw's complexity introduces many areas where things can break. TinyClaw's approach is to drastically simplify things, and start with a multi-agent approach.
@@ -164,13 +154,6 @@ direclaw orchestrator add main
 4. For production operations (service management, backups, incidents, upgrade/rollback), use:
 
 - [`docs/user-guide/operator-runbook.md`](docs/user-guide/operator-runbook.md)
-
-## Governance
-
-- [`LICENSE`](LICENSE)
-- [`CHANGELOG.md`](CHANGELOG.md)
-- [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- [`SECURITY.md`](SECURITY.md)
 
 ### Useful commands
 

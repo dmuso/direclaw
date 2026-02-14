@@ -10,7 +10,7 @@ fn agent_shared_access_is_deny_by_default_without_orchestrator_grant() {
         r#"
 workspace_path: /tmp/workspace
 shared_workspaces:
-  docs: /tmp/docs
+  common: /tmp/shared/common
 orchestrators:
   alpha:
     shared_access: []
@@ -37,7 +37,7 @@ agents:
     provider: openai
     model: gpt-5.2
     can_orchestrate_workflows: false
-    shared_access: [docs]
+    shared_access: [common]
 workflows:
   - id: wf
     version: 1
