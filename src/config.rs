@@ -616,6 +616,8 @@ pub struct WorkflowStepConfig {
     pub step_type: WorkflowStepType,
     pub agent: String,
     pub prompt: String,
+    #[serde(default = "default_workflow_step_prompt_type")]
+    pub prompt_type: WorkflowStepPromptType,
     #[serde(default = "default_workflow_step_workspace_mode")]
     pub workspace_mode: WorkflowStepWorkspaceMode,
     #[serde(default)]
@@ -637,6 +639,8 @@ struct WorkflowStepConfigRaw {
     pub step_type: WorkflowStepType,
     pub agent: String,
     pub prompt: String,
+    #[serde(default = "default_workflow_step_prompt_type")]
+    pub prompt_type: WorkflowStepPromptType,
     #[serde(default = "default_workflow_step_workspace_mode")]
     pub workspace_mode: WorkflowStepWorkspaceMode,
     #[serde(default)]
@@ -673,6 +677,7 @@ impl<'de> Deserialize<'de> for WorkflowStepConfig {
             step_type: raw.step_type,
             agent: raw.agent,
             prompt: raw.prompt,
+            prompt_type: raw.prompt_type,
             workspace_mode: raw.workspace_mode,
             next: raw.next,
             on_approve: raw.on_approve,
@@ -682,6 +687,17 @@ impl<'de> Deserialize<'de> for WorkflowStepConfig {
             limits: raw.limits,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepPromptType {
+    WorkflowResultEnvelope,
+    FileOutput,
+}
+
+fn default_workflow_step_prompt_type() -> WorkflowStepPromptType {
+    WorkflowStepPromptType::WorkflowResultEnvelope
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

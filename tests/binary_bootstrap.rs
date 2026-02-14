@@ -79,7 +79,13 @@ fn setup_defaults_workspace_under_state_root_when_config_is_missing() {
         .find(|workflow| workflow.id == "default")
         .expect("default workflow");
     let first_step = default_workflow.steps.first().expect("default step");
-    assert!(first_step.prompt.contains("[workflow_result]"));
+    assert!(first_step
+        .prompt
+        .contains("When complete, write structured output"));
+    assert_eq!(
+        first_step.prompt_type,
+        direclaw::config::WorkflowStepPromptType::FileOutput
+    );
     assert!(first_step.prompt.contains("Required outputs schema:"));
     assert!(first_step
         .prompt

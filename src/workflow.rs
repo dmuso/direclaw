@@ -1,6 +1,7 @@
 use crate::config::{
     AgentConfig, ConfigProviderKind, OrchestratorConfig, OutputKey, PathTemplate, WorkflowConfig,
-    WorkflowInputs, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+    WorkflowInputs, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
+    WorkflowStepWorkspaceMode,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,28 +25,36 @@ impl WorkflowTemplate {
 
 pub(crate) fn default_step_prompt(step_type: &str) -> String {
     if step_type == "agent_review" {
-        return r#"Return exactly one [workflow_result] JSON envelope.
+        return r#"Instructions:
+1. Read available context from the provided prompt/context/input files before acting.
+2. Execute the step objective and follow the user request when it applies.
+3. Follow the additional requirements below.
+4. When complete, write structured output values to the exact file paths listed under "Write outputs exactly to". Do not rely on stdout for structured output.
 Execution requirements:
 - Evaluate the deliverable against the stated objective, constraints, and quality bar.
 - Be explicit, concrete, and evidence-based in summary/feedback.
-- Do not emit markdown fences or text outside the envelope.
-Required JSON keys:
+Required structured output keys:
 - decision: "approve" or "reject"
 - summary: concise reason for the decision
 - feedback: concrete changes needed or verification notes
 Decision policy:
 - approve only when acceptance criteria are fully met.
 - reject when fixes are required; feedback must be actionable.
-Output format (JSON only inside envelope):
-[workflow_result]{"decision":"approve|reject","summary":"...","feedback":"..."}[/workflow_result]"#
+Write outputs exactly to:
+- decision -> {{workflow.output_paths.decision}}
+- summary -> {{workflow.output_paths.summary}}
+- feedback -> {{workflow.output_paths.feedback}}"#
             .to_string();
     }
-    r#"Return exactly one [workflow_result] JSON envelope.
+    r#"Instructions:
+1. Read available context from the provided prompt/context/input files before acting.
+2. Execute the step objective and follow the user request when it applies.
+3. Follow the additional requirements below.
+4. When complete, write structured output values to the exact file paths listed under "Write outputs exactly to". Do not rely on stdout for structured output.
 Execution requirements:
 - Follow the step objective and constraints above.
 - Use available workflow context and prior-step outputs when present.
-- Do not emit markdown fences or text outside the envelope.
-Required JSON keys:
+Required structured output keys:
 - status: "complete" | "blocked" | "failed"
 - summary: concise step summary
 - artifact: primary output text for this step
@@ -53,8 +62,9 @@ Status policy:
 - complete only when the objective is fully satisfied.
 - blocked when waiting on missing dependency/permission; include unblock action in summary.
 - failed only for unrecoverable errors.
-Output format (JSON only inside envelope):
-[workflow_result]{"status":"complete|blocked|failed","summary":"...","artifact":"..."}[/workflow_result]"#
+Write outputs exactly to:
+- summary -> {{workflow.output_paths.summary}}
+- artifact -> {{workflow.output_paths.artifact}}"#
         .to_string()
 }
 
@@ -134,6 +144,7 @@ fn workflow_step(id: &str, step_type: &str, agent: &str, prompt: &str) -> Workfl
         step_type: WorkflowStepType::parse(step_type).expect("default step type is valid"),
         agent: agent.to_string(),
         prompt: format!("{prompt}\n\n{}", default_step_prompt(step_type)),
+        prompt_type: WorkflowStepPromptType::FileOutput,
         workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
         next: None,
         on_approve: None,
@@ -179,7 +190,6 @@ pub(crate) fn initial_orchestrator_config(
                 &selector,
                 "Execute the user request end-to-end with clear, actionable output.
 If requirements are ambiguous, choose reasonable assumptions and state them in summary.
-Return one [workflow_result] JSON [/workflow_result] block.
 Required outputs schema:
 {{workflow.output_schema_json}}
 Write outputs exactly to:
@@ -370,9 +380,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_step_scaffolds_include_workflow_result_contract_and_outputs() {
+    fn default_step_scaffolds_include_file_output_contract_and_outputs() {
         let task_prompt = default_step_prompt("agent_task");
-        assert!(task_prompt.contains("[workflow_result]"));
+        assert!(task_prompt.contains("When complete, write structured output values"));
+        assert!(task_prompt.contains("workflow.output_paths.summary"));
         assert!(task_prompt.contains("status"));
         assert!(task_prompt.contains("summary"));
         assert!(task_prompt.contains("artifact"));

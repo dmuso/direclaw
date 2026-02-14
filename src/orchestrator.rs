@@ -1,7 +1,8 @@
 use crate::cli;
 use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, OutputContractKey,
-    Settings, WorkflowConfig, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+    Settings, WorkflowConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
+    WorkflowStepWorkspaceMode,
 };
 #[cfg(test)]
 use crate::config::{OutputKey, PathTemplate};
@@ -16,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -400,6 +401,113 @@ where
         },
         retries_used: orchestrator.selection_max_retries,
         fell_back_to_default_workflow: true,
+    }
+}
+
+pub fn run_selector_attempt_with_provider(
+    state_root: &Path,
+    settings: &Settings,
+    request: &SelectorRequest,
+    orchestrator: &OrchestratorConfig,
+    attempt: u32,
+    binaries: &RunnerBinaries,
+) -> Result<String, String> {
+    let selector_agent = orchestrator
+        .agents
+        .get(&orchestrator.selector_agent)
+        .ok_or_else(|| {
+            format!(
+                "selector agent `{}` missing from orchestrator config",
+                orchestrator.selector_agent
+            )
+        })?;
+    let provider = ProviderKind::try_from(selector_agent.provider.as_str())
+        .map_err(|err| format!("invalid selector provider: {err}"))?;
+
+    let private_workspace = settings
+        .resolve_private_workspace(&orchestrator.id)
+        .map_err(|err| err.to_string())?;
+    let cwd = resolve_agent_workspace_root(
+        &private_workspace,
+        &orchestrator.selector_agent,
+        selector_agent,
+    );
+    fs::create_dir_all(&cwd).map_err(|err| err.to_string())?;
+
+    let request_json = serde_json::to_string_pretty(request).map_err(|err| err.to_string())?;
+    let selector_result_path = cwd
+        .join("orchestrator")
+        .join("select")
+        .join("results")
+        .join(format!("{}_attempt_{attempt}.json", request.selector_id));
+    if let Some(parent) = selector_result_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    let prompt = format!(
+        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Apply the user message and available workflow/function context.\n3. Output exactly one structured JSON selector result to this path:\n{}\n4. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
+        selector_result_path.display()
+    );
+    let context = format!(
+        "orchestratorId={}\nselectorAgent={}\nattempt={attempt}\nselectorResultPath={}",
+        orchestrator.id,
+        orchestrator.selector_agent,
+        selector_result_path.display()
+    );
+    let request_id = format!("{}_attempt_{attempt}", request.selector_id);
+    let artifacts = write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
+        .map_err(|err| err.to_string())?;
+
+    let provider_request = ProviderRequest {
+        agent_id: orchestrator.selector_agent.clone(),
+        provider,
+        model: selector_agent.model.clone(),
+        cwd: cwd.clone(),
+        message: format!(
+            "Read [file: {}] and [file: {}]. Write selector result JSON to: {}",
+            artifacts.prompt_file.display(),
+            artifacts
+                .context_files
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            selector_result_path.display()
+        ),
+        prompt_artifacts: artifacts,
+        timeout: Duration::from_secs(orchestrator.selector_timeout_seconds),
+        reset_requested: false,
+        fresh_on_failure: false,
+        env_overrides: BTreeMap::new(),
+    };
+
+    match run_provider(&provider_request, binaries) {
+        Ok(result) => {
+            persist_selector_invocation_log(
+                state_root,
+                &request.selector_id,
+                attempt,
+                Some(&result.log),
+                None,
+            );
+            fs::read_to_string(&selector_result_path).map_err(|err| {
+                format!(
+                    "selector did not write result file at {}: {}",
+                    selector_result_path.display(),
+                    err
+                )
+            })
+        }
+        Err(err) => {
+            let error_text = err.to_string();
+            persist_selector_invocation_log(
+                state_root,
+                &request.selector_id,
+                attempt,
+                provider_error_log(&err),
+                Some(&error_text),
+            );
+            Err(error_text)
+        }
     }
 }
 
@@ -1503,14 +1611,10 @@ impl WorkflowEngine {
         persist_provider_invocation_log(&attempt_dir, &provider_output.log)
             .map_err(|err| io_error(&attempt_dir, err))?;
 
-        let mut evaluation = evaluate_step_result(workflow, step, &provider_output.message)?;
-        evaluation.output_files = materialize_output_files(
-            self.run_store.state_root(),
-            &run.run_id,
-            step,
-            attempt,
-            &evaluation.outputs,
-        )?;
+        let mut evaluation =
+            evaluate_step_result(workflow, step, &provider_output.message, &output_paths)?;
+        evaluation.output_files =
+            materialize_output_files(step, &evaluation.outputs, &output_paths)?;
         self.run_store.append_engine_log(
             &run.run_id,
             now,
@@ -1604,6 +1708,94 @@ fn persist_provider_invocation_log(path_root: &Path, log: &InvocationLog) -> std
     ]));
     let body = serde_json::to_vec_pretty(&payload).map_err(std::io::Error::other)?;
     fs::write(path, body)
+}
+
+fn persist_selector_invocation_log(
+    state_root: &Path,
+    selector_id: &str,
+    attempt: u32,
+    log: Option<&InvocationLog>,
+    error: Option<&str>,
+) {
+    let path = state_root
+        .join("orchestrator/select/logs")
+        .join(format!("{selector_id}_attempt_{attempt}.invocation.json"));
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let mut payload = Map::new();
+    payload.insert(
+        "selectorId".to_string(),
+        Value::String(selector_id.to_string()),
+    );
+    payload.insert("attempt".to_string(), Value::from(attempt));
+    payload.insert("timestamp".to_string(), Value::from(now_secs()));
+    payload.insert(
+        "status".to_string(),
+        Value::String(
+            if error.is_some() {
+                "failed"
+            } else {
+                "succeeded"
+            }
+            .to_string(),
+        ),
+    );
+    if let Some(error) = error {
+        payload.insert("error".to_string(), Value::String(error.to_string()));
+    }
+
+    if let Some(log) = log {
+        payload.insert("agentId".to_string(), Value::String(log.agent_id.clone()));
+        payload.insert(
+            "provider".to_string(),
+            Value::String(log.provider.to_string()),
+        );
+        payload.insert("model".to_string(), Value::String(log.model.clone()));
+        payload.insert(
+            "commandForm".to_string(),
+            Value::String(log.command_form.clone()),
+        );
+        payload.insert(
+            "workingDirectory".to_string(),
+            Value::String(log.working_directory.display().to_string()),
+        );
+        payload.insert(
+            "promptFile".to_string(),
+            Value::String(log.prompt_file.display().to_string()),
+        );
+        payload.insert(
+            "contextFiles".to_string(),
+            Value::Array(
+                log.context_files
+                    .iter()
+                    .map(|path| Value::String(path.display().to_string()))
+                    .collect(),
+            ),
+        );
+        payload.insert(
+            "exitCode".to_string(),
+            match log.exit_code {
+                Some(value) => Value::from(value),
+                None => Value::Null,
+            },
+        );
+        payload.insert("timedOut".to_string(), Value::Bool(log.timed_out));
+    }
+
+    let body = match serde_json::to_vec_pretty(&Value::Object(payload)) {
+        Ok(body) => body,
+        Err(_) => return,
+    };
+    let _ = fs::write(path, body);
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn is_retryable_step_error(error: &OrchestratorError) -> bool {
@@ -1803,13 +1995,10 @@ fn validate_transition_target(
 }
 
 fn materialize_output_files(
-    state_root: &Path,
-    run_id: &str,
     step: &WorkflowStepConfig,
-    attempt: u32,
     outputs: &Map<String, Value>,
+    output_paths: &BTreeMap<String, PathBuf>,
 ) -> Result<BTreeMap<String, String>, OrchestratorError> {
-    let output_paths = resolve_step_output_paths(state_root, run_id, step, attempt)?;
     if output_paths.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -1826,18 +2015,20 @@ fn materialize_output_files(
                 reason: format!("missing output_files mapping for key `{}`", key.name),
             });
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+        if step.prompt_type == WorkflowStepPromptType::WorkflowResultEnvelope {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
+            }
+            let content = if let Some(text) = value.as_str() {
+                text.as_bytes().to_vec()
+            } else {
+                serde_json::to_vec_pretty(value).map_err(|e| OrchestratorError::StepExecution {
+                    step_id: step.id.clone(),
+                    reason: format!("failed to serialize output key `{}`: {e}", key.name),
+                })?
+            };
+            fs::write(path, content).map_err(|e| io_error(path, e))?;
         }
-        let content = if let Some(text) = value.as_str() {
-            text.as_bytes().to_vec()
-        } else {
-            serde_json::to_vec_pretty(value).map_err(|e| OrchestratorError::StepExecution {
-                step_id: step.id.clone(),
-                reason: format!("failed to serialize output key `{}`: {e}", key.name),
-            })?
-        };
-        fs::write(path, content).map_err(|e| io_error(path, e))?;
         path_by_key.insert(key.name, path.display().to_string());
     }
 
@@ -1855,8 +2046,14 @@ pub fn evaluate_step_result(
     workflow: &WorkflowConfig,
     step: &WorkflowStepConfig,
     raw_output: &str,
+    output_paths: &BTreeMap<String, PathBuf>,
 ) -> Result<StepEvaluation, OrchestratorError> {
-    let parsed = parse_workflow_result_envelope(raw_output)?;
+    let parsed = match step.prompt_type {
+        WorkflowStepPromptType::WorkflowResultEnvelope => {
+            parse_workflow_result_envelope(raw_output)?
+        }
+        WorkflowStepPromptType::FileOutput => load_outputs_from_files(step, output_paths)?,
+    };
     validate_outputs_contract(step, &parsed)?;
     if step.step_type == WorkflowStepType::AgentReview {
         let approve = parse_review_decision(&parsed)?;
@@ -1893,6 +2090,60 @@ pub fn evaluate_step_result(
         outputs: parsed,
         output_files: BTreeMap::new(),
         next_step_id: next,
+    })
+}
+
+fn load_outputs_from_files(
+    step: &WorkflowStepConfig,
+    output_paths: &BTreeMap<String, PathBuf>,
+) -> Result<Map<String, Value>, OrchestratorError> {
+    let contract = parse_output_contract(step)?;
+    if contract.is_empty() {
+        return Ok(Map::new());
+    }
+
+    let mut outputs = Map::new();
+    let mut missing_required = Vec::new();
+    for key in contract {
+        let Some(path) = output_paths.get(&key.name) else {
+            return Err(OrchestratorError::OutputContractValidation {
+                step_id: step.id.clone(),
+                reason: format!("missing output_files mapping for key `{}`", key.name),
+            });
+        };
+        if !path.is_file() {
+            if key.required {
+                missing_required.push(format!("{}=file_not_found", key.name));
+            }
+            continue;
+        }
+        let raw = fs::read_to_string(path).map_err(|err| io_error(path, err))?;
+        let trimmed = raw.trim();
+        let value = if trimmed.starts_with('{')
+            || trimmed.starts_with('[')
+            || trimmed.starts_with('"')
+            || trimmed == "true"
+            || trimmed == "false"
+            || trimmed == "null"
+            || trimmed.parse::<f64>().is_ok()
+        {
+            serde_json::from_str(trimmed).unwrap_or(Value::String(raw))
+        } else {
+            Value::String(raw)
+        };
+        outputs.insert(key.name, value);
+    }
+
+    if missing_required.is_empty() {
+        return Ok(outputs);
+    }
+    missing_required.sort();
+    Err(OrchestratorError::OutputContractValidation {
+        step_id: step.id.clone(),
+        reason: format!(
+            "missing required output keys: {}",
+            missing_required.join(", ")
+        ),
     })
 }
 
@@ -4488,6 +4739,7 @@ channels: {}
             step_type: WorkflowStepType::AgentTask,
             agent: "worker".to_string(),
             prompt: "prompt".to_string(),
+            prompt_type: WorkflowStepPromptType::FileOutput,
             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
             next: None,
             on_approve: None,

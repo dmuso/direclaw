@@ -599,6 +599,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
         workflow,
         plan,
         r#"[workflow_result]{"plan":"plan.md"}[/workflow_result]"#,
+        &BTreeMap::new(),
     )
     .expect("plan result");
     assert_eq!(plan_out.next_step_id.as_deref(), Some("review"));
@@ -607,6 +608,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
         workflow,
         review,
         r#"[workflow_result]{"decision":"reject","summary":"retry","feedback":"missing tests"}[/workflow_result]"#,
+        &BTreeMap::new(),
     )
     .expect("review reject");
     assert_eq!(reject_out.next_step_id.as_deref(), Some("plan"));
@@ -615,6 +617,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
         workflow,
         review,
         r#"[workflow_result]{"decision":"approve","summary":"accepted","feedback":"ok"}[/workflow_result]"#,
+        &BTreeMap::new(),
     )
     .expect("review approve");
     assert_eq!(approve_out.next_step_id.as_deref(), Some("done"));
@@ -1505,6 +1508,7 @@ version: 1
 steps:
   - id: s1
     type: agent_task
+    prompt_type: workflow_result_envelope
     agent: worker
     prompt: test
     outputs: [required_key, optional_key?]
@@ -1520,6 +1524,7 @@ steps:
         &workflow,
         step,
         r#"[workflow_result]{"required_key":"ok"}[/workflow_result]"#,
+        &BTreeMap::new(),
     )
     .expect("required key should pass");
     assert_eq!(
@@ -1531,6 +1536,7 @@ steps:
         &workflow,
         step,
         r#"[workflow_result]{"optional_key":"nice"}[/workflow_result]"#,
+        &BTreeMap::new(),
     )
     .expect_err("missing required key should fail");
     assert!(missing_required

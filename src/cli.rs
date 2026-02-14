@@ -2,7 +2,8 @@ use crate::config::{
     default_global_config_path, load_orchestrator_config, normalize_workflow_input_key,
     AgentConfig, AuthSyncSource, ChannelKind, ChannelProfile, ConfigError, ConfigProviderKind,
     OrchestratorConfig, Settings, SettingsOrchestrator, ValidationOptions, WorkflowConfig,
-    WorkflowInputs, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+    WorkflowInputs, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
+    WorkflowStepWorkspaceMode,
 };
 use crate::orchestrator::{
     verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
@@ -1587,6 +1588,7 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
                     step_type: WorkflowStepType::AgentTask,
                     agent: selector,
                     prompt: default_step_scaffold("agent_task"),
+                    prompt_type: WorkflowStepPromptType::FileOutput,
                     workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                     next: None,
                     on_approve: None,

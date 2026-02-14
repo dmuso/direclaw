@@ -1,7 +1,7 @@
 use direclaw::config::{
     AgentConfig, ConfigProviderKind, OrchestratorConfig, OutputKey, PathTemplate, StepLimitsConfig,
     WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig, WorkflowOrchestrationConfig,
-    WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+    WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -403,10 +403,29 @@ fn workflow_commands_work() {
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
     assert_ok(&run(temp.path(), &["workflow", "list", "alpha"]));
     assert_ok(&run(temp.path(), &["workflow", "add", "alpha", "triage"]));
+
+    let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
+    let triage = orchestrator
+        .workflows
+        .iter_mut()
+        .find(|workflow| workflow.id == "triage")
+        .expect("triage workflow");
+    let first_step = triage.steps.first_mut().expect("triage step");
+    first_step.prompt_type = WorkflowStepPromptType::WorkflowResultEnvelope;
+    fs::write(
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
+    )
+    .expect("write orchestrator");
+
     let show = run(temp.path(), &["workflow", "show", "alpha", "triage"]);
     assert_ok(&show);
     let show_text = stdout(&show);
-    assert!(show_text.contains("[workflow_result]"));
+    assert!(show_text.contains("When complete, write structured output"));
+    assert!(show_text.contains("prompt_type: workflow_result_envelope"));
     assert!(show_text.contains("outputs:"));
     assert!(show_text.contains("output_files:"));
     assert_ok(&run(
@@ -477,6 +496,23 @@ fn fresh_setup_default_workflow_runs_successfully() {
     write_settings(temp.path(), true);
     assert_ok(&run(temp.path(), &["setup"]));
 
+    let orchestrator_path = temp.path().join("workspace/main/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
+    let default_workflow = orchestrator
+        .workflows
+        .iter_mut()
+        .find(|workflow| workflow.id == "default")
+        .expect("default workflow");
+    let first_step = default_workflow.steps.first_mut().expect("default step");
+    first_step.prompt_type = WorkflowStepPromptType::WorkflowResultEnvelope;
+    fs::write(
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
+    )
+    .expect("write orchestrator");
+
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).expect("create bin dir");
     let claude = bin_dir.join("claude");
@@ -541,6 +577,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "s1".to_string(),
+                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: Some("s2".to_string()),
                 on_approve: None,
@@ -563,6 +600,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "s2".to_string(),
+                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
                 next: Some("s3".to_string()),
                 on_approve: None,
@@ -585,6 +623,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "s3".to_string(),
+                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::AgentWorkspace,
                 next: None,
                 on_approve: None,
@@ -723,6 +762,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "plan ticket={{inputs.ticket}} priority={{inputs.priority}}".to_string(),
+                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: Some("review".to_string()),
                 on_approve: None,
@@ -747,6 +787,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 step_type: WorkflowStepType::AgentReview,
                 agent: "worker".to_string(),
                 prompt: "review run {{workflow.run_id}}".to_string(),
+                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: None,
                 on_approve: Some("finalize".to_string()),
@@ -773,6 +814,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "finalize run {{workflow.run_id}}".to_string(),
+                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: None,
                 on_approve: None,
@@ -1014,6 +1056,7 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
             step_type: WorkflowStepType::AgentTask,
             agent: "worker".to_string(),
             prompt: "slow".to_string(),
+            prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
             next: None,
             on_approve: None,

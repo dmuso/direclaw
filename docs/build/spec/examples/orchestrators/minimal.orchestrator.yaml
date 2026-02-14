@@ -26,7 +26,12 @@ workflows:
         prompt: |
           Complete the request:
           {{inputs.user_prompt}}
-          Return one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact path listed below.
+          Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
           Write output exactly to:

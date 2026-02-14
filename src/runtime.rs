@@ -1,6 +1,6 @@
 use crate::config::Settings;
 use crate::orchestrator::{self, FunctionRegistry, RoutedSelectorAction, WorkflowRunStore};
-use crate::provider::{self, ProviderError, ProviderKind, ProviderRequest, RunnerBinaries};
+use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
 use crate::slack;
 use serde::{Deserialize, Serialize};
@@ -1141,7 +1141,7 @@ fn process_claimed_message(
         &functions,
         Some(binaries.clone()),
         |attempt, request, orchestrator_cfg| {
-            run_selector_attempt_with_provider(
+            orchestrator::run_selector_attempt_with_provider(
                 state_root,
                 settings,
                 request,
@@ -1174,191 +1174,6 @@ fn process_claimed_message(
     };
     queue::complete_success(&queue_paths, &claimed, &outgoing).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-fn run_selector_attempt_with_provider(
-    state_root: &Path,
-    settings: &Settings,
-    request: &orchestrator::SelectorRequest,
-    orchestrator_cfg: &crate::config::OrchestratorConfig,
-    attempt: u32,
-    binaries: &RunnerBinaries,
-) -> Result<String, String> {
-    let selector_agent = orchestrator_cfg
-        .agents
-        .get(&orchestrator_cfg.selector_agent)
-        .ok_or_else(|| {
-            format!(
-                "selector agent `{}` missing from orchestrator config",
-                orchestrator_cfg.selector_agent
-            )
-        })?;
-    let provider = ProviderKind::try_from(selector_agent.provider.as_str())
-        .map_err(|e| format!("invalid selector provider: {e}"))?;
-
-    let private_workspace = settings
-        .resolve_private_workspace(&orchestrator_cfg.id)
-        .map_err(|e| e.to_string())?;
-    let cwd = match &selector_agent.private_workspace {
-        Some(path) if path.is_absolute() => path.clone(),
-        Some(path) => private_workspace.join(path),
-        None => private_workspace
-            .join("agents")
-            .join(&orchestrator_cfg.selector_agent),
-    };
-    fs::create_dir_all(&cwd).map_err(|e| e.to_string())?;
-
-    let request_json = serde_json::to_string_pretty(request).map_err(|e| e.to_string())?;
-    let prompt = format!(
-        "You are the workflow selector. Return a strict JSON object only with no prose.\n{}",
-        request_json
-    );
-    let context = format!(
-        "orchestratorId={}\nselectorAgent={}\nattempt={attempt}",
-        orchestrator_cfg.id, orchestrator_cfg.selector_agent
-    );
-    let request_id = format!("{}_attempt_{attempt}", request.selector_id);
-    let artifacts = provider::write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
-        .map_err(|e| e.to_string())?;
-
-    let provider_request = ProviderRequest {
-        agent_id: orchestrator_cfg.selector_agent.clone(),
-        provider: provider.clone(),
-        model: selector_agent.model.clone(),
-        cwd: cwd.clone(),
-        message: format!(
-            "Read [file: {}] and [file: {}]. Return only the selector JSON object.",
-            artifacts.prompt_file.display(),
-            artifacts
-                .context_files
-                .first()
-                .map(|v| v.display().to_string())
-                .unwrap_or_default()
-        ),
-        prompt_artifacts: artifacts.clone(),
-        timeout: Duration::from_secs(orchestrator_cfg.selector_timeout_seconds),
-        reset_requested: false,
-        fresh_on_failure: false,
-        env_overrides: BTreeMap::new(),
-    };
-
-    match provider::run_provider(&provider_request, binaries) {
-        Ok(result) => {
-            persist_selector_invocation_log(
-                state_root,
-                &request.selector_id,
-                attempt,
-                Some(&result.log),
-                None,
-            );
-            Ok(result.message)
-        }
-        Err(err) => {
-            let log = provider_error_log(&err);
-            let error_text = err.to_string();
-            persist_selector_invocation_log(
-                state_root,
-                &request.selector_id,
-                attempt,
-                log.as_ref(),
-                Some(&error_text),
-            );
-            Err(error_text)
-        }
-    }
-}
-
-fn provider_error_log(err: &ProviderError) -> Option<provider::InvocationLog> {
-    match err {
-        ProviderError::MissingBinary { log, .. } => Some((**log).clone()),
-        ProviderError::NonZeroExit { log, .. } => Some((**log).clone()),
-        ProviderError::Timeout { log, .. } => Some((**log).clone()),
-        ProviderError::ParseFailure { log, .. } => log.as_ref().map(|v| (**v).clone()),
-        ProviderError::UnknownProvider(_)
-        | ProviderError::UnsupportedAnthropicModel(_)
-        | ProviderError::Io { .. } => None,
-    }
-}
-
-fn persist_selector_invocation_log(
-    state_root: &Path,
-    selector_id: &str,
-    attempt: u32,
-    log: Option<&provider::InvocationLog>,
-    error: Option<&str>,
-) {
-    let path = state_root
-        .join("orchestrator/select/logs")
-        .join(format!("{selector_id}_attempt_{attempt}.invocation.json"));
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    let mut payload = Map::new();
-    payload.insert(
-        "selectorId".to_string(),
-        Value::String(selector_id.to_string()),
-    );
-    payload.insert("attempt".to_string(), Value::from(attempt));
-    payload.insert("timestamp".to_string(), Value::from(now_secs()));
-    payload.insert(
-        "status".to_string(),
-        Value::String(
-            if error.is_some() {
-                "failed"
-            } else {
-                "succeeded"
-            }
-            .to_string(),
-        ),
-    );
-    if let Some(error) = error {
-        payload.insert("error".to_string(), Value::String(error.to_string()));
-    }
-
-    if let Some(log) = log {
-        payload.insert("agentId".to_string(), Value::String(log.agent_id.clone()));
-        payload.insert(
-            "provider".to_string(),
-            Value::String(log.provider.to_string()),
-        );
-        payload.insert("model".to_string(), Value::String(log.model.clone()));
-        payload.insert(
-            "commandForm".to_string(),
-            Value::String(log.command_form.clone()),
-        );
-        payload.insert(
-            "workingDirectory".to_string(),
-            Value::String(log.working_directory.display().to_string()),
-        );
-        payload.insert(
-            "promptFile".to_string(),
-            Value::String(log.prompt_file.display().to_string()),
-        );
-        payload.insert(
-            "contextFiles".to_string(),
-            Value::Array(
-                log.context_files
-                    .iter()
-                    .map(|v| Value::String(v.display().to_string()))
-                    .collect(),
-            ),
-        );
-        payload.insert(
-            "exitCode".to_string(),
-            match log.exit_code {
-                Some(v) => Value::from(v),
-                None => Value::Null,
-            },
-        );
-        payload.insert("timedOut".to_string(), Value::Bool(log.timed_out));
-    }
-
-    let encoded = match serde_json::to_vec_pretty(&Value::Object(payload)) {
-        Ok(encoded) => encoded,
-        Err(_) => return,
-    };
-    let _ = fs::write(path, encoded);
 }
 
 fn resolve_runner_binaries() -> RunnerBinaries {

@@ -46,7 +46,12 @@ workflows:
         prompt: |
           Complete this engineering request end-to-end:
           {{inputs.user_prompt}}
-          Return one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
         outputs: [summary, artifact]
         output_files:
           summary: default/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
@@ -71,7 +76,12 @@ workflows:
           Feature branch:
           {{inputs.feature_branch}}
           Use {{workflow.run_workspace}} as the working directory.
-          Return one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
         outputs: [repo_status]
         output_files:
           repo_status: clone/repo_status__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
@@ -89,7 +99,12 @@ workflows:
           You are running in workspace:
           {{workflow.run_workspace}}
           Do not return prose-only output.
-          Return a single [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
           Write output file exactly here:
@@ -108,7 +123,12 @@ workflows:
           Review this plan and return:
           decision: approve|reject
           feedback: actionable changes
-          Return only one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
           Write outputs exactly to:
@@ -144,7 +164,12 @@ workflows:
           {{workflow.run_workspace}}
           Apply code changes directly in repository files.
           Run validation commands if available.
-          Return one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
           Include changed_files and test_report fields accurately.
@@ -167,7 +192,12 @@ workflows:
           feedback: required fixes
           You may inspect files in:
           {{workflow.run_workspace}}
-          Return one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
           Write outputs exactly to:
@@ -200,7 +230,12 @@ workflows:
           {{inputs.feature_branch}}
           Include implementation summary from:
           {{steps.build_create.outputs.changed_files_summary}}
-          Return one [workflow_result] JSON [/workflow_result] block.
+          Instructions:
+          1. Read available prompt/context/input files first.
+          2. Execute the user request.
+          3. Follow the additional step requirements below.
+          4. When complete, write structured output to the exact mapped path(s).
+          Do not rely on stdout for structured output.
         outputs: [pr_url, pr_summary]
         output_files:
           pr_url: pr/pr_url__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt

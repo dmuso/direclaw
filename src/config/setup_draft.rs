@@ -2,7 +2,8 @@ use crate::config::{
     AgentConfig, AuthSyncConfig, ChannelKind, ChannelProfile, ConfigProviderKind,
     OrchestratorConfig, OutputKey, PathTemplate, Settings, SettingsOrchestrator, StepLimitsConfig,
     ValidationOptions, WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig,
-    WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+    WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
+    WorkflowStepWorkspaceMode,
 };
 use crate::workflow::{
     default_step_output_contract, default_step_output_files, default_step_scaffold,
@@ -335,6 +336,7 @@ impl SetupDraft {
                 step_type: WorkflowStepType::AgentTask,
                 agent: selector_agent,
                 prompt: default_step_scaffold("agent_task"),
+                prompt_type: WorkflowStepPromptType::FileOutput,
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: None,
                 on_approve: None,
@@ -514,6 +516,7 @@ impl SetupDraft {
             step_type: WorkflowStepType::AgentTask,
             agent: selector_agent,
             prompt: default_step_scaffold("agent_task"),
+            prompt_type: WorkflowStepPromptType::FileOutput,
             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
             next: None,
             on_approve: None,
