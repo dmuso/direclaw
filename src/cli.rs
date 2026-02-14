@@ -61,11 +61,30 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
 
 fn help_text() -> String {
     [
-        "direclaw command surface:",
-        "  start|stop|restart|status|logs|setup|send|update|doctor|attach",
-        "  channels reset|channels slack sync",
-        "  auth sync",
-        "  provider|model|agent|workflow|orchestrator|orchestrator-agent|channel-profile",
+        "DireClaw is a file-backed multi-agent orchestration runtime for channel-driven workflows.",
+        "GitHub: https://github.com/dmuso/direclaw",
+        "",
+        "Commands:",
+        "  setup                                Initialize state/config/runtime directories",
+        "  start                                Start the DireClaw supervisor and workers",
+        "  stop                                 Stop the active supervisor",
+        "  restart                              Restart the supervisor and workers",
+        "  status                               Show runtime ownership/health status",
+        "  logs                                 Print runtime and worker logs",
+        "  attach                               Attach to the active runtime session",
+        "  doctor                               Run local environment and config checks",
+        "  update check|apply                   Check for updates (apply is intentionally blocked)",
+        "  send <profile> <message>             Queue a message for a channel profile",
+        "  channels reset                       Reset channel sync state",
+        "  channels slack sync                  Pull Slack messages into the queue",
+        "  auth sync                            Sync provider auth from configured sources",
+        "  orchestrator ...                     Manage orchestrators and routing defaults",
+        "  orchestrator-agent ...               Manage agents under an orchestrator",
+        "  agent ...                            Alias for `orchestrator-agent ...`",
+        "  workflow ...                         Manage workflows and workflow runs",
+        "  channel-profile ...                  Manage channel-to-orchestrator bindings",
+        "  provider ...                         Set/show default provider preference",
+        "  model ...                            Set/show default model preference",
     ]
     .join("\n")
 }
@@ -223,10 +242,7 @@ fn cmd_setup() -> Result<String, String> {
         ));
     }
 
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| "HOME is unavailable".to_string())?;
-    let workspace_path = home.join("direclaw-workspace");
+    let workspace_path = paths.root.join("workspace");
     fs::create_dir_all(&workspace_path).map_err(|e| {
         format!(
             "failed to create workspace {}: {e}",
