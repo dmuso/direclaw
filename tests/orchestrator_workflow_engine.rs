@@ -1,4 +1,4 @@
-use direclaw::config::{OrchestratorConfig, Settings};
+use direclaw::config::{OrchestratorConfig, OutputKey, PathTemplate, Settings};
 use direclaw::orchestrator::{
     enforce_execution_safety, evaluate_step_result, parse_and_validate_selector_result,
     parse_workflow_result_envelope, process_queued_message, render_step_prompt,
@@ -669,6 +669,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: hi
+        outputs: [result]
+        output_files:
+          result: out/s1-result.txt
         limits:
           max_retries: 7
 workflow_orchestration:
@@ -725,12 +728,18 @@ workflows:
         type: agent_review
         agent: worker
         prompt: review
+        outputs: [decision]
+        output_files:
+          decision: out/review-decision.txt
         on_approve: done
         on_reject: review
       - id: done
         type: agent_task
         agent: worker
         prompt: done
+        outputs: [decision]
+        output_files:
+          decision: out/done-decision.txt
 "#,
     )
     .expect("orchestrator");
@@ -787,6 +796,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: test
+        outputs: [result]
+        output_files:
+          result: out/s1-result.txt
 "#,
     )
     .expect("orchestrator");
@@ -845,10 +857,16 @@ workflows:
         type: agent_task
         agent: worker
         prompt: first
+        outputs: [result]
+        output_files:
+          result: out/s1-result.txt
       - id: s2
         type: agent_task
         agent: worker
         prompt: second
+        outputs: [result]
+        output_files:
+          result: out/s2-result.txt
 "#,
     )
     .expect("orchestrator");
@@ -1049,10 +1067,10 @@ fn malicious_output_file_template_is_blocked_before_step_execution() {
         .iter_mut()
         .find(|s| s.id == "plan")
         .expect("plan");
-    step.output_files = Some(BTreeMap::from_iter([(
-        "plan".to_string(),
-        "../../escape.md".to_string(),
-    )]));
+    step.output_files = BTreeMap::from_iter([(
+        OutputKey::parse_output_file_key("plan").expect("valid key"),
+        PathTemplate::parse("../../escape.md").expect("valid template"),
+    )]);
 
     let err = resolve_step_output_paths(&state_root, "run-malicious", step, 1)
         .expect_err("must block traversal");
@@ -1443,6 +1461,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: test
+        outputs: [result]
+        output_files:
+          result: out/s1-result.txt
         limits:
           max_retries: 1
 "#,
@@ -1622,22 +1643,34 @@ workflows:
         type: agent_review
         agent: worker
         prompt: review
+        outputs: [decision]
+        output_files:
+          decision: out/review-decision.txt
         on_approve: approved
         on_reject: rejected
       - id: approved
         type: agent_task
         agent: worker
         prompt: approved
+        outputs: [decision]
+        output_files:
+          decision: out/approved-decision.txt
         next: done
       - id: rejected
         type: agent_task
         agent: worker
         prompt: rejected
+        outputs: [decision]
+        output_files:
+          decision: out/rejected-decision.txt
         next: done
       - id: done
         type: agent_task
         agent: worker
         prompt: done
+        outputs: [decision]
+        output_files:
+          decision: out/done-decision.txt
 "#,
     )
     .expect("orchestrator");
@@ -1705,12 +1738,18 @@ workflows:
         type: agent_review
         agent: worker
         prompt: review
+        outputs: [decision]
+        output_files:
+          decision: out/review-decision.txt
         on_approve: missing_step
         on_reject: rejected
       - id: rejected
         type: agent_task
         agent: worker
         prompt: rejected
+        outputs: [decision]
+        output_files:
+          decision: out/rejected-decision.txt
 "#,
     )
     .expect("orchestrator");
@@ -1763,6 +1802,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: test
+        outputs: [result]
+        output_files:
+          result: out/s1-result.txt
         limits:
           max_retries: 0
 workflow_orchestration:
@@ -1856,6 +1898,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: test
+        outputs: [result]
+        output_files:
+          result: out/s1-result.txt
 "#,
         denied_agent_workspace.display()
     ))

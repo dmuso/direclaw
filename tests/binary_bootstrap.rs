@@ -93,8 +93,8 @@ fn setup_defaults_workspace_under_state_root_when_config_is_missing() {
     assert!(!first_step
         .prompt
         .contains("You are the default workflow step."));
-    assert!(first_step.outputs.is_some());
-    assert!(first_step.output_files.is_some());
+    assert!(!first_step.outputs.is_empty());
+    assert!(!first_step.output_files.is_empty());
 
     let prefs_path = home.join(".direclaw/runtime/preferences.yaml");
     assert!(prefs_path.is_file());

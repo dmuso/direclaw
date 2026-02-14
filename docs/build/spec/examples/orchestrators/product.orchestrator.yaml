@@ -26,6 +26,10 @@ workflows:
         prompt: |
           Handle this product request:
           {{inputs.user_message}}
+        outputs: [summary, artifact]
+        output_files:
+          summary: product/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          artifact: product/artifact__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
 
 workflow_orchestration:
   max_total_iterations: 12

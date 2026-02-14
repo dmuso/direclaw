@@ -1,7 +1,7 @@
 use direclaw::config::{
-    AgentConfig, ConfigProviderKind, OrchestratorConfig, StepLimitsConfig, WorkflowConfig,
-    WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepType,
-    WorkflowStepWorkspaceMode,
+    AgentConfig, ConfigProviderKind, OrchestratorConfig, OutputKey, PathTemplate, StepLimitsConfig,
+    WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig, WorkflowOrchestrationConfig,
+    WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -62,6 +62,24 @@ fn kv_lines(output: &Output) -> BTreeMap<String, String> {
         .lines()
         .filter_map(|line| line.split_once('='))
         .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+fn out_keys(keys: &[&str]) -> Vec<OutputKey> {
+    keys.iter()
+        .map(|key| OutputKey::parse(key).expect("valid output key"))
+        .collect()
+}
+
+fn out_files(entries: &[(&str, &str)]) -> BTreeMap<OutputKey, PathTemplate> {
+    entries
+        .iter()
+        .map(|(key, path)| {
+            (
+                OutputKey::parse_output_file_key(key).expect("valid output file key"),
+                PathTemplate::parse(path).expect("valid path template"),
+            )
+        })
         .collect()
 }
 
@@ -515,7 +533,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
     orchestrator.workflows = vec![WorkflowConfig {
         id: "cwd_modes".to_string(),
         version: 1,
-        inputs: serde_yaml::Value::Sequence(Vec::new()),
+        inputs: WorkflowInputs::default(),
         limits: None,
         steps: vec![
             WorkflowStepConfig {
@@ -527,17 +545,17 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 next: Some("s2".to_string()),
                 on_approve: None,
                 on_reject: None,
-                outputs: Some(vec!["summary".to_string(), "artifact".to_string()]),
-                output_files: Some(BTreeMap::from_iter([
+                outputs: out_keys(&["summary", "artifact"]),
+                output_files: out_files(&[
                     (
-                        "summary".to_string(),
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt".to_string(),
+                        "summary",
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt",
                     ),
                     (
-                        "artifact".to_string(),
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt".to_string(),
+                        "artifact",
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
                     ),
-                ])),
+                ]),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -549,17 +567,17 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 next: Some("s3".to_string()),
                 on_approve: None,
                 on_reject: None,
-                outputs: Some(vec!["summary".to_string(), "artifact".to_string()]),
-                output_files: Some(BTreeMap::from_iter([
+                outputs: out_keys(&["summary", "artifact"]),
+                output_files: out_files(&[
                     (
-                        "summary".to_string(),
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt".to_string(),
+                        "summary",
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt",
                     ),
                     (
-                        "artifact".to_string(),
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt".to_string(),
+                        "artifact",
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
                     ),
-                ])),
+                ]),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -571,17 +589,17 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 next: None,
                 on_approve: None,
                 on_reject: None,
-                outputs: Some(vec!["summary".to_string(), "artifact".to_string()]),
-                output_files: Some(BTreeMap::from_iter([
+                outputs: out_keys(&["summary", "artifact"]),
+                output_files: out_files(&[
                     (
-                        "summary".to_string(),
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt".to_string(),
+                        "summary",
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt",
                     ),
                     (
-                        "artifact".to_string(),
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt".to_string(),
+                        "artifact",
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
                     ),
-                ])),
+                ]),
                 limits: None,
             },
         ],
@@ -694,10 +712,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
     orchestrator.workflows = vec![WorkflowConfig {
         id: "triage_roundtrip".to_string(),
         version: 1,
-        inputs: serde_yaml::Value::Sequence(vec![
-            serde_yaml::Value::String("ticket".to_string()),
-            serde_yaml::Value::String("priority".to_string()),
-        ]),
+        inputs: WorkflowInputs::parse_keys(["ticket", "priority"]).expect("valid workflow inputs"),
         limits: Some(WorkflowLimitsConfig {
             max_total_iterations: Some(7),
             run_timeout_seconds: Some(20),
@@ -712,17 +727,17 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 next: Some("review".to_string()),
                 on_approve: None,
                 on_reject: None,
-                outputs: Some(vec!["plan".to_string(), "summary".to_string()]),
-                output_files: Some(BTreeMap::from_iter([
+                outputs: out_keys(&["plan", "summary"]),
+                output_files: out_files(&[
                     (
-                        "plan".to_string(),
-                        "reports/{{workflow.run_id}}/plan-{{workflow.attempt}}.md".to_string(),
+                        "plan",
+                        "reports/{{workflow.run_id}}/plan-{{workflow.attempt}}.md",
                     ),
                     (
-                        "summary".to_string(),
-                        "reports/{{workflow.run_id}}/summary-{{workflow.attempt}}.txt".to_string(),
+                        "summary",
+                        "reports/{{workflow.run_id}}/summary-{{workflow.attempt}}.txt",
                     ),
-                ])),
+                ]),
                 limits: Some(StepLimitsConfig {
                     max_retries: Some(1),
                 }),
@@ -736,27 +751,21 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 next: None,
                 on_approve: Some("finalize".to_string()),
                 on_reject: Some("plan".to_string()),
-                outputs: Some(vec![
-                    "decision".to_string(),
-                    "summary".to_string(),
-                    "feedback".to_string(),
+                outputs: out_keys(&["decision", "summary", "feedback"]),
+                output_files: out_files(&[
+                    (
+                        "decision",
+                        "reports/{{workflow.run_id}}/decision-{{workflow.attempt}}.txt",
+                    ),
+                    (
+                        "summary",
+                        "reports/{{workflow.run_id}}/review-summary-{{workflow.attempt}}.txt",
+                    ),
+                    (
+                        "feedback",
+                        "reports/{{workflow.run_id}}/review-feedback-{{workflow.attempt}}.txt",
+                    ),
                 ]),
-                output_files: Some(BTreeMap::from_iter([
-                    (
-                        "decision".to_string(),
-                        "reports/{{workflow.run_id}}/decision-{{workflow.attempt}}.txt".to_string(),
-                    ),
-                    (
-                        "summary".to_string(),
-                        "reports/{{workflow.run_id}}/review-summary-{{workflow.attempt}}.txt"
-                            .to_string(),
-                    ),
-                    (
-                        "feedback".to_string(),
-                        "reports/{{workflow.run_id}}/review-feedback-{{workflow.attempt}}.txt"
-                            .to_string(),
-                    ),
-                ])),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -768,11 +777,8 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 next: None,
                 on_approve: None,
                 on_reject: None,
-                outputs: Some(vec!["result".to_string()]),
-                output_files: Some(BTreeMap::from_iter([(
-                    "result".to_string(),
-                    "reports/{{workflow.run_id}}/result.json".to_string(),
-                )])),
+                outputs: out_keys(&["result"]),
+                output_files: out_files(&[("result", "reports/{{workflow.run_id}}/result.json")]),
                 limits: None,
             },
         ],
@@ -913,6 +919,54 @@ fi
 }
 
 #[test]
+fn workflow_inputs_persist_and_reload_after_setup_style_edit() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
+
+    let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
+    let workflow_id = orchestrator.default_workflow.clone();
+    let workflow = orchestrator
+        .workflows
+        .iter_mut()
+        .find(|workflow| workflow.id == workflow_id)
+        .expect("default workflow");
+    workflow.inputs = WorkflowInputs::parse_keys(["ticket", "priority", "ticket"])
+        .expect("valid workflow inputs");
+    fs::write(
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
+    )
+    .expect("write orchestrator");
+
+    let reloaded: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
+    let reloaded_workflow = reloaded
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == workflow_id)
+        .expect("reloaded workflow");
+    let keys = reloaded_workflow
+        .inputs
+        .as_slice()
+        .iter()
+        .map(|key| key.as_str().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec!["ticket".to_string(), "priority".to_string()]);
+
+    let show = run(temp.path(), &["workflow", "show", "alpha", &workflow_id]);
+    assert_ok(&show);
+    let show_text = stdout(&show);
+    assert!(show_text.contains("inputs:"));
+    assert!(show_text.contains("- ticket"));
+    assert!(show_text.contains("- priority"));
+}
+
+#[test]
 fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
@@ -953,7 +1007,7 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
     orchestrator.workflows = vec![WorkflowConfig {
         id: "timeout_roundtrip".to_string(),
         version: 1,
-        inputs: serde_yaml::Value::Sequence(Vec::new()),
+        inputs: WorkflowInputs::default(),
         limits: None,
         steps: vec![WorkflowStepConfig {
             id: "slow".to_string(),
@@ -964,11 +1018,11 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
             next: None,
             on_approve: None,
             on_reject: None,
-            outputs: Some(vec!["result".to_string()]),
-            output_files: Some(BTreeMap::from_iter([(
-                "result".to_string(),
-                "reports/{{workflow.run_id}}/slow-{{workflow.attempt}}.txt".to_string(),
-            )])),
+            outputs: out_keys(&["result"]),
+            output_files: out_files(&[(
+                "result",
+                "reports/{{workflow.run_id}}/slow-{{workflow.attempt}}.txt",
+            )]),
             limits: None,
         }],
     }];

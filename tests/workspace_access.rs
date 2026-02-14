@@ -47,6 +47,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: do work
+        outputs: [result]
+        output_files:
+          result: out/result.txt
 "#,
     )
     .expect("parse orchestrator");

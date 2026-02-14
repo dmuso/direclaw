@@ -8,7 +8,7 @@ Replace unstructured workflow inputs and optional output contract fields with st
 
 ### P15-T01 Replace `WorkflowConfig.inputs` YAML blob with typed workflow input model
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `inputs` uses a typed wrapper over validated input keys.
   - Input key normalization/validation is centralized in one place.
@@ -20,7 +20,7 @@ Replace unstructured workflow inputs and optional output contract fields with st
 
 ### P15-T02 Make step outputs/output_files required in in-memory config model
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `WorkflowStepConfig.outputs` is non-optional in typed model.
   - `WorkflowStepConfig.output_files` is non-optional in typed model.
@@ -31,7 +31,7 @@ Replace unstructured workflow inputs and optional output contract fields with st
 
 ### P15-T03 Migrate validation/runtime/setup scaffolds to required contract semantics
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Validation logic no longer performs optional-presence checks for output contract fields.
   - Setup/CLI scaffold generation always emits contract-safe defaults.

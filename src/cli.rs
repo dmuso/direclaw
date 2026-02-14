@@ -1,9 +1,10 @@
 use crate::config::{
-    default_global_config_path, load_orchestrator_config, AgentConfig, AuthSyncConfig,
-    AuthSyncSource, ChannelKind, ChannelProfile, ConfigError, ConfigProviderKind,
-    OrchestratorConfig, Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions,
-    WorkflowConfig, WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
-    WorkflowStepType, WorkflowStepWorkspaceMode,
+    default_global_config_path, load_orchestrator_config, normalize_workflow_input_key,
+    AgentConfig, AuthSyncConfig, AuthSyncSource, ChannelKind, ChannelProfile, ConfigError,
+    ConfigProviderKind, OrchestratorConfig, OutputKey, PathTemplate, Settings,
+    SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig, WorkflowInputs,
+    WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepType,
+    WorkflowStepWorkspaceMode,
 };
 use crate::orchestrator::{
     verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
@@ -1577,7 +1578,7 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
             orchestrator.workflows.push(WorkflowConfig {
                 id: workflow_id.clone(),
                 version: 1,
-                inputs: serde_yaml::Value::Sequence(Vec::new()),
+                inputs: WorkflowInputs::default(),
                 limits: None,
                 steps: vec![WorkflowStepConfig {
                     id: "step_1".to_string(),
@@ -1866,10 +1867,8 @@ fn parse_key_value_inputs(args: &[String]) -> Result<Map<String, Value>, String>
         let (key, value) = raw
             .split_once('=')
             .ok_or_else(|| "--input requires key=value".to_string())?;
-        if key.trim().is_empty() {
-            return Err("input key cannot be empty".to_string());
-        }
-        map.insert(key.to_string(), Value::String(value.to_string()));
+        let normalized = normalize_workflow_input_key(key)?;
+        map.insert(normalized, Value::String(value.to_string()));
         i += 2;
     }
 
@@ -1929,50 +1928,64 @@ pub(super) fn default_step_scaffold(step_type: &str) -> String {
     format!("{objective}\n\n{}", default_step_prompt(step_type))
 }
 
-pub(super) fn default_step_output_contract(step_type: &str) -> Option<Vec<String>> {
+pub(super) fn default_step_output_contract(step_type: &str) -> Vec<OutputKey> {
     if step_type == "agent_review" {
-        Some(vec![
-            "decision".to_string(),
-            "summary".to_string(),
-            "feedback".to_string(),
-        ])
+        vec![
+            OutputKey::parse("decision").expect("default output key is valid"),
+            OutputKey::parse("summary").expect("default output key is valid"),
+            OutputKey::parse("feedback").expect("default output key is valid"),
+        ]
     } else {
-        Some(vec!["summary".to_string(), "artifact".to_string()])
+        vec![
+            OutputKey::parse("summary").expect("default output key is valid"),
+            OutputKey::parse("artifact").expect("default output key is valid"),
+        ]
     }
 }
 
-pub(super) fn default_step_output_files(step_type: &str) -> Option<BTreeMap<String, String>> {
+pub(super) fn default_step_output_files(step_type: &str) -> BTreeMap<OutputKey, PathTemplate> {
     if step_type == "agent_review" {
-        Some(BTreeMap::from_iter([
+        BTreeMap::from_iter([
             (
-                "decision".to_string(),
-                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-decision.txt"
-                    .to_string(),
+                OutputKey::parse_output_file_key("decision").expect("default output key is valid"),
+                PathTemplate::parse(
+                    "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-decision.txt",
+                )
+                .expect("default path template is valid"),
             ),
             (
-                "summary".to_string(),
-                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt"
-                    .to_string(),
+                OutputKey::parse_output_file_key("summary").expect("default output key is valid"),
+                PathTemplate::parse(
+                    "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt",
+                )
+                .expect("default path template is valid"),
             ),
             (
-                "feedback".to_string(),
-                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-feedback.txt"
-                    .to_string(),
+                OutputKey::parse_output_file_key("feedback")
+                    .expect("default output key is valid"),
+                PathTemplate::parse(
+                    "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-feedback.txt",
+                )
+                .expect("default path template is valid"),
             ),
-        ]))
+        ])
     } else {
-        Some(BTreeMap::from_iter([
+        BTreeMap::from_iter([
             (
-                "summary".to_string(),
-                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt"
-                    .to_string(),
+                OutputKey::parse_output_file_key("summary").expect("default output key is valid"),
+                PathTemplate::parse(
+                    "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt",
+                )
+                .expect("default path template is valid"),
             ),
             (
-                "artifact".to_string(),
-                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.txt"
-                    .to_string(),
+                OutputKey::parse_output_file_key("artifact").expect("default output key is valid"),
+                PathTemplate::parse(
+                    "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.txt",
+                )
+                .expect("default path template is valid"),
             ),
-        ]))
+        ])
     }
 }
 
@@ -2039,7 +2052,7 @@ artifact -> {{workflow.output_paths.artifact}}",
                 vec![WorkflowConfig {
                     id: workflow_id,
                     version: 1,
-                    inputs: serde_yaml::Value::Sequence(Vec::new()),
+                    inputs: WorkflowInputs::default(),
                     limits: None,
                     steps,
                 }],
@@ -2091,7 +2104,7 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "feature_delivery".to_string(),
                         version: 1,
-                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![
                             {
@@ -2123,7 +2136,7 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "quick_answer".to_string(),
                         version: 1,
-                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![workflow_step(
                             "answer",
@@ -2154,7 +2167,7 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "prd_draft".to_string(),
                         version: 1,
-                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![
                             {
@@ -2184,7 +2197,7 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "release_notes".to_string(),
                         version: 1,
-                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![workflow_step(
                             "compose",
@@ -2230,8 +2243,8 @@ mod tests {
         assert!(task_prompt.contains("artifact"));
         let task_scaffold = default_step_scaffold("agent_task");
         assert!(task_scaffold.contains("Execute this step objective"));
-        assert!(default_step_output_contract("agent_task").is_some());
-        assert!(default_step_output_files("agent_task").is_some());
+        assert!(!default_step_output_contract("agent_task").is_empty());
+        assert!(!default_step_output_files("agent_task").is_empty());
     }
 
     #[test]
@@ -2240,7 +2253,7 @@ mod tests {
         assert!(review_prompt.contains("decision"));
         assert!(review_prompt.contains("approve"));
         assert!(review_prompt.contains("reject"));
-        assert!(default_step_output_contract("agent_review").is_some());
-        assert!(default_step_output_files("agent_review").is_some());
+        assert!(!default_step_output_contract("agent_review").is_empty());
+        assert!(!default_step_output_files("agent_review").is_empty());
     }
 }

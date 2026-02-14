@@ -1393,7 +1393,7 @@ fn run_workflow_manager_tui(
                     orchestrator.workflows.push(WorkflowConfig {
                         id: workflow_id,
                         version: 1,
-                        inputs: serde_yaml::Value::Sequence(Vec::new()),
+                        inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![WorkflowStepConfig {
                             id: "step_1".to_string(),
@@ -1496,21 +1496,16 @@ fn workflow_detail_menu_rows(
     ]
 }
 
-fn workflow_inputs_as_csv(inputs: &serde_yaml::Value) -> String {
-    match inputs {
-        serde_yaml::Value::Sequence(values) => {
-            let parts: Vec<String> = values
-                .iter()
-                .filter_map(|value| value.as_str().map(|v| v.trim().to_string()))
-                .filter(|v| !v.is_empty())
-                .collect();
-            if parts.is_empty() {
-                "<none>".to_string()
-            } else {
-                parts.join(",")
-            }
-        }
-        _ => "<none>".to_string(),
+fn workflow_inputs_as_csv(inputs: &WorkflowInputs) -> String {
+    let parts: Vec<String> = inputs
+        .as_slice()
+        .iter()
+        .map(|key| key.as_str().to_string())
+        .collect();
+    if parts.is_empty() {
+        "<none>".to_string()
+    } else {
+        parts.join(",")
     }
 }
 
@@ -1521,10 +1516,7 @@ fn parse_csv_values(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn output_files_as_csv(output_files: Option<&BTreeMap<String, String>>) -> String {
-    let Some(output_files) = output_files else {
-        return "<none>".to_string();
-    };
+fn output_files_as_csv(output_files: &BTreeMap<OutputKey, PathTemplate>) -> String {
     if output_files.is_empty() {
         return "<none>".to_string();
     }
@@ -1535,7 +1527,7 @@ fn output_files_as_csv(output_files: Option<&BTreeMap<String, String>>) -> Strin
         .join(",")
 }
 
-fn parse_output_files(raw: &str) -> Result<BTreeMap<String, String>, String> {
+fn parse_output_files(raw: &str) -> Result<BTreeMap<OutputKey, PathTemplate>, String> {
     let mut output_files = BTreeMap::new();
     for entry in parse_csv_values(raw) {
         let (key, value) = entry
@@ -1546,7 +1538,9 @@ fn parse_output_files(raw: &str) -> Result<BTreeMap<String, String>, String> {
         if key.is_empty() || value.is_empty() {
             return Err("output_files entries require non-empty key and path".to_string());
         }
-        output_files.insert(key.to_string(), value.to_string());
+        let key = OutputKey::parse_output_file_key(key)?;
+        let value = PathTemplate::parse(value)?;
+        output_files.insert(key, value);
     }
     Ok(output_files)
 }
@@ -1703,9 +1697,13 @@ fn run_workflow_detail_tui(
                                 .find(|w| w.id == current_workflow_id)
                             {
                                 let parsed = parse_csv_values(&value);
-                                workflow.inputs = serde_yaml::Value::Sequence(
-                                    parsed.into_iter().map(serde_yaml::Value::String).collect(),
-                                );
+                                workflow.inputs = match WorkflowInputs::parse_keys(parsed) {
+                                    Ok(parsed) => parsed,
+                                    Err(err) => {
+                                        status = err;
+                                        continue;
+                                    }
+                                };
                                 status = "workflow inputs updated".to_string();
                             }
                         }
@@ -1836,17 +1834,15 @@ fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
         WorkflowStepWorkspaceMode::RunWorkspace => "run_workspace",
         WorkflowStepWorkspaceMode::AgentWorkspace => "agent_workspace",
     };
-    let outputs = step
-        .outputs
-        .as_ref()
-        .map(|values| {
-            if values.is_empty() {
-                "<none>".to_string()
-            } else {
-                values.join(",")
-            }
-        })
-        .unwrap_or_else(|| "<none>".to_string());
+    let outputs = if step.outputs.is_empty() {
+        "<none>".to_string()
+    } else {
+        step.outputs
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     let max_retries = step
         .limits
         .as_ref()
@@ -1882,7 +1878,7 @@ fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
         field_row("Outputs", Some(outputs)),
         field_row(
             "Output Files",
-            Some(output_files_as_csv(step.output_files.as_ref())),
+            Some(output_files_as_csv(&step.output_files)),
         ),
         field_row("Max Retries", Some(max_retries)),
     ]
@@ -2336,16 +2332,27 @@ fn run_workflow_step_detail_tui(
                 8 => {
                     let current = step
                         .outputs
-                        .as_ref()
-                        .map(|outputs| outputs.join(","))
-                        .unwrap_or_default();
+                        .iter()
+                        .map(|key| key.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",");
                     if let Some(value) = prompt_line_tui(
                         terminal,
                         "Outputs",
                         "Comma-separated output keys (empty clears):",
                         &current,
                     )? {
-                        let parsed = parse_csv_values(&value);
+                        let parsed = match parse_csv_values(&value)
+                            .into_iter()
+                            .map(|key| OutputKey::parse(&key))
+                            .collect::<Result<Vec<_>, _>>()
+                        {
+                            Ok(parsed) => parsed,
+                            Err(err) => {
+                                status = err;
+                                continue;
+                            }
+                        };
                         let cfg = bootstrap
                             .orchestrator_configs
                             .get_mut(orchestrator_id)
@@ -2361,17 +2368,13 @@ fn run_workflow_step_detail_tui(
                                     .find(|step| step.id == current_step_id)
                             })
                         {
-                            step.outputs = if parsed.is_empty() {
-                                None
-                            } else {
-                                Some(parsed)
-                            };
+                            step.outputs = parsed;
                             status = "step outputs updated".to_string();
                         }
                     }
                 }
                 9 => {
-                    let current = output_files_as_csv(step.output_files.as_ref());
+                    let current = output_files_as_csv(&step.output_files);
                     let initial = if current == "<none>" { "" } else { &current };
                     if let Some(value) = prompt_line_tui(
                         terminal,
@@ -2395,7 +2398,7 @@ fn run_workflow_step_detail_tui(
                                         .find(|step| step.id == current_step_id)
                                 })
                             {
-                                step.output_files = None;
+                                step.output_files = BTreeMap::new();
                                 status = "step output_files cleared".to_string();
                             }
                             continue;
@@ -2418,7 +2421,7 @@ fn run_workflow_step_detail_tui(
                                     .find(|step| step.id == current_step_id)
                             })
                         {
-                            step.output_files = Some(parsed);
+                            step.output_files = parsed;
                             status = "step output_files updated".to_string();
                         }
                     }
@@ -3121,17 +3124,20 @@ mod tests {
     fn parse_output_files_requires_key_value_pairs() {
         let parsed = parse_output_files("result=output/result.md,summary=out/summary.md")
             .expect("valid output files");
-        assert_eq!(parsed.get("result"), Some(&"output/result.md".to_string()));
-        assert_eq!(parsed.get("summary"), Some(&"out/summary.md".to_string()));
+        assert_eq!(
+            parsed.get("result").map(|template| template.as_str()),
+            Some("output/result.md")
+        );
+        assert_eq!(
+            parsed.get("summary").map(|template| template.as_str()),
+            Some("out/summary.md")
+        );
         assert!(parse_output_files("missing_equals").is_err());
     }
 
     #[test]
     fn workflow_inputs_as_csv_handles_empty_sequence() {
-        assert_eq!(
-            workflow_inputs_as_csv(&serde_yaml::Value::Sequence(Vec::new())),
-            "<none>"
-        );
+        assert_eq!(workflow_inputs_as_csv(&WorkflowInputs::default()), "<none>");
     }
 
     #[test]

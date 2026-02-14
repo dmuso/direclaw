@@ -1,4 +1,5 @@
 use serde::de::Error as _;
+use serde::ser::Serializer;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -102,6 +103,248 @@ define_id_type!(OrchestratorId, "orchestrator id");
 define_id_type!(WorkflowId, "workflow id");
 define_id_type!(StepId, "step id");
 define_id_type!(AgentId, "agent id");
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct WorkflowInputKey(String);
+
+impl WorkflowInputKey {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        Ok(Self(normalize_workflow_input_key(raw)?))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for WorkflowInputKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkflowInputKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw)
+            .map_err(|err| D::Error::custom(format!("invalid workflow input key `{raw}`: {err}")))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct WorkflowInputs(Vec<WorkflowInputKey>);
+
+impl WorkflowInputs {
+    pub fn parse_keys<I, S>(keys: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut values = Vec::new();
+        let mut seen = HashSet::new();
+        for raw in keys {
+            let key = WorkflowInputKey::parse(raw.as_ref())?;
+            if seen.insert(key.as_str().to_string()) {
+                values.push(key);
+            }
+        }
+        Ok(Self(values))
+    }
+
+    pub fn as_slice(&self) -> &[WorkflowInputKey] {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkflowInputs {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::Null => Ok(Self::default()),
+            serde_yaml::Value::String(raw) => Self::parse_keys([raw]).map_err(D::Error::custom),
+            serde_yaml::Value::Sequence(values) => {
+                let mut keys = Vec::new();
+                for value in values {
+                    let raw = value.as_str().ok_or_else(|| {
+                        D::Error::custom("workflow inputs must be a sequence of string keys")
+                    })?;
+                    keys.push(raw.to_string());
+                }
+                Self::parse_keys(keys).map_err(D::Error::custom)
+            }
+            // Transitional support: legacy untyped object inputs can still load by key names.
+            serde_yaml::Value::Mapping(values) => {
+                let mut keys = Vec::new();
+                for (key, _) in values {
+                    let raw = key.as_str().ok_or_else(|| {
+                        D::Error::custom("legacy workflow input objects must have string keys only")
+                    })?;
+                    keys.push(raw.to_string());
+                }
+                Self::parse_keys(keys).map_err(D::Error::custom)
+            }
+            _ => Err(D::Error::custom(
+                "workflow inputs must be a sequence of keys or a legacy object",
+            )),
+        }
+    }
+}
+
+pub fn normalize_workflow_input_key(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim();
+    validate_identifier_value("workflow input key", normalized)?;
+    Ok(normalized.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OutputKey {
+    pub name: String,
+    pub required: bool,
+}
+
+impl OutputKey {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("output key must be non-empty".to_string());
+        }
+        let (name, required) = if let Some(optional) = trimmed.strip_suffix('?') {
+            (optional.trim(), false)
+        } else {
+            (trimmed, true)
+        };
+        if name.is_empty() {
+            return Err("output key must be non-empty".to_string());
+        }
+        if name.contains('?') {
+            return Err("output key may only contain optional marker as trailing `?`".to_string());
+        }
+        validate_identifier_value("output key", name)?;
+        Ok(Self {
+            name: name.to_string(),
+            required,
+        })
+    }
+
+    pub fn parse_output_file_key(raw: &str) -> Result<Self, String> {
+        let parsed = Self::parse(raw)?;
+        if !parsed.required {
+            return Err(
+                "output_files keys must not include optional marker `?`; declare optionality only in `outputs`"
+                    .to_string(),
+            );
+        }
+        Ok(parsed)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::fmt::Display for OutputKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.required {
+            self.name.fmt(f)
+        } else {
+            write!(f, "{}?", self.name)
+        }
+    }
+}
+
+impl std::borrow::Borrow<str> for OutputKey {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Serialize for OutputKey {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw)
+            .map_err(|err| D::Error::custom(format!("invalid output key `{raw}`: {err}")))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct PathTemplate(String);
+
+impl PathTemplate {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let normalized = raw.trim();
+        if normalized.is_empty() {
+            return Err("path template must be non-empty".to_string());
+        }
+        Ok(Self(normalized.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PathTemplate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for PathTemplate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw)
+            .map_err(|err| D::Error::custom(format!("invalid path template `{raw}`: {err}")))
+    }
+}
+
+pub type OutputContractKey = OutputKey;
+
+pub fn parse_output_contract_key(raw: &str) -> Result<OutputContractKey, String> {
+    OutputKey::parse(raw)
+}
+
+fn deserialize_optional_output_files<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<OutputKey, PathTemplate>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<BTreeMap<String, PathTemplate>>::deserialize(deserializer)?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut parsed = BTreeMap::new();
+    for (key, template) in raw {
+        let parsed_key = OutputKey::parse_output_file_key(&key)
+            .map_err(|err| D::Error::custom(format!("invalid output_files key `{key}`: {err}")))?;
+        parsed.insert(parsed_key, template);
+    }
+    Ok(Some(parsed))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -307,14 +550,14 @@ pub struct WorkflowConfig {
     pub id: String,
     pub version: u32,
     #[serde(default)]
-    pub inputs: serde_yaml::Value,
+    pub inputs: WorkflowInputs,
     #[serde(default)]
     pub limits: Option<WorkflowLimitsConfig>,
     #[serde(default)]
     pub steps: Vec<WorkflowStepConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct WorkflowStepConfig {
     pub id: String,
     #[serde(rename = "type")]
@@ -329,12 +572,64 @@ pub struct WorkflowStepConfig {
     pub on_approve: Option<String>,
     #[serde(default)]
     pub on_reject: Option<String>,
-    #[serde(default)]
-    pub outputs: Option<Vec<String>>,
-    #[serde(default)]
-    pub output_files: Option<BTreeMap<String, String>>,
+    pub outputs: Vec<OutputKey>,
+    pub output_files: BTreeMap<OutputKey, PathTemplate>,
     #[serde(default)]
     pub limits: Option<StepLimitsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct WorkflowStepConfigRaw {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub step_type: WorkflowStepType,
+    pub agent: String,
+    pub prompt: String,
+    #[serde(default = "default_workflow_step_workspace_mode")]
+    pub workspace_mode: WorkflowStepWorkspaceMode,
+    #[serde(default)]
+    pub next: Option<String>,
+    #[serde(default)]
+    pub on_approve: Option<String>,
+    #[serde(default)]
+    pub on_reject: Option<String>,
+    pub outputs: Option<Vec<OutputKey>>,
+    #[serde(default, deserialize_with = "deserialize_optional_output_files")]
+    pub output_files: Option<BTreeMap<OutputKey, PathTemplate>>,
+    #[serde(default)]
+    pub limits: Option<StepLimitsConfig>,
+}
+
+impl<'de> Deserialize<'de> for WorkflowStepConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = WorkflowStepConfigRaw::deserialize(deserializer)?;
+        let outputs = raw.outputs.ok_or_else(|| {
+            D::Error::custom(
+                "workflow step is missing required `outputs`; migrate config to include explicit `outputs` and `output_files` contract fields",
+            )
+        })?;
+        let output_files = raw.output_files.ok_or_else(|| {
+            D::Error::custom(
+                "workflow step is missing required `output_files`; migrate config to include explicit `outputs` and `output_files` contract fields",
+            )
+        })?;
+        Ok(Self {
+            id: raw.id,
+            step_type: raw.step_type,
+            agent: raw.agent,
+            prompt: raw.prompt,
+            workspace_mode: raw.workspace_mode,
+            next: raw.next,
+            on_approve: raw.on_approve,
+            on_reject: raw.on_reject,
+            outputs,
+            output_files,
+            limits: raw.limits,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -378,25 +673,6 @@ pub struct StepLimitsConfig {
 #[derive(Debug, Clone, Copy)]
 pub struct ValidationOptions {
     pub require_shared_paths_exist: bool,
-}
-
-fn parse_output_contract_key(raw: &str) -> Result<(String, bool), String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("output key must be non-empty".to_string());
-    }
-    let (name, required) = if let Some(optional) = trimmed.strip_suffix('?') {
-        (optional.trim(), false)
-    } else {
-        (trimmed, true)
-    };
-    if name.is_empty() {
-        return Err("output key must be non-empty".to_string());
-    }
-    if name.contains('?') {
-        return Err("output key may only contain optional marker as trailing `?`".to_string());
-    }
-    Ok((name.to_string(), required))
 }
 
 impl Default for ValidationOptions {
@@ -678,41 +954,23 @@ impl OrchestratorConfig {
                         workflow.id, step.id
                     )));
                 }
-                let outputs = step.outputs.as_ref().ok_or_else(|| {
-                    ConfigError::Orchestrator(format!(
-                        "workflow `{}` step `{}` requires non-empty `outputs`",
-                        workflow.id, step.id
-                    ))
-                })?;
-                if outputs.is_empty() {
+                if step.outputs.is_empty() {
                     return Err(ConfigError::Orchestrator(format!(
                         "workflow `{}` step `{}` requires non-empty `outputs`",
                         workflow.id, step.id
                     )));
                 }
-                let output_files = step.output_files.as_ref().ok_or_else(|| {
-                    ConfigError::Orchestrator(format!(
-                        "workflow `{}` step `{}` requires non-empty `output_files`",
-                        workflow.id, step.id
-                    ))
-                })?;
-                if output_files.is_empty() {
+                if step.output_files.is_empty() {
                     return Err(ConfigError::Orchestrator(format!(
                         "workflow `{}` step `{}` requires non-empty `output_files`",
                         workflow.id, step.id
                     )));
                 }
-                for key in outputs {
-                    let (normalized, _) = parse_output_contract_key(key).map_err(|reason| {
-                        ConfigError::Orchestrator(format!(
-                            "workflow `{}` step `{}` has invalid output key `{}`: {}",
-                            workflow.id, step.id, key, reason
-                        ))
-                    })?;
-                    if !output_files.contains_key(&normalized) {
+                for key in &step.outputs {
+                    if !step.output_files.contains_key(key.as_str()) {
                         return Err(ConfigError::Orchestrator(format!(
                             "workflow `{}` step `{}` missing output_files mapping for `{}`",
-                            workflow.id, step.id, normalized
+                            workflow.id, step.id, key.name
                         )));
                     }
                 }
@@ -904,6 +1162,9 @@ workflows:
         type: agent_task
         agent: router
         prompt: hello
+        outputs: [summary]
+        output_files:
+          summary: summary.txt
 "#,
         )
         .expect("parse orchestrator");
@@ -955,6 +1216,9 @@ workflows:
         type: agent_task
         agent: router
         prompt: hello
+        outputs: [summary]
+        output_files:
+          summary: summary.txt
 "#,
         )
         .expect("parse orchestrator");
@@ -972,7 +1236,7 @@ workflows:
 
     #[test]
     fn orchestrator_validation_rejects_output_keys_with_non_trailing_optional_marker() {
-        let settings: Settings = serde_yaml::from_str(
+        let _settings: Settings = serde_yaml::from_str(
             r#"
 workspaces_path: /tmp/workspace
 shared_workspaces: {}
@@ -986,7 +1250,7 @@ channels: {}
         )
         .expect("parse settings");
 
-        let config: OrchestratorConfig = serde_yaml::from_str(
+        let err = serde_yaml::from_str::<OrchestratorConfig>(
             r#"
 id: alpha
 selector_agent: router
@@ -1010,18 +1274,10 @@ workflows:
           "plan?draft": plan.md
 "#,
         )
-        .expect("parse orchestrator");
-
-        let err = config
-            .validate(&settings, "alpha")
-            .expect_err("validation should fail");
-        match err {
-            ConfigError::Orchestrator(message) => {
-                assert!(message.contains("output key"));
-                assert!(message.contains("trailing `?`"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        .expect_err("invalid output key should fail at parse");
+        let message = err.to_string();
+        assert!(message.contains("output key"));
+        assert!(message.contains("trailing `?`"));
     }
 
     #[test]
@@ -1083,6 +1339,9 @@ id: step_1
 type: agent_task
 agent: worker
 prompt: hello
+outputs: [summary]
+output_files:
+  summary: outputs/summary.txt
 "#,
         )
         .expect("parse step");
@@ -1101,6 +1360,9 @@ type: agent_task
 agent: worker
 prompt: hello
 workspace_mode: run_workspace
+outputs: [summary]
+output_files:
+  summary: outputs/summary.txt
 "#,
         )
         .expect("parse run_workspace");
@@ -1116,10 +1378,128 @@ type: agent_task
 agent: worker
 prompt: hello
 workspace_mode: unknown_mode
+outputs: [summary]
+output_files:
+  summary: outputs/summary.txt
 "#,
         )
         .expect_err("unknown workspace_mode must fail");
         assert!(err.to_string().contains("workspace_mode"));
+    }
+
+    #[test]
+    fn workflow_inputs_round_trip_and_normalize_keys() {
+        let workflow: WorkflowConfig = serde_yaml::from_str(
+            r#"
+id: triage
+version: 1
+inputs: [ ticket ,priority,ticket]
+steps:
+  - id: step_1
+    type: agent_task
+    agent: worker
+    prompt: hello
+    outputs: [summary]
+    output_files:
+      summary: outputs/summary.txt
+"#,
+        )
+        .expect("parse workflow");
+        let keys = workflow
+            .inputs
+            .as_slice()
+            .iter()
+            .map(|key| key.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["ticket".to_string(), "priority".to_string()]);
+
+        let encoded = serde_yaml::to_string(&workflow).expect("encode workflow");
+        assert!(encoded.contains("- ticket"));
+        assert!(encoded.contains("- priority"));
+    }
+
+    #[test]
+    fn workflow_inputs_support_legacy_mapping_shape() {
+        let workflow: WorkflowConfig = serde_yaml::from_str(
+            r#"
+id: triage
+version: 1
+inputs:
+  ticket: true
+  priority: high
+steps:
+  - id: step_1
+    type: agent_task
+    agent: worker
+    prompt: hello
+    outputs: [summary]
+    output_files:
+      summary: outputs/summary.txt
+"#,
+        )
+        .expect("parse workflow");
+        let keys = workflow
+            .inputs
+            .as_slice()
+            .iter()
+            .map(|key| key.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&"ticket".to_string()));
+        assert!(keys.contains(&"priority".to_string()));
+    }
+
+    #[test]
+    fn workflow_inputs_reject_invalid_key_shapes() {
+        let err = serde_yaml::from_str::<WorkflowConfig>(
+            r#"
+id: triage
+version: 1
+inputs: ["bad key"]
+steps:
+  - id: step_1
+    type: agent_task
+    agent: worker
+    prompt: hello
+    outputs: [summary]
+    output_files:
+      summary: outputs/summary.txt
+"#,
+        )
+        .expect_err("invalid workflow input key should fail");
+        assert!(err.to_string().contains("workflow input key"));
+    }
+
+    #[test]
+    fn workflow_step_requires_outputs_and_output_files_fields() {
+        let err = serde_yaml::from_str::<WorkflowStepConfig>(
+            r#"
+id: step_1
+type: agent_task
+agent: worker
+prompt: hello
+"#,
+        )
+        .expect_err("missing output contract fields must fail");
+        let message = err.to_string();
+        assert!(message.contains("migrate config"));
+        assert!(message.contains("outputs"));
+        assert!(message.contains("output_files"));
+    }
+
+    #[test]
+    fn output_contract_key_parsing_tracks_required_and_optional_markers() {
+        let required = parse_output_contract_key("summary").expect("required output key");
+        assert_eq!(required.name, "summary");
+        assert!(required.required);
+
+        let optional = parse_output_contract_key("artifact?").expect("optional output key");
+        assert_eq!(optional.name, "artifact");
+        assert!(!optional.required);
+
+        let err = parse_output_contract_key("art?ifact")
+            .expect_err("non-trailing optional marker should fail");
+        assert!(err.contains("trailing `?`"));
     }
 
     #[test]
@@ -1155,6 +1535,11 @@ id: review
 type: agent_review
 agent: reviewer
 prompt: review it
+outputs: [decision,summary,feedback]
+output_files:
+  decision: outputs/decision.txt
+  summary: outputs/summary.txt
+  feedback: outputs/feedback.txt
 "#,
         )
         .expect("parse step");

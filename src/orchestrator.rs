@@ -1,8 +1,10 @@
 use crate::cli;
 use crate::config::{
-    load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, Settings,
-    WorkflowConfig, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
+    load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, OutputContractKey,
+    Settings, WorkflowConfig, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
+#[cfg(test)]
+use crate::config::{OutputKey, PathTemplate};
 use crate::provider::{
     consume_reset_flag, run_provider, write_file_backed_prompt, InvocationLog, ProviderError,
     ProviderKind, ProviderRequest, RunnerBinaries,
@@ -1734,51 +1736,10 @@ pub fn parse_review_decision(outputs: &Map<String, Value>) -> Result<bool, Orche
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct OutputContractKey {
-    name: String,
-    required: bool,
-}
-
-fn parse_output_contract_key(raw: &str) -> Result<OutputContractKey, String> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err("output key must be non-empty".to_string());
-    }
-    let (name, required) = if let Some(optional) = trimmed.strip_suffix('?') {
-        (optional.trim(), false)
-    } else {
-        (trimmed, true)
-    };
-    if name.is_empty() {
-        return Err("output key must be non-empty".to_string());
-    }
-    if name.contains('?') {
-        return Err("output key may only contain optional marker as trailing `?`".to_string());
-    }
-    Ok(OutputContractKey {
-        name: name.to_string(),
-        required,
-    })
-}
-
 fn parse_output_contract(
     step: &WorkflowStepConfig,
 ) -> Result<Vec<OutputContractKey>, OrchestratorError> {
-    let Some(configured) = step.outputs.as_ref() else {
-        return Ok(Vec::new());
-    };
-    let mut keys = Vec::with_capacity(configured.len());
-    for raw in configured {
-        let key = parse_output_contract_key(raw).map_err(|reason| {
-            OrchestratorError::OutputContractValidation {
-                step_id: step.id.clone(),
-                reason: format!("invalid output declaration `{raw}`: {reason}"),
-            }
-        })?;
-        keys.push(key);
-    }
-    Ok(keys)
+    Ok(step.outputs.clone())
 }
 
 fn validate_outputs_contract(
@@ -2050,12 +2011,7 @@ pub fn render_step_prompt(
     let state_value = Value::Object(state_map.clone());
 
     let output_schema_json = serde_json::to_string(
-        &step
-            .outputs
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<Vec<_>>(),
+        &step.outputs.clone().into_iter().collect::<Vec<_>>(),
     )
     .map_err(|err| OrchestratorError::StepPromptRender {
         step_id: step.id.clone(),
@@ -2471,18 +2427,17 @@ pub fn resolve_step_output_paths(
     )?;
 
     let mut output_paths = BTreeMap::new();
-    let Some(templates) = step.output_files.as_ref() else {
-        return Ok(output_paths);
-    };
 
-    for (key, template) in templates {
-        let interpolated = interpolate_output_template(template, run_id, &step.id, attempt);
-        let relative = validate_relative_output_template(&interpolated, &step.id, template)?;
+    for (key, template) in &step.output_files {
+        let interpolated =
+            interpolate_output_template(template.as_str(), run_id, &step.id, attempt);
+        let relative =
+            validate_relative_output_template(&interpolated, &step.id, template.as_str())?;
         let resolved = normalize_absolute_path(&output_root.join(relative))?;
         if !resolved.starts_with(&output_root) {
             return Err(OrchestratorError::OutputPathValidation {
                 step_id: step.id.clone(),
-                template: template.clone(),
+                template: template.to_string(),
                 reason: format!(
                     "resolved path `{}` escapes output root `{}`",
                     resolved.display(),
@@ -2490,7 +2445,7 @@ pub fn resolve_step_output_paths(
                 ),
             });
         }
-        output_paths.insert(key.clone(), resolved);
+        output_paths.insert(key.as_str().to_string(), resolved);
     }
     Ok(output_paths)
 }
@@ -4551,12 +4506,14 @@ channels: {}
             next: None,
             on_approve: None,
             on_reject: None,
-            outputs: Some(vec!["artifact".to_string()]),
-            output_files: Some(BTreeMap::from_iter([(
-                "artifact".to_string(),
-                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.md"
-                    .to_string(),
-            )])),
+            outputs: vec![OutputKey::parse("artifact").expect("valid key")],
+            output_files: BTreeMap::from_iter([(
+                OutputKey::parse_output_file_key("artifact").expect("valid key"),
+                PathTemplate::parse(
+                    "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.md",
+                )
+                .expect("valid template"),
+            )]),
             limits: None,
         };
 
@@ -4571,10 +4528,10 @@ channels: {}
             .ends_with("artifacts/run-123/plan-2.md"));
 
         let bad_step = WorkflowStepConfig {
-            output_files: Some(BTreeMap::from_iter([(
-                "artifact".to_string(),
-                "../escape.md".to_string(),
-            )])),
+            output_files: BTreeMap::from_iter([(
+                OutputKey::parse_output_file_key("artifact").expect("valid key"),
+                PathTemplate::parse("../escape.md").expect("valid template"),
+            )]),
             ..step
         };
         let err =

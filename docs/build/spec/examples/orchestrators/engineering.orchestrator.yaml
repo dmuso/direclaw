@@ -47,6 +47,10 @@ workflows:
           Complete this engineering request end-to-end:
           {{inputs.user_prompt}}
           Return one [workflow_result] JSON [/workflow_result] block.
+        outputs: [summary, artifact]
+        output_files:
+          summary: default/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          artifact: default/artifact__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
 
   - id: code_with_reviews
     version: 1
@@ -68,6 +72,9 @@ workflows:
           {{inputs.feature_branch}}
           Use {{workflow.run_workspace}} as the working directory.
           Return one [workflow_result] JSON [/workflow_result] block.
+        outputs: [repo_status]
+        output_files:
+          repo_status: clone/repo_status__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
         next: plan_create
 
       - id: plan_create
