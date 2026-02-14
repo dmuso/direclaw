@@ -1,7 +1,7 @@
 use crate::cli;
 use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, Settings,
-    WorkflowConfig, WorkflowStepConfig,
+    WorkflowConfig, WorkflowStepConfig, WorkflowStepWorkspaceMode,
 };
 use crate::provider::{
     consume_reset_flag, run_provider, write_file_backed_prompt, InvocationLog, ProviderError,
@@ -1346,6 +1346,11 @@ impl WorkflowEngine {
         attempt: u32,
         now: i64,
     ) -> Result<StepEvaluation, OrchestratorError> {
+        let orchestrator_workspace = if let Some(context) = self.workspace_access_context.as_ref() {
+            context.private_workspace_root.clone()
+        } else {
+            self.run_store.state_root().to_path_buf()
+        };
         let run_workspace = if let Some(context) = self.workspace_access_context.as_ref() {
             context
                 .private_workspace_root
@@ -1374,11 +1379,22 @@ impl WorkflowEngine {
             &step.agent,
             agent,
         );
+        let execution_cwd = match step.workspace_mode {
+            WorkflowStepWorkspaceMode::OrchestratorWorkspace => orchestrator_workspace.clone(),
+            WorkflowStepWorkspaceMode::RunWorkspace => run_workspace.clone(),
+            WorkflowStepWorkspaceMode::AgentWorkspace => agent_workspace.clone(),
+        };
 
         if let Some(context) = self.workspace_access_context.as_ref() {
-            if let Err(err) =
-                enforce_workspace_access(context, &[agent_workspace.clone(), run_workspace.clone()])
-            {
+            if let Err(err) = enforce_workspace_access(
+                context,
+                &[
+                    orchestrator_workspace.clone(),
+                    run_workspace.clone(),
+                    agent_workspace.clone(),
+                    execution_cwd.clone(),
+                ],
+            ) {
                 append_security_log(
                     self.run_store.state_root(),
                     &format!(
@@ -1389,8 +1405,11 @@ impl WorkflowEngine {
                 return Err(err);
             }
         }
+        fs::create_dir_all(&orchestrator_workspace)
+            .map_err(|err| io_error(&orchestrator_workspace, err))?;
         fs::create_dir_all(&run_workspace).map_err(|err| io_error(&run_workspace, err))?;
         fs::create_dir_all(&agent_workspace).map_err(|err| io_error(&agent_workspace, err))?;
+        fs::create_dir_all(&execution_cwd).map_err(|err| io_error(&execution_cwd, err))?;
 
         let step_outputs =
             load_latest_step_outputs(self.run_store.state_root(), &run.run_id, workflow, &step.id)?;
@@ -1445,7 +1464,7 @@ impl WorkflowEngine {
             reason: err.to_string(),
         })?;
 
-        let reset_flag = agent_workspace.join("reset_flag");
+        let reset_flag = execution_cwd.join("reset_flag");
         let reset_resolution =
             consume_reset_flag(&reset_flag).map_err(|err| OrchestratorError::StepExecution {
                 step_id: step.id.clone(),
@@ -1462,7 +1481,7 @@ impl WorkflowEngine {
             agent_id: step.agent.clone(),
             provider: provider_kind,
             model: agent.model.clone(),
-            cwd: agent_workspace.clone(),
+            cwd: execution_cwd.clone(),
             message: provider_instruction_message(&artifacts),
             prompt_artifacts: artifacts.clone(),
             timeout: Duration::from_secs(
@@ -4528,6 +4547,7 @@ channels: {}
             step_type: "agent_task".to_string(),
             agent: "worker".to_string(),
             prompt: "prompt".to_string(),
+            workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
             next: None,
             on_approve: None,
             on_reject: None,

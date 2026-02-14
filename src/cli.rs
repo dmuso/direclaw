@@ -1,8 +1,9 @@
 use crate::config::{
-    default_global_config_path, default_orchestrators_config_path, load_orchestrator_config,
-    AgentConfig, AuthSyncConfig, AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig,
-    Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig,
+    default_global_config_path, load_orchestrator_config, AgentConfig, AuthSyncConfig,
+    AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig, Settings,
+    SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig,
     WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
+    WorkflowStepWorkspaceMode,
 };
 use crate::orchestrator::{
     verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
@@ -211,22 +212,9 @@ fn save_orchestrator_config(
         .map_err(map_config_err)?;
     fs::create_dir_all(&private_workspace)
         .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
-    let path = default_orchestrators_config_path().map_err(map_config_err)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let mut registry = if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        serde_yaml::from_str::<BTreeMap<String, OrchestratorConfig>>(&raw)
-            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?
-    } else {
-        BTreeMap::new()
-    };
-    registry.insert(orchestrator_id.to_string(), orchestrator.clone());
-    let body = serde_yaml::to_string(&registry)
-        .map_err(|e| format!("failed to encode orchestrators: {e}"))?;
+    let path = private_workspace.join("orchestrator.yaml");
+    let body = serde_yaml::to_string(orchestrator)
+        .map_err(|e| format!("failed to encode orchestrator: {e}"))?;
     fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
     Ok(path)
 }
@@ -235,40 +223,23 @@ fn save_orchestrator_registry(
     settings: &Settings,
     registry: &BTreeMap<String, OrchestratorConfig>,
 ) -> Result<PathBuf, String> {
+    let mut saved = None;
     for (orchestrator_id, orchestrator) in registry {
-        orchestrator
-            .validate(settings, orchestrator_id)
-            .map_err(map_config_err)?;
-        let private_workspace = settings
-            .resolve_private_workspace(orchestrator_id)
-            .map_err(map_config_err)?;
-        fs::create_dir_all(&private_workspace)
-            .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
+        let path = save_orchestrator_config(settings, orchestrator_id, orchestrator)?;
+        saved = Some(path);
     }
-    let path = default_orchestrators_config_path().map_err(map_config_err)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let body = serde_yaml::to_string(registry)
-        .map_err(|e| format!("failed to encode orchestrators: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(path)
+    saved.ok_or_else(|| "no orchestrator configs to save".to_string())
 }
 
-fn remove_orchestrator_config(orchestrator_id: &str) -> Result<(), String> {
-    let path = default_orchestrators_config_path().map_err(map_config_err)?;
+fn remove_orchestrator_config(settings: &Settings, orchestrator_id: &str) -> Result<(), String> {
+    let private_workspace = settings
+        .resolve_private_workspace(orchestrator_id)
+        .map_err(map_config_err)?;
+    let path = private_workspace.join("orchestrator.yaml");
     if !path.exists() {
         return Ok(());
     }
-    let raw =
-        fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let mut registry = serde_yaml::from_str::<BTreeMap<String, OrchestratorConfig>>(&raw)
-        .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
-    registry.remove(orchestrator_id);
-    let body = serde_yaml::to_string(&registry)
-        .map_err(|e| format!("failed to encode orchestrators: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    fs::remove_file(&path).map_err(|e| format!("failed to remove {}: {e}", path.display()))
 }
 
 fn load_orchestrator_or_err(
@@ -1044,20 +1015,6 @@ fn cmd_doctor() -> Result<String, String> {
                 "grant write permission to workspaces_path in ~/.direclaw/config.yaml",
             ),
         });
-        let orchestrators_config_path =
-            default_orchestrators_config_path().map_err(map_config_err)?;
-        let orchestrator_registry_required = !settings.orchestrators.is_empty();
-        findings.push(doctor_finding(
-            "config.orchestrators.path",
-            !orchestrator_registry_required || orchestrators_config_path.exists(),
-            format!(
-                "path={} required={}",
-                orchestrators_config_path.display(),
-                orchestrator_registry_required
-            ),
-            "run `direclaw setup` or create ~/.direclaw/config-orchestrators.yaml",
-        ));
-
         for orchestrator_id in settings.orchestrators.keys() {
             match settings.resolve_private_workspace(orchestrator_id) {
                 Ok(private_workspace) => {
@@ -1080,9 +1037,13 @@ fn cmd_doctor() -> Result<String, String> {
                     findings.push(doctor_finding(
                         format!("config.orchestrator.{orchestrator_id}"),
                         load_orchestrator_or_err(settings, orchestrator_id).is_ok(),
-                        format!("source={}", orchestrators_config_path.display()),
                         format!(
-                            "run `direclaw orchestrator add {orchestrator_id}` or add `{orchestrator_id}` in ~/.direclaw/config-orchestrators.yaml"
+                            "source={}",
+                            private_workspace.join("orchestrator.yaml").display()
+                        ),
+                        format!(
+                            "run `direclaw orchestrator add {orchestrator_id}` or create {}/orchestrator.yaml",
+                            private_workspace.display()
                         ),
                     ));
                 }
@@ -1303,7 +1264,7 @@ fn cmd_orchestrator(args: &[String]) -> Result<String, String> {
                 return Err(format!("unknown orchestrator `{id}`"));
             }
             save_settings(&settings)?;
-            remove_orchestrator_config(&id)?;
+            remove_orchestrator_config(&settings, &id)?;
             Ok(format!("orchestrator removed\nid={id}"))
         }
         "set-private-workspace" => {
@@ -1315,7 +1276,7 @@ fn cmd_orchestrator(args: &[String]) -> Result<String, String> {
             }
             let mut settings = load_settings()?;
             let id = &args[1];
-            let old_private_workspace = settings.resolve_private_workspace(id).ok();
+            let orchestrator = load_orchestrator_or_err(&settings, id)?;
             let path = PathBuf::from(&args[2]);
             if !path.is_absolute() {
                 return Err("private workspace path must be absolute".to_string());
@@ -1326,7 +1287,7 @@ fn cmd_orchestrator(args: &[String]) -> Result<String, String> {
                 .ok_or_else(|| format!("unknown orchestrator `{id}`"))?;
             entry.private_workspace = Some(path.clone());
             save_settings(&settings)?;
-            let _ = old_private_workspace;
+            save_orchestrator_config(&settings, id, &orchestrator)?;
             Ok(format!(
                 "orchestrator updated\nid={}\nprivate_workspace={}",
                 id,
@@ -1622,12 +1583,13 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
                     id: "step_1".to_string(),
                     step_type: "agent_task".to_string(),
                     agent: selector,
-                    prompt: "placeholder".to_string(),
+                    prompt: default_step_prompt("agent_task"),
+                    workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                     next: None,
                     on_approve: None,
                     on_reject: None,
-                    outputs: None,
-                    output_files: None,
+                    outputs: default_step_output_contract("agent_task"),
+                    output_files: default_step_output_files("agent_task"),
                     limits: None,
                 }],
             });
@@ -1922,17 +1884,86 @@ fn parse_bool(raw: &str) -> Result<bool, String> {
     }
 }
 
+pub(super) fn default_step_prompt(step_type: &str) -> String {
+    if step_type == "agent_review" {
+        return r#"Return exactly one [workflow_result] JSON envelope.
+Required JSON keys:
+- decision: "approve" or "reject"
+- summary: concise reason for the decision
+- feedback: concrete changes needed or verification notes
+Output format (JSON only inside envelope):
+[workflow_result]{"decision":"approve|reject","summary":"...","feedback":"..."}[/workflow_result]"#
+            .to_string();
+    }
+    r#"Return exactly one [workflow_result] JSON envelope.
+Required JSON keys:
+- status: "complete" | "blocked" | "failed"
+- summary: concise step summary
+- artifact: primary output text for this step
+Output format (JSON only inside envelope):
+[workflow_result]{"status":"complete|blocked|failed","summary":"...","artifact":"..."}[/workflow_result]"#
+        .to_string()
+}
+
+pub(super) fn default_step_output_contract(step_type: &str) -> Option<Vec<String>> {
+    if step_type == "agent_review" {
+        Some(vec![
+            "decision".to_string(),
+            "summary".to_string(),
+            "feedback".to_string(),
+        ])
+    } else {
+        Some(vec!["summary".to_string(), "artifact".to_string()])
+    }
+}
+
+pub(super) fn default_step_output_files(step_type: &str) -> Option<BTreeMap<String, String>> {
+    if step_type == "agent_review" {
+        Some(BTreeMap::from_iter([
+            (
+                "decision".to_string(),
+                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-decision.txt"
+                    .to_string(),
+            ),
+            (
+                "summary".to_string(),
+                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt"
+                    .to_string(),
+            ),
+            (
+                "feedback".to_string(),
+                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-feedback.txt"
+                    .to_string(),
+            ),
+        ]))
+    } else {
+        Some(BTreeMap::from_iter([
+            (
+                "summary".to_string(),
+                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt"
+                    .to_string(),
+            ),
+            (
+                "artifact".to_string(),
+                "artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.txt"
+                    .to_string(),
+            ),
+        ]))
+    }
+}
+
 fn workflow_step(id: &str, step_type: &str, agent: &str, prompt: &str) -> WorkflowStepConfig {
     WorkflowStepConfig {
         id: id.to_string(),
         step_type: step_type.to_string(),
         agent: agent.to_string(),
-        prompt: prompt.to_string(),
+        prompt: format!("{prompt}\n\n{}", default_step_prompt(step_type)),
+        workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
         next: None,
         on_approve: None,
         on_reject: None,
-        outputs: None,
-        output_files: None,
+        outputs: default_step_output_contract(step_type),
+        output_files: default_step_output_files(step_type),
         limits: None,
     }
 }
@@ -2126,4 +2157,30 @@ fn initial_orchestrator_config(
 
 fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
     initial_orchestrator_config(id, "anthropic", "sonnet", SetupWorkflowTemplate::Minimal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_step_scaffolds_include_workflow_result_contract_and_outputs() {
+        let task_prompt = default_step_prompt("agent_task");
+        assert!(task_prompt.contains("[workflow_result]"));
+        assert!(task_prompt.contains("status"));
+        assert!(task_prompt.contains("summary"));
+        assert!(task_prompt.contains("artifact"));
+        assert!(default_step_output_contract("agent_task").is_some());
+        assert!(default_step_output_files("agent_task").is_some());
+    }
+
+    #[test]
+    fn review_step_scaffold_requires_explicit_decision() {
+        let review_prompt = default_step_prompt("agent_review");
+        assert!(review_prompt.contains("decision"));
+        assert!(review_prompt.contains("approve"));
+        assert!(review_prompt.contains("reject"));
+        assert!(default_step_output_contract("agent_review").is_some());
+        assert!(default_step_output_files("agent_review").is_some());
+    }
 }

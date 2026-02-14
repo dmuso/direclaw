@@ -1,6 +1,6 @@
 use direclaw::config::{
     AgentConfig, OrchestratorConfig, StepLimitsConfig, WorkflowConfig, WorkflowLimitsConfig,
-    WorkflowOrchestrationConfig, WorkflowStepConfig,
+    WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepWorkspaceMode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -363,12 +363,12 @@ fn workflow_commands_work() {
     let codex = bin_dir.join("codex");
     fs::write(
         &claude,
-        "#!/bin/sh\necho '[workflow_result]{\"result\":\"ok\"}[/workflow_result]'\n",
+        "#!/bin/sh\necho '[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]'\n",
     )
     .expect("write claude mock");
     fs::write(
         &codex,
-        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"result\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"status\\\":\\\"complete\\\",\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
     )
     .expect("write codex mock");
     #[cfg(unix)]
@@ -384,7 +384,12 @@ fn workflow_commands_work() {
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
     assert_ok(&run(temp.path(), &["workflow", "list", "alpha"]));
     assert_ok(&run(temp.path(), &["workflow", "add", "alpha", "triage"]));
-    assert_ok(&run(temp.path(), &["workflow", "show", "alpha", "triage"]));
+    let show = run(temp.path(), &["workflow", "show", "alpha", "triage"]);
+    assert_ok(&show);
+    let show_text = stdout(&show);
+    assert!(show_text.contains("[workflow_result]"));
+    assert!(show_text.contains("outputs:"));
+    assert!(show_text.contains("output_files:"));
     assert_ok(&run(
         temp.path(),
         &["orchestrator", "set-default-workflow", "alpha", "triage"],
@@ -448,17 +453,215 @@ fn workflow_commands_work() {
 }
 
 #[test]
+fn fresh_setup_default_workflow_runs_successfully() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["setup"]));
+
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let claude = bin_dir.join("claude");
+    fs::write(
+        &claude,
+        "#!/bin/sh\necho '[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]'\n",
+    )
+    .expect("write claude mock");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&claude).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&claude, perms).expect("chmod");
+    }
+
+    let run_output = run_with_env(
+        temp.path(),
+        &["workflow", "run", "main", "default"],
+        &[(
+            "DIRECLAW_PROVIDER_BIN_ANTHROPIC",
+            claude.to_str().expect("utf8"),
+        )],
+    );
+    assert_ok(&run_output);
+    let run_id = run_id_from(&run_output);
+    let status = run(temp.path(), &["workflow", "status", &run_id]);
+    assert_ok(&status);
+    assert!(stdout(&status).contains("state=succeeded"));
+}
+
+#[test]
+fn workflow_step_workspace_mode_controls_provider_working_directory() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
+
+    let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
+    orchestrator.default_workflow = "cwd_modes".to_string();
+    orchestrator.selector_agent = "default".to_string();
+    orchestrator.agents.insert(
+        "worker".to_string(),
+        AgentConfig {
+            provider: "openai".to_string(),
+            model: "gpt-5.2".to_string(),
+            private_workspace: None,
+            can_orchestrate_workflows: false,
+            shared_access: Vec::new(),
+        },
+    );
+    orchestrator.workflows = vec![WorkflowConfig {
+        id: "cwd_modes".to_string(),
+        version: 1,
+        inputs: serde_yaml::Value::Sequence(Vec::new()),
+        limits: None,
+        steps: vec![
+            WorkflowStepConfig {
+                id: "s1".to_string(),
+                step_type: "agent_task".to_string(),
+                agent: "worker".to_string(),
+                prompt: "s1".to_string(),
+                workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
+                next: Some("s2".to_string()),
+                on_approve: None,
+                on_reject: None,
+                outputs: Some(vec!["summary".to_string(), "artifact".to_string()]),
+                output_files: Some(BTreeMap::from_iter([
+                    (
+                        "summary".to_string(),
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt".to_string(),
+                    ),
+                    (
+                        "artifact".to_string(),
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt".to_string(),
+                    ),
+                ])),
+                limits: None,
+            },
+            WorkflowStepConfig {
+                id: "s2".to_string(),
+                step_type: "agent_task".to_string(),
+                agent: "worker".to_string(),
+                prompt: "s2".to_string(),
+                workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
+                next: Some("s3".to_string()),
+                on_approve: None,
+                on_reject: None,
+                outputs: Some(vec!["summary".to_string(), "artifact".to_string()]),
+                output_files: Some(BTreeMap::from_iter([
+                    (
+                        "summary".to_string(),
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt".to_string(),
+                    ),
+                    (
+                        "artifact".to_string(),
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt".to_string(),
+                    ),
+                ])),
+                limits: None,
+            },
+            WorkflowStepConfig {
+                id: "s3".to_string(),
+                step_type: "agent_task".to_string(),
+                agent: "worker".to_string(),
+                prompt: "s3".to_string(),
+                workspace_mode: WorkflowStepWorkspaceMode::AgentWorkspace,
+                next: None,
+                on_approve: None,
+                on_reject: None,
+                outputs: Some(vec!["summary".to_string(), "artifact".to_string()]),
+                output_files: Some(BTreeMap::from_iter([
+                    (
+                        "summary".to_string(),
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt".to_string(),
+                    ),
+                    (
+                        "artifact".to_string(),
+                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt".to_string(),
+                    ),
+                ])),
+                limits: None,
+            },
+        ],
+    }];
+    fs::write(
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
+    )
+    .expect("write orchestrator");
+
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let codex = bin_dir.join("codex");
+    fs::write(
+        &codex,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"status\\\":\\\"complete\\\",\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+    )
+    .expect("write codex mock");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&codex).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&codex, perms).expect("chmod");
+    }
+
+    let run_output = run_with_env(
+        temp.path(),
+        &["workflow", "run", "alpha", "cwd_modes"],
+        &[(
+            "DIRECLAW_PROVIDER_BIN_OPENAI",
+            codex.to_str().expect("utf8"),
+        )],
+    );
+    assert_ok(&run_output);
+    let run_id = run_id_from(&run_output);
+
+    let invoc = |step: &str| -> serde_json::Value {
+        let path = temp.path().join(format!(
+            ".direclaw/workflows/runs/{run_id}/steps/{step}/attempts/1/provider_invocation.json"
+        ));
+        serde_json::from_str(&fs::read_to_string(path).expect("read invocation"))
+            .expect("parse invocation")
+    };
+    let s1 = invoc("s1");
+    let s2 = invoc("s2");
+    let s3 = invoc("s3");
+    let s1_cwd = s1["workingDirectory"].as_str().expect("s1 cwd");
+    let s2_cwd = s2["workingDirectory"].as_str().expect("s2 cwd");
+    let s3_cwd = s3["workingDirectory"].as_str().expect("s3 cwd");
+    assert_eq!(
+        s1_cwd,
+        temp.path().join("workspace/alpha").display().to_string()
+    );
+    assert_eq!(
+        s2_cwd,
+        temp.path()
+            .join(format!("workspace/alpha/workflows/runs/{run_id}/workspace"))
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        s3_cwd,
+        temp.path()
+            .join("workspace/alpha/agents/worker")
+            .display()
+            .to_string()
+    );
+}
+
+#[test]
 fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
 
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
 
-    let orchestrators_path = temp.path().join(".direclaw/config-orchestrators.yaml");
-    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
-        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
-            .expect("parse orchestrators");
-    let orchestrator = orchestrators.get_mut("alpha").expect("alpha orchestrator");
+    let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
     orchestrator.default_workflow = "triage_roundtrip".to_string();
     orchestrator.selector_agent = "default".to_string();
     orchestrator.workflow_orchestration = Some(WorkflowOrchestrationConfig {
@@ -504,6 +707,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 step_type: "agent_task".to_string(),
                 agent: "worker".to_string(),
                 prompt: "plan ticket={{inputs.ticket}} priority={{inputs.priority}}".to_string(),
+                workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: Some("review".to_string()),
                 on_approve: None,
                 on_reject: None,
@@ -527,11 +731,31 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 step_type: "agent_review".to_string(),
                 agent: "worker".to_string(),
                 prompt: "review run {{workflow.run_id}}".to_string(),
+                workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: None,
                 on_approve: Some("finalize".to_string()),
                 on_reject: Some("plan".to_string()),
-                outputs: None,
-                output_files: None,
+                outputs: Some(vec![
+                    "decision".to_string(),
+                    "summary".to_string(),
+                    "feedback".to_string(),
+                ]),
+                output_files: Some(BTreeMap::from_iter([
+                    (
+                        "decision".to_string(),
+                        "reports/{{workflow.run_id}}/decision-{{workflow.attempt}}.txt".to_string(),
+                    ),
+                    (
+                        "summary".to_string(),
+                        "reports/{{workflow.run_id}}/review-summary-{{workflow.attempt}}.txt"
+                            .to_string(),
+                    ),
+                    (
+                        "feedback".to_string(),
+                        "reports/{{workflow.run_id}}/review-feedback-{{workflow.attempt}}.txt"
+                            .to_string(),
+                    ),
+                ])),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -539,6 +763,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 step_type: "agent_task".to_string(),
                 agent: "worker".to_string(),
                 prompt: "finalize run {{workflow.run_id}}".to_string(),
+                workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: None,
                 on_approve: None,
                 on_reject: None,
@@ -552,10 +777,10 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
         ],
     }];
     fs::write(
-        &orchestrators_path,
-        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
     )
-    .expect("write orchestrators");
+    .expect("write orchestrator");
 
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -572,7 +797,7 @@ if printf "%s" "$args" | grep -q "/steps/plan/" && [ ! -f "$marker" ]; then
   exit 0
 fi
 if printf "%s" "$args" | grep -q "/steps/review/"; then
-  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\"}[/workflow_result]"}}'
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\",\"summary\":\"looks good\",\"feedback\":\"none\"}[/workflow_result]"}}'
 elif printf "%s" "$args" | grep -q "/steps/finalize/"; then
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":{\"status\":\"done\"}}[/workflow_result]"}}'
 else
@@ -692,11 +917,10 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
     write_settings(temp.path(), true);
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
 
-    let orchestrators_path = temp.path().join(".direclaw/config-orchestrators.yaml");
-    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
-        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
-            .expect("parse orchestrators");
-    let orchestrator = orchestrators.get_mut("alpha").expect("alpha orchestrator");
+    let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
     orchestrator.default_workflow = "timeout_roundtrip".to_string();
     orchestrator.selector_agent = "default".to_string();
     orchestrator.workflow_orchestration = Some(WorkflowOrchestrationConfig {
@@ -735,19 +959,23 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
             step_type: "agent_task".to_string(),
             agent: "worker".to_string(),
             prompt: "slow".to_string(),
+            workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
             next: None,
             on_approve: None,
             on_reject: None,
-            outputs: None,
-            output_files: None,
+            outputs: Some(vec!["result".to_string()]),
+            output_files: Some(BTreeMap::from_iter([(
+                "result".to_string(),
+                "reports/{{workflow.run_id}}/slow-{{workflow.attempt}}.txt".to_string(),
+            )])),
             limits: None,
         }],
     }];
     fs::write(
-        &orchestrators_path,
-        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
     )
-    .expect("write orchestrators");
+    .expect("write orchestrator");
 
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).expect("create bin dir");
@@ -805,10 +1033,9 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
         .unwrap_or_default()
         .contains("workflow step timed out after 1s"));
 
-    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
-        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
-            .expect("parse orchestrators");
-    let orchestrator = orchestrators.get_mut("alpha").expect("alpha orchestrator");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
     orchestrator.workflow_orchestration = Some(WorkflowOrchestrationConfig {
         max_total_iterations: Some(4),
         default_run_timeout_seconds: Some(1),
@@ -816,10 +1043,10 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
         max_step_timeout_seconds: Some(5),
     });
     fs::write(
-        &orchestrators_path,
-        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
     )
-    .expect("write orchestrators");
+    .expect("write orchestrator");
 
     let run_timeout_run = run_with_env(
         temp.path(),
@@ -865,22 +1092,20 @@ fn workflow_run_denies_ungranted_agent_workspace_and_creates_no_workspace_dirs()
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
     let private_workspace = temp.path().join("workspace").join("alpha");
     let denied_workspace = temp.path().join("denied-agent-workspace");
-    let orchestrators_path = temp.path().join(".direclaw/config-orchestrators.yaml");
-    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
-        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
-            .expect("parse orchestrators");
-    orchestrators
-        .get_mut("alpha")
-        .expect("alpha orchestrator")
+    let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
+    let mut orchestrator: OrchestratorConfig =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
+            .expect("parse orchestrator");
+    orchestrator
         .agents
         .get_mut("default")
         .expect("default agent")
         .private_workspace = Some(denied_workspace.clone());
     fs::write(
-        &orchestrators_path,
-        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+        &orchestrator_path,
+        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
     )
-    .expect("write orchestrators");
+    .expect("write orchestrator");
 
     assert!(!private_workspace.join("workflows/runs").exists());
     assert!(!denied_workspace.exists());

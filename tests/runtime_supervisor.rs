@@ -134,6 +134,10 @@ workflows:
         type: agent_task
         agent: worker
         prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
 "#,
     )
     .expect("orchestrator");
@@ -392,7 +396,7 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
     );
     write_script(
         &codex,
-        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"result\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"status\\\":\\\"complete\\\",\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
     );
 
     let processing_dir = home.join(".direclaw/queue/processing");

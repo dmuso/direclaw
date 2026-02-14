@@ -58,6 +58,32 @@ pub(super) fn cmd_setup() -> Result<String, String> {
             private_workspace: None,
             shared_access: Vec::new(),
         });
+    if settings.channel_profiles.is_empty() {
+        settings.channel_profiles.insert(
+            "local-default".to_string(),
+            ChannelProfile {
+                channel: "local".to_string(),
+                orchestrator_id: bootstrap.orchestrator_id.clone(),
+                slack_app_user_id: None,
+                require_mention_in_channels: None,
+            },
+        );
+    }
+    let has_primary_profile = settings
+        .channel_profiles
+        .values()
+        .any(|profile| profile.orchestrator_id == bootstrap.orchestrator_id);
+    if !has_primary_profile {
+        settings.channel_profiles.insert(
+            format!("{}-local", bootstrap.orchestrator_id),
+            ChannelProfile {
+                channel: "local".to_string(),
+                orchestrator_id: bootstrap.orchestrator_id.clone(),
+                slack_app_user_id: None,
+                require_mention_in_channels: None,
+            },
+        );
+    }
     let path = save_settings(&settings)?;
     bootstrap
         .orchestrator_configs
@@ -70,7 +96,11 @@ pub(super) fn cmd_setup() -> Result<String, String> {
                 bootstrap.workflow_template,
             )
         });
-    let orchestrator_path = save_orchestrator_registry(&settings, &bootstrap.orchestrator_configs)?;
+    save_orchestrator_registry(&settings, &bootstrap.orchestrator_configs)?;
+    let orchestrator_path = settings
+        .resolve_private_workspace(&bootstrap.orchestrator_id)
+        .map_err(map_config_err)?
+        .join("orchestrator.yaml");
     let prefs = RuntimePreferences {
         provider: Some(bootstrap.provider.clone()),
         model: Some(bootstrap.model.clone()),
@@ -191,22 +221,28 @@ fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
     bootstrap.workspaces_path = settings.workspaces_path.clone();
     bootstrap.orchestrators = settings.orchestrators.clone();
     let mut configs = BTreeMap::new();
-    let registry_path = default_orchestrators_config_path().map_err(map_config_err)?;
-    if registry_path.exists() {
-        let raw = fs::read_to_string(&registry_path)
-            .map_err(|e| format!("failed to read {}: {e}", registry_path.display()))?;
-        configs = serde_yaml::from_str::<BTreeMap<String, OrchestratorConfig>>(&raw)
-            .map_err(|e| format!("failed to parse {}: {e}", registry_path.display()))?;
-    }
     for orchestrator_id in bootstrap.orchestrators.keys() {
-        configs.entry(orchestrator_id.clone()).or_insert_with(|| {
-            initial_orchestrator_config(
-                orchestrator_id,
-                &bootstrap.provider,
-                &bootstrap.model,
-                SetupWorkflowTemplate::Minimal,
-            )
-        });
+        let private_workspace = settings
+            .resolve_private_workspace(orchestrator_id)
+            .map_err(map_config_err)?;
+        let orchestrator_path = private_workspace.join("orchestrator.yaml");
+        if orchestrator_path.exists() {
+            let raw = fs::read_to_string(&orchestrator_path)
+                .map_err(|e| format!("failed to read {}: {e}", orchestrator_path.display()))?;
+            let config = serde_yaml::from_str::<OrchestratorConfig>(&raw)
+                .map_err(|e| format!("failed to parse {}: {e}", orchestrator_path.display()))?;
+            configs.insert(orchestrator_id.clone(), config);
+        } else {
+            configs.insert(
+                orchestrator_id.clone(),
+                initial_orchestrator_config(
+                    orchestrator_id,
+                    &bootstrap.provider,
+                    &bootstrap.model,
+                    SetupWorkflowTemplate::Minimal,
+                ),
+            );
+        }
     }
     bootstrap.orchestrator_configs = configs;
     if let Some(first_orchestrator) = settings.orchestrators.keys().next() {
@@ -1313,12 +1349,13 @@ fn run_workflow_manager_tui(
                             id: "step_1".to_string(),
                             step_type: "agent_task".to_string(),
                             agent: selector_agent,
-                            prompt: "You are the default workflow step.".to_string(),
+                            prompt: default_step_prompt("agent_task"),
+                            workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                             next: None,
                             on_approve: None,
                             on_reject: None,
-                            outputs: None,
-                            output_files: None,
+                            outputs: default_step_output_contract("agent_task"),
+                            output_files: default_step_output_files("agent_task"),
                             limits: None,
                         }],
                     });
@@ -1740,6 +1777,11 @@ fn run_workflow_detail_tui(
 }
 
 fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
+    let workspace_mode = match step.workspace_mode {
+        WorkflowStepWorkspaceMode::OrchestratorWorkspace => "orchestrator_workspace",
+        WorkflowStepWorkspaceMode::RunWorkspace => "run_workspace",
+        WorkflowStepWorkspaceMode::AgentWorkspace => "agent_workspace",
+    };
     let outputs = step
         .outputs
         .as_ref()
@@ -1762,6 +1804,7 @@ fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
         field_row("Step Type", Some(step.step_type.clone())),
         field_row("Agent", Some(step.agent.clone())),
         field_row("Prompt", Some(step.prompt.clone())),
+        field_row("Workspace Mode", Some(workspace_mode.to_string())),
         field_row(
             "Next",
             Some(step.next.clone().unwrap_or_else(|| "<none>".to_string())),
@@ -1893,12 +1936,13 @@ fn run_workflow_steps_tui(
                         id: step_id,
                         step_type: "agent_task".to_string(),
                         agent: selector_agent,
-                        prompt: "You are the workflow step.".to_string(),
+                        prompt: default_step_prompt("agent_task"),
+                        workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                         next: None,
                         on_approve: None,
                         on_reject: None,
-                        outputs: None,
-                        output_files: None,
+                        outputs: default_step_output_contract("agent_task"),
+                        output_files: default_step_output_files("agent_task"),
                         limits: None,
                     });
                     status = "step added".to_string();
@@ -2039,6 +2083,9 @@ fn run_workflow_step_detail_tui(
                         } else {
                             "agent_task".to_string()
                         };
+                        step.prompt = default_step_prompt(&step.step_type);
+                        step.outputs = default_step_output_contract(&step.step_type);
+                        step.output_files = default_step_output_files(&step.step_type);
                         status = "step type toggled".to_string();
                     }
                 }
@@ -2099,6 +2146,36 @@ fn run_workflow_step_detail_tui(
                     }
                 }
                 4 => {
+                    let cfg = bootstrap
+                        .orchestrator_configs
+                        .get_mut(orchestrator_id)
+                        .ok_or_else(|| "orchestrator missing".to_string())?;
+                    if let Some(step) = cfg
+                        .workflows
+                        .iter_mut()
+                        .find(|w| w.id == workflow_id)
+                        .and_then(|workflow| {
+                            workflow
+                                .steps
+                                .iter_mut()
+                                .find(|step| step.id == current_step_id)
+                        })
+                    {
+                        step.workspace_mode = match step.workspace_mode {
+                            WorkflowStepWorkspaceMode::OrchestratorWorkspace => {
+                                WorkflowStepWorkspaceMode::RunWorkspace
+                            }
+                            WorkflowStepWorkspaceMode::RunWorkspace => {
+                                WorkflowStepWorkspaceMode::AgentWorkspace
+                            }
+                            WorkflowStepWorkspaceMode::AgentWorkspace => {
+                                WorkflowStepWorkspaceMode::OrchestratorWorkspace
+                            }
+                        };
+                        status = "step workspace_mode toggled".to_string();
+                    }
+                }
+                5 => {
                     let current = step.next.clone().unwrap_or_default();
                     if let Some(value) = prompt_line_tui(
                         terminal,
@@ -2130,7 +2207,7 @@ fn run_workflow_step_detail_tui(
                         }
                     }
                 }
-                5 => {
+                6 => {
                     let current = step.on_approve.clone().unwrap_or_default();
                     if let Some(value) = prompt_line_tui(
                         terminal,
@@ -2162,7 +2239,7 @@ fn run_workflow_step_detail_tui(
                         }
                     }
                 }
-                6 => {
+                7 => {
                     let current = step.on_reject.clone().unwrap_or_default();
                     if let Some(value) = prompt_line_tui(
                         terminal,
@@ -2194,7 +2271,7 @@ fn run_workflow_step_detail_tui(
                         }
                     }
                 }
-                7 => {
+                8 => {
                     let current = step
                         .outputs
                         .as_ref()
@@ -2231,7 +2308,7 @@ fn run_workflow_step_detail_tui(
                         }
                     }
                 }
-                8 => {
+                9 => {
                     let current = output_files_as_csv(step.output_files.as_ref());
                     let initial = if current == "<none>" { "" } else { &current };
                     if let Some(value) = prompt_line_tui(

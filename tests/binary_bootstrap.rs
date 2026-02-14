@@ -66,13 +66,22 @@ fn setup_defaults_workspace_under_state_root_when_config_is_missing() {
     assert!(expected_workspace.is_dir());
     assert!(settings.orchestrators.contains_key("main"));
 
-    let orchestrators_raw = fs::read_to_string(home.join(".direclaw/config-orchestrators.yaml"))
-        .expect("read generated orchestrator registry");
-    let orchestrators: std::collections::BTreeMap<String, direclaw::config::OrchestratorConfig> =
-        serde_yaml::from_str(&orchestrators_raw).expect("parse orchestrator registry");
-    let orchestrator = orchestrators.get("main").expect("main orchestrator");
+    let orchestrator_raw =
+        fs::read_to_string(home.join(".direclaw/workspaces/main/orchestrator.yaml"))
+            .expect("read generated orchestrator config");
+    let orchestrator: direclaw::config::OrchestratorConfig =
+        serde_yaml::from_str(&orchestrator_raw).expect("parse orchestrator config");
     assert_eq!(orchestrator.id, "main");
     assert_eq!(orchestrator.default_workflow, "default");
+    let default_workflow = orchestrator
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == "default")
+        .expect("default workflow");
+    let first_step = default_workflow.steps.first().expect("default step");
+    assert!(first_step.prompt.contains("[workflow_result]"));
+    assert!(first_step.outputs.is_some());
+    assert!(first_step.output_files.is_some());
 
     let prefs_path = home.join(".direclaw/runtime/preferences.yaml");
     assert!(prefs_path.is_file());

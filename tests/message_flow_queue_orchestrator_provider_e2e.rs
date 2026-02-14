@@ -23,7 +23,7 @@ fn write_script(path: &Path, body: &str) {
 fn write_openai_success_script(path: &Path) {
     write_script(
         path,
-        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"result\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"status\\\":\\\"complete\\\",\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
     );
 }
 
@@ -84,6 +84,10 @@ workflows:
         type: agent_task
         agent: worker
         prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
 "#
         ),
     )
@@ -215,7 +219,7 @@ args="$*"
 if printf "%s" "$args" | grep -q "/steps/plan/"; then
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"plan\":\"Plan: inspect logs\",\"summary\":\"Summary: collect traces\"}[/workflow_result]"}}'
 elif printf "%s" "$args" | grep -q "/steps/review/"; then
-  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\"}[/workflow_result]"}}'
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\",\"summary\":\"approved\",\"feedback\":\"none\"}[/workflow_result]"}}'
 else
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":{\"status\":\"done\",\"ticket\":\"123\"}}[/workflow_result]"}}'
 fi
@@ -266,6 +270,11 @@ workflows:
         type: agent_review
         agent: worker
         prompt: review run={{workflow.run_id}}
+        outputs: [decision, summary, feedback]
+        output_files:
+          decision: artifacts/review-decision.txt
+          summary: artifacts/review-summary.txt
+          feedback: artifacts/review-feedback.txt
         on_approve: done
         on_reject: plan
       - id: done
@@ -616,18 +625,27 @@ workflows:
         type: agent_review
         agent: worker
         prompt: review
+        outputs: [decision, summary, feedback]
+        output_files:
+          decision: outputs/{{workflow.step_id}}-{{workflow.attempt}}-decision.txt
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          feedback: outputs/{{workflow.step_id}}-{{workflow.attempt}}-feedback.txt
         on_approve: done
         on_reject: review
       - id: done
         type: agent_task
         agent: worker
         prompt: done
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
 "#,
     )
     .expect("overwrite orchestrator");
     write_script(
         &codex,
-        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"decision\\\":\\\"reject\\\"}[/workflow_result]\"}}'\n",
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"decision\\\":\\\"reject\\\",\\\"summary\\\":\\\"need more\\\",\\\"feedback\\\":\\\"retry\\\"}[/workflow_result]\"}}'\n",
     );
 
     write_incoming(&queue, &sample_message("msg-limit", "thread-limit"));
@@ -710,7 +728,7 @@ args="$*"
 if printf "%s" "$args" | grep -q "sel-msg-parse_attempt_"; then
   echo '{not-json}'
 else
-  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":\"ok\"}[/workflow_result]"}}'
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]"}}'
 fi
 "#,
     );

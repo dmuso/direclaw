@@ -48,6 +48,10 @@ workflows:
         type: agent_task
         agent: worker
         prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: out/start-summary.txt
+          artifact: out/start-artifact.txt
         limits:
           max_retries: 3
   - id: fix_issue
@@ -67,12 +71,21 @@ workflows:
         type: agent_review
         agent: worker
         prompt: review
+        outputs: [decision, summary, feedback]
+        output_files:
+          decision: out/review-decision.txt
+          summary: out/review-summary.txt
+          feedback: out/review-feedback.txt
         on_approve: done
         on_reject: plan
       - id: done
         type: agent_task
         agent: worker
         prompt: done
+        outputs: [summary, artifact]
+        output_files:
+          summary: out/done-summary.txt
+          artifact: out/done-artifact.txt
 workflow_orchestration:
   max_total_iterations: 4
   default_run_timeout_seconds: 60
@@ -132,11 +145,11 @@ fn mock_runner_binaries(root: &Path) -> RunnerBinaries {
     let openai = root.join("codex-mock");
     write_script(
         &anthropic,
-        "#!/bin/sh\necho '[workflow_result]{\"decision\":\"approve\",\"plan\":\"ok\"}[/workflow_result]'\n",
+        "#!/bin/sh\necho '[workflow_result]{\"decision\":\"approve\",\"summary\":\"ok\",\"feedback\":\"none\",\"plan\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]'\n",
     );
     write_script(
         &openai,
-        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"decision\\\":\\\"approve\\\",\\\"plan\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"decision\\\":\\\"approve\\\",\\\"summary\\\":\\\"ok\\\",\\\"feedback\\\":\\\"none\\\",\\\"plan\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
     );
     RunnerBinaries {
         anthropic: anthropic.display().to_string(),
@@ -593,7 +606,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
     let reject_out = evaluate_step_result(
         workflow,
         review,
-        r#"[workflow_result]{"decision":"reject","feedback":"missing tests"}[/workflow_result]"#,
+        r#"[workflow_result]{"decision":"reject","summary":"retry","feedback":"missing tests"}[/workflow_result]"#,
     )
     .expect("review reject");
     assert_eq!(reject_out.next_step_id.as_deref(), Some("plan"));
@@ -601,7 +614,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
     let approve_out = evaluate_step_result(
         workflow,
         review,
-        r#"[workflow_result]{"decision":"approve","feedback":"ok"}[/workflow_result]"#,
+        r#"[workflow_result]{"decision":"approve","summary":"accepted","feedback":"ok"}[/workflow_result]"#,
     )
     .expect("review approve");
     assert_eq!(approve_out.next_step_id.as_deref(), Some("done"));
@@ -1114,6 +1127,10 @@ workflows:
         type: agent_task
         agent: worker
         prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: out/start-summary.txt
+          artifact: out/start-artifact.txt
 "#,
     )
     .expect("write orchestrator");

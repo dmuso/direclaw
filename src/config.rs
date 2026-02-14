@@ -147,6 +147,8 @@ pub struct WorkflowStepConfig {
     pub step_type: String,
     pub agent: String,
     pub prompt: String,
+    #[serde(default = "default_workflow_step_workspace_mode")]
+    pub workspace_mode: WorkflowStepWorkspaceMode,
     #[serde(default)]
     pub next: Option<String>,
     #[serde(default)]
@@ -159,6 +161,18 @@ pub struct WorkflowStepConfig {
     pub output_files: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub limits: Option<StepLimitsConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepWorkspaceMode {
+    OrchestratorWorkspace,
+    RunWorkspace,
+    AgentWorkspace,
+}
+
+fn default_workflow_step_workspace_mode() -> WorkflowStepWorkspaceMode {
+    WorkflowStepWorkspaceMode::OrchestratorWorkspace
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -489,32 +503,42 @@ impl OrchestratorConfig {
                         workflow.id, step.id, step.step_type
                     )));
                 }
-                if let Some(outputs) = &step.outputs {
-                    if outputs.is_empty() {
-                        return Err(ConfigError::Orchestrator(format!(
-                            "workflow `{}` step `{}` `outputs` must be non-empty when present",
-                            workflow.id, step.id
-                        )));
-                    }
-                    let output_files = step.output_files.as_ref().ok_or_else(|| {
+                let outputs = step.outputs.as_ref().ok_or_else(|| {
+                    ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires non-empty `outputs`",
+                        workflow.id, step.id
+                    ))
+                })?;
+                if outputs.is_empty() {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires non-empty `outputs`",
+                        workflow.id, step.id
+                    )));
+                }
+                let output_files = step.output_files.as_ref().ok_or_else(|| {
+                    ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires non-empty `output_files`",
+                        workflow.id, step.id
+                    ))
+                })?;
+                if output_files.is_empty() {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires non-empty `output_files`",
+                        workflow.id, step.id
+                    )));
+                }
+                for key in outputs {
+                    let (normalized, _) = parse_output_contract_key(key).map_err(|reason| {
                         ConfigError::Orchestrator(format!(
-                            "workflow `{}` step `{}` requires `output_files` when `outputs` is present",
-                            workflow.id, step.id
+                            "workflow `{}` step `{}` has invalid output key `{}`: {}",
+                            workflow.id, step.id, key, reason
                         ))
                     })?;
-                    for key in outputs {
-                        let (normalized, _) = parse_output_contract_key(key).map_err(|reason| {
-                            ConfigError::Orchestrator(format!(
-                                "workflow `{}` step `{}` has invalid output key `{}`: {}",
-                                workflow.id, step.id, key, reason
-                            ))
-                        })?;
-                        if !output_files.contains_key(&normalized) {
-                            return Err(ConfigError::Orchestrator(format!(
-                                "workflow `{}` step `{}` missing output_files mapping for `{}`",
-                                workflow.id, step.id, normalized
-                            )));
-                        }
+                    if !output_files.contains_key(&normalized) {
+                        return Err(ConfigError::Orchestrator(format!(
+                            "workflow `{}` step `{}` missing output_files mapping for `{}`",
+                            workflow.id, step.id, normalized
+                        )));
                     }
                 }
             }
@@ -533,24 +557,6 @@ pub fn load_orchestrator_config(
             orchestrator_id: orchestrator_id.to_string(),
         });
     }
-    let path = default_orchestrators_config_path()?;
-    if path.exists() {
-        let raw = fs::read_to_string(&path).map_err(|source| ConfigError::Read {
-            path: path.display().to_string(),
-            source,
-        })?;
-        let registry: BTreeMap<String, OrchestratorConfig> =
-            serde_yaml::from_str(&raw).map_err(|source| ConfigError::Parse {
-                path: path.display().to_string(),
-                source,
-            })?;
-        if let Some(config) = registry.get(orchestrator_id) {
-            config.validate(settings, orchestrator_id)?;
-            return Ok(config.clone());
-        }
-    }
-
-    // Backward-compatible fallback: load from the orchestrator private workspace file.
     let workspace = settings.resolve_private_workspace(orchestrator_id)?;
     let workspaces_path = workspace.join("orchestrator.yaml");
     let config = OrchestratorConfig::from_path(&workspaces_path)?;
@@ -892,5 +898,52 @@ channels: {{}}
         } else {
             std::env::remove_var("HOME");
         }
+    }
+
+    #[test]
+    fn workflow_step_workspace_mode_defaults_to_orchestrator_workspace() {
+        let step: WorkflowStepConfig = serde_yaml::from_str(
+            r#"
+id: step_1
+type: agent_task
+agent: worker
+prompt: hello
+"#,
+        )
+        .expect("parse step");
+        assert_eq!(
+            step.workspace_mode,
+            WorkflowStepWorkspaceMode::OrchestratorWorkspace
+        );
+    }
+
+    #[test]
+    fn workflow_step_workspace_mode_accepts_supported_values_and_rejects_unknown() {
+        let run_mode: WorkflowStepConfig = serde_yaml::from_str(
+            r#"
+id: step_1
+type: agent_task
+agent: worker
+prompt: hello
+workspace_mode: run_workspace
+"#,
+        )
+        .expect("parse run_workspace");
+        assert_eq!(
+            run_mode.workspace_mode,
+            WorkflowStepWorkspaceMode::RunWorkspace
+        );
+
+        let err = serde_yaml::from_str::<WorkflowStepConfig>(
+            r#"
+id: step_1
+type: agent_task
+agent: worker
+prompt: hello
+workspace_mode: unknown_mode
+"#,
+        )
+        .expect_err("unknown workspace_mode must fail");
+        assert!(err.to_string().contains("workspace_mode"));
     }
 }
