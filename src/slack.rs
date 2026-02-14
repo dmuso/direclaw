@@ -34,6 +34,14 @@ pub enum SlackError {
     UnknownChannelProfile(String),
     #[error("outgoing slack message `{message_id}` has no channel_profile_id and multiple slack profiles exist")]
     MissingChannelProfileId { message_id: String },
+    #[error(
+        "failed to deliver outbound slack message `{message_id}` for profile `{profile_id}`: {reason}"
+    )]
+    OutboundDelivery {
+        message_id: String,
+        profile_id: String,
+        reason: String,
+    },
     #[error("slack api request failed: {0}")]
     ApiRequest(String),
     #[error("slack api responded with error `{0}`")]
@@ -57,6 +65,13 @@ pub struct SlackSyncReport {
     pub profiles_processed: usize,
     pub inbound_enqueued: usize,
     pub outbound_messages_sent: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackProfileCredentialHealth {
+    pub profile_id: String,
+    pub ok: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -237,8 +252,12 @@ fn load_env_config(
             key: bot_profile.clone(),
         })?
     } else {
-        env_var_fallback(&bot_profile, "SLACK_BOT_TOKEN")
-            .ok_or_else(|| SlackError::MissingEnvVar("SLACK_BOT_TOKEN".to_string()))?
+        env_var_fallback(&bot_profile, "SLACK_BOT_TOKEN").ok_or_else(|| {
+            SlackError::MissingProfileScopedEnvVar {
+                profile_id: profile_id.to_string(),
+                key: bot_profile.clone(),
+            }
+        })?
     };
     let app_token = if require_profile_scoped_tokens {
         non_empty_env(&app_profile).ok_or_else(|| SlackError::MissingProfileScopedEnvVar {
@@ -246,8 +265,12 @@ fn load_env_config(
             key: app_profile.clone(),
         })?
     } else {
-        env_var_fallback(&app_profile, "SLACK_APP_TOKEN")
-            .ok_or_else(|| SlackError::MissingEnvVar("SLACK_APP_TOKEN".to_string()))?
+        env_var_fallback(&app_profile, "SLACK_APP_TOKEN").ok_or_else(|| {
+            SlackError::MissingProfileScopedEnvVar {
+                profile_id: profile_id.to_string(),
+                key: app_profile.clone(),
+            }
+        })?
     };
 
     let mut allowlist = config_allowlist.clone();
@@ -708,7 +731,12 @@ fn process_outbound(
         for chunk in chunk_message(&outgoing.message) {
             runtime
                 .api
-                .post_message(channel_id, Some(thread_ts), &chunk)?;
+                .post_message(channel_id, Some(thread_ts), &chunk)
+                .map_err(|err| SlackError::OutboundDelivery {
+                    message_id: outgoing.message_id.clone(),
+                    profile_id: profile_id.clone(),
+                    reason: err.to_string(),
+                })?;
         }
 
         fs::remove_file(&path).map_err(|e| io_error(&path, e))?;
@@ -733,13 +761,16 @@ fn configured_slack_allowlist(settings: &Settings) -> BTreeSet<String> {
         .unwrap_or_default()
 }
 
-pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncReport, SlackError> {
-    let slack_enabled = settings
+fn slack_channel_enabled(settings: &Settings) -> bool {
+    settings
         .channels
         .get("slack")
         .map(|cfg| cfg.enabled)
-        .unwrap_or(false);
-    if !slack_enabled {
+        .unwrap_or(false)
+}
+
+pub fn validate_startup_credentials(settings: &Settings) -> Result<(), SlackError> {
+    if !slack_channel_enabled(settings) {
         return Err(SlackError::ChannelDisabled);
     }
 
@@ -747,6 +778,115 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
     if profiles.is_empty() {
         return Err(SlackError::NoSlackProfiles);
     }
+    let profile_scoped_tokens_required = profiles.len() > 1;
+    let config_allowlist = configured_slack_allowlist(settings);
+
+    let mut bot_token_profile = BTreeMap::<String, String>::new();
+    let mut app_token_profile = BTreeMap::<String, String>::new();
+    for profile_id in profiles.keys() {
+        let env = load_env_config(
+            profile_id,
+            profile_scoped_tokens_required,
+            &config_allowlist,
+        )?;
+        if let Some(existing) = bot_token_profile.insert(env.bot_token.clone(), profile_id.clone())
+        {
+            return Err(SlackError::DuplicateProfileCredential {
+                credential: "bot".to_string(),
+                profile_a: existing,
+                profile_b: profile_id.clone(),
+            });
+        }
+        if let Some(existing) = app_token_profile.insert(env.app_token.clone(), profile_id.clone())
+        {
+            return Err(SlackError::DuplicateProfileCredential {
+                credential: "app".to_string(),
+                profile_a: existing,
+                profile_b: profile_id.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+pub fn profile_credential_health(settings: &Settings) -> Vec<SlackProfileCredentialHealth> {
+    let profiles = slack_profiles(settings);
+    let profile_scoped_tokens_required = profiles.len() > 1;
+    let config_allowlist = configured_slack_allowlist(settings);
+    let mut health = BTreeMap::<String, SlackProfileCredentialHealth>::new();
+    let mut bot_token_profile = BTreeMap::<String, String>::new();
+    let mut app_token_profile = BTreeMap::<String, String>::new();
+
+    for profile_id in profiles.keys() {
+        match load_env_config(
+            profile_id,
+            profile_scoped_tokens_required,
+            &config_allowlist,
+        ) {
+            Ok(env) => {
+                health.insert(
+                    profile_id.clone(),
+                    SlackProfileCredentialHealth {
+                        profile_id: profile_id.clone(),
+                        ok: true,
+                        reason: None,
+                    },
+                );
+                if let Some(existing) = bot_token_profile.insert(env.bot_token, profile_id.clone())
+                {
+                    let reason = SlackError::DuplicateProfileCredential {
+                        credential: "bot".to_string(),
+                        profile_a: existing.clone(),
+                        profile_b: profile_id.clone(),
+                    }
+                    .to_string();
+                    if let Some(entry) = health.get_mut(&existing) {
+                        entry.ok = false;
+                        entry.reason = Some(reason.clone());
+                    }
+                    if let Some(entry) = health.get_mut(profile_id) {
+                        entry.ok = false;
+                        entry.reason = Some(reason);
+                    }
+                }
+                if let Some(existing) = app_token_profile.insert(env.app_token, profile_id.clone())
+                {
+                    let reason = SlackError::DuplicateProfileCredential {
+                        credential: "app".to_string(),
+                        profile_a: existing.clone(),
+                        profile_b: profile_id.clone(),
+                    }
+                    .to_string();
+                    if let Some(entry) = health.get_mut(&existing) {
+                        entry.ok = false;
+                        entry.reason = Some(reason.clone());
+                    }
+                    if let Some(entry) = health.get_mut(profile_id) {
+                        entry.ok = false;
+                        entry.reason = Some(reason);
+                    }
+                }
+            }
+            Err(err) => {
+                health.insert(
+                    profile_id.clone(),
+                    SlackProfileCredentialHealth {
+                        profile_id: profile_id.clone(),
+                        ok: false,
+                        reason: Some(err.to_string()),
+                    },
+                );
+            }
+        }
+    }
+
+    health.into_values().collect()
+}
+
+pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncReport, SlackError> {
+    validate_startup_credentials(settings)?;
+    let profiles = slack_profiles(settings);
     let profile_scoped_tokens_required = profiles.len() > 1;
     let config_allowlist = configured_slack_allowlist(settings);
 

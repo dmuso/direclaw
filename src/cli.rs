@@ -9,7 +9,7 @@ use crate::runtime::{
     append_runtime_log, bootstrap_state_root, cleanup_stale_supervisor, default_state_root_path,
     load_supervisor_state, reserve_start_lock, run_supervisor, save_supervisor_state,
     spawn_supervisor_process, stop_active_supervisor, supervisor_ownership_state, OwnershipState,
-    StatePaths,
+    StatePaths, SupervisorState, WorkerHealth, WorkerState,
 };
 use crate::slack;
 use serde::{Deserialize, Serialize};
@@ -311,6 +311,90 @@ fn cmd_restart() -> Result<String, String> {
     Ok(format!("restart complete\n{stop}\n{start}"))
 }
 
+fn classify_slack_profile_health(
+    worker: Option<&WorkerHealth>,
+    runtime_running: bool,
+    credentials_ok: bool,
+    credential_reason: Option<&str>,
+    slack_enabled: bool,
+) -> (String, String) {
+    if !slack_enabled {
+        return (
+            "disabled".to_string(),
+            "slack channel disabled in settings".to_string(),
+        );
+    }
+
+    if !credentials_ok {
+        return (
+            "auth_missing".to_string(),
+            credential_reason
+                .unwrap_or("missing or invalid slack credentials")
+                .to_string(),
+        );
+    }
+
+    if !runtime_running {
+        return (
+            "not_running".to_string(),
+            "supervisor is not running".to_string(),
+        );
+    }
+
+    match worker {
+        Some(worker) if worker.state == WorkerState::Running => (
+            "running".to_string(),
+            "worker heartbeat is healthy".to_string(),
+        ),
+        Some(worker) if worker.state == WorkerState::Error => {
+            let reason = worker
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "slack worker reported an error".to_string());
+            if reason.contains("missing required env var")
+                || reason.contains("profile-scoped credentials")
+            {
+                ("auth_missing".to_string(), reason)
+            } else {
+                ("api_failure".to_string(), reason)
+            }
+        }
+        _ => (
+            "api_failure".to_string(),
+            "slack worker is enabled but not reporting running health".to_string(),
+        ),
+    }
+}
+
+fn slack_profile_status_lines(settings: &Settings, state: &SupervisorState) -> Vec<String> {
+    let slack_enabled = settings
+        .channels
+        .get("slack")
+        .map(|cfg| cfg.enabled)
+        .unwrap_or(false);
+    let worker = state.workers.get("channel:slack");
+
+    let mut lines = Vec::new();
+    for health in slack::profile_credential_health(settings) {
+        let (status, reason) = classify_slack_profile_health(
+            worker,
+            state.running,
+            health.ok,
+            health.reason.as_deref(),
+            slack_enabled,
+        );
+        lines.push(format!(
+            "slack_profile:{}.health={status}",
+            health.profile_id
+        ));
+        lines.push(format!(
+            "slack_profile:{}.reason={reason}",
+            health.profile_id
+        ));
+    }
+    lines
+}
+
 fn cmd_status() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
     let mut state = load_supervisor_state(&paths).map_err(|e| e.to_string())?;
@@ -387,6 +471,9 @@ fn cmd_status() -> Result<String, String> {
                 .clone()
                 .unwrap_or_else(|| "none".to_string())
         ));
+    }
+    if let Ok(settings) = load_settings() {
+        lines.extend(slack_profile_status_lines(&settings, &state));
     }
     Ok(lines.join("\n"))
 }

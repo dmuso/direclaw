@@ -743,6 +743,22 @@ fn run_worker(
         at: now_secs(),
     });
 
+    if matches!(spec.runtime, WorkerRuntime::Slack) {
+        if let Err(err) = slack::validate_startup_credentials(&settings) {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: spec.id.clone(),
+                at: now_secs(),
+                message: err.to_string(),
+                fatal: true,
+            });
+            let _ = events.send(WorkerEvent::Stopped {
+                worker_id: spec.id,
+                at: now_secs(),
+            });
+            return;
+        }
+    }
+
     if should_fail {
         let _ = events.send(WorkerEvent::Error {
             worker_id: spec.id.clone(),

@@ -187,7 +187,11 @@ fn sync_requires_slack_env_tokens() {
     let settings = sample_settings(temp.path(), true, Vec::new());
 
     let err = sync_once(&state_root, &settings).expect_err("missing env should fail");
-    assert!(matches!(err, SlackError::MissingEnvVar(_)));
+    assert!(matches!(
+        err,
+        SlackError::MissingProfileScopedEnvVar { ref profile_id, ref key }
+            if profile_id == "slack_main" && key == "SLACK_BOT_TOKEN_SLACK_MAIN"
+    ));
 }
 
 #[test]
@@ -452,4 +456,180 @@ fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
     fs::create_dir_all(&state_root).expect("state root");
     let err = sync_once(&state_root, &settings).expect_err("missing scoped env should fail");
     assert!(matches!(err, SlackError::MissingProfileScopedEnvVar { .. }));
+}
+
+#[test]
+fn sync_avoids_duplicate_ingestion_on_repeated_polling() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let server = MockSlackServer::start(8, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"D111","is_im":true}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            return r#"{"ok":true,"messages":[{"ts":"1700000000.1","thread_ts":"1700000000.1","text":"hello once","user":"U123"}]}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let first = sync_once(&state_root, &settings).expect("first sync");
+    let second = sync_once(&state_root, &settings).expect("second sync");
+
+    assert_eq!(first.inbound_enqueued, 1);
+    assert_eq!(second.inbound_enqueued, 0);
+
+    let incoming_files = fs::read_dir(&queue.incoming)
+        .expect("incoming list")
+        .map(|entry| entry.expect("entry").path())
+        .collect::<Vec<_>>();
+    assert_eq!(incoming_files.len(), 1);
+
+    let raw = fs::read_to_string(&incoming_files[0]).expect("read incoming");
+    assert!(raw.contains("\"channelProfileId\": \"slack_main\""));
+    assert!(raw.contains("\"conversationId\": \"D111:1700000000.1\""));
+    let _ = server.finish();
+}
+
+#[test]
+fn sync_chunks_outbound_and_removes_queue_file_on_success() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let server = MockSlackServer::start(6, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"D111","is_im":true}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            return r#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#
+                .to_string();
+        }
+        if path.starts_with("/api/chat.postMessage") {
+            return r#"{"ok":true,"ts":"1700000000.2"}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let outbound_path = queue.outgoing.join("slack_msg_chunked.json");
+    let outbound = OutgoingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("slack_main".to_string()),
+        sender: "assistant".to_string(),
+        message: "x".repeat(3501),
+        original_message: "original".to_string(),
+        timestamp: 1,
+        message_id: "msg_chunked".to_string(),
+        agent: "agent-a".to_string(),
+        conversation_id: Some("D111:1700000000.1".to_string()),
+        files: Vec::new(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+    fs::write(
+        &outbound_path,
+        serde_json::to_string_pretty(&outbound).expect("encode outbound"),
+    )
+    .expect("write outbound");
+
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let report = sync_once(&state_root, &settings).expect("sync succeeds");
+    assert_eq!(report.outbound_messages_sent, 1);
+    assert!(!outbound_path.exists(), "outgoing file should be consumed");
+
+    let requests = server.finish();
+    let posts = requests
+        .iter()
+        .filter(|request| request.path.starts_with("/api/chat.postMessage"))
+        .collect::<Vec<_>>();
+    assert_eq!(posts.len(), 2);
+    assert!(posts
+        .iter()
+        .all(|request| request.body.contains("\"thread_ts\":\"1700000000.1\"")));
+}
+
+#[test]
+fn sync_preserves_outbound_file_and_returns_context_on_api_failure() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let server = MockSlackServer::start(5, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"D111","is_im":true}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            return r#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#
+                .to_string();
+        }
+        if path.starts_with("/api/chat.postMessage") {
+            return r#"{"ok":false,"error":"ratelimited"}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let outbound_path = queue.outgoing.join("slack_msg_fail.json");
+    let outbound = OutgoingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("slack_main".to_string()),
+        sender: "assistant".to_string(),
+        message: "outbound reply".to_string(),
+        original_message: "original".to_string(),
+        timestamp: 1,
+        message_id: "msg_fail".to_string(),
+        agent: "agent-a".to_string(),
+        conversation_id: Some("D111:1700000000.1".to_string()),
+        files: Vec::new(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+    fs::write(
+        &outbound_path,
+        serde_json::to_string_pretty(&outbound).expect("encode outbound"),
+    )
+    .expect("write outbound");
+
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let err = sync_once(&state_root, &settings).expect_err("sync should fail");
+    let error_text = err.to_string();
+    assert!(error_text.contains("msg_fail"));
+    assert!(error_text.contains("slack_main"));
+    assert!(error_text.contains("ratelimited"));
+    assert!(
+        outbound_path.exists(),
+        "failed outbound file should be preserved for retry"
+    );
+    let _ = server.finish();
 }
