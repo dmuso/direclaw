@@ -24,7 +24,7 @@ nix-shell --run './scripts/ci/docs-clean-install-smoke.sh target/debug/direclaw'
 
 Automated workflow-path coverage validating inbound-to-outbound behavior:
 
-- `tests/phase02_queue_orchestrator_provider_e2e.rs::queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifacts`
+- `tests/message_flow_queue_orchestrator_provider_e2e.rs::queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifacts`
 - `tests/slack_channel_sync.rs::sync_queues_inbound_and_sends_outbound`
 - `tests/slack_channel_sync.rs::sync_pages_conversation_history_before_advancing_cursor`
 
@@ -32,5 +32,5 @@ Automated workflow-path coverage validating inbound-to-outbound behavior:
 
 Release gate script coverage proving blocker failures are enforced:
 
-- `tests/release_gate_phase06.rs::release_gate_passes_with_all_blockers_satisfied`
-- `tests/release_gate_phase06.rs::release_gate_fails_when_any_blocker_is_violated`
+- `tests/release_gate_requirements.rs::release_gate_passes_with_all_blockers_satisfied`
+- `tests/release_gate_requirements.rs::release_gate_fails_when_any_blocker_is_violated`

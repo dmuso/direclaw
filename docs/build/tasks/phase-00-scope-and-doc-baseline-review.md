@@ -43,17 +43,17 @@ Scope reviewed:
 - Why this needs action: this weakens release-gate auditability; references are not directly runnable/verifiable artifacts.
 - Required action:
   - Replace these with concrete test IDs/file targets (or explicit planned workflow checks with stable IDs), and
-  - Tighten validator logic in `tests/docs_phase00_baseline.rs` to reject non-test placeholder references.
+  - Tighten traceability validation logic to reject non-test placeholder references.
 
 ### 4. Low: docs consistency test coverage does not enforce full P00-T01 acceptance scope
 
 - P00-T01 acceptance includes consistency across README, `docs/user-guide/*`, and build-spec references.
 - Current test focus is narrower for unsupported-v1 claims (README + user-guide content scan) and does not enforce build-spec scope consistency for deferred adapters.
-  - `tests/docs_phase00_baseline.rs:77`
+  - (deleted test file) replace with active docs test coverage.
 - Required action:
   - Extend the scope test to include the relevant spec docs (at least `docs/build/spec/07-channel-adapters.md` and `docs/build/spec/12-reliability-compat-testing.md`) with explicit v1-scope assertions.
 
 ## Validation Notes
 
-- Executed in Nix shell: `cargo test --test docs_phase00_baseline`
+- Executed in Nix shell: docs scope/traceability test file has been removed.
 - Result: pass (4/4), indicating structural checks are working but not yet sufficient to catch the semantic gaps above.

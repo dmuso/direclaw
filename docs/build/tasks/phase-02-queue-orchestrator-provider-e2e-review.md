@@ -6,7 +6,7 @@
   - `src/queue.rs`
   - `src/orchestrator.rs`
   - `tests/orchestrator_workflow_engine.rs`
-  - `tests/phase02_queue_orchestrator_provider_e2e.rs`
+  - `tests/message_flow_queue_orchestrator_provider_e2e.rs`
 - Requirements baseline:
   - `docs/build/release-readiness-plan.md` (Phase 02 + test strategy expectations)
   - `docs/build/tasks/phase-02-queue-orchestrator-provider-e2e.md`
@@ -27,7 +27,7 @@
 2. **Medium: required provider timeout-path coverage is missing.**
 - Evidence:
   - Phase-02 task explicitly requires tests for non-zero exit, timeout, and parse-failure outcomes (`docs/build/tasks/phase-02-queue-orchestrator-provider-e2e.md:55`).
-  - Current test only covers non-zero exit and parse failure (`tests/phase02_queue_orchestrator_provider_e2e.rs:205`).
+  - Current test only covers non-zero exit and parse failure (`tests/message_flow_queue_orchestrator_provider_e2e.rs:205`).
 - Why this blocks Phase 02:
   - Leaves one required failure mode unverified for release-plan reliability goals (`docs/build/release-readiness-plan.md:137`).
 - Action:
@@ -36,7 +36,7 @@
 3. **Medium: malformed-queue-payload and restart-recovery integration coverage is still incomplete.**
 - Evidence:
   - P02-T01 requires malformed payload recovery coverage (`docs/build/tasks/phase-02-queue-orchestrator-provider-e2e.md:27`), but no test currently writes malformed queue JSON.
-  - P02-T04 requires a crash-then-restart integration recovery test (`docs/build/tasks/phase-02-queue-orchestrator-provider-e2e.md:67`), while current coverage calls recovery helper directly (`tests/phase02_queue_orchestrator_provider_e2e.rs:256`) without exercising supervisor restart flow.
+  - P02-T04 requires a crash-then-restart integration recovery test (`docs/build/tasks/phase-02-queue-orchestrator-provider-e2e.md:67`), while current coverage calls recovery helper directly (`tests/message_flow_queue_orchestrator_provider_e2e.rs:256`) without exercising supervisor restart flow.
 - Why this blocks Phase 02:
   - The release plan calls for recovery-path verification under realistic runtime lifecycle conditions (`docs/build/release-readiness-plan.md:142`).
 - Action:
@@ -44,4 +44,4 @@
   - Add an integration test that simulates interruption after claim (message in `queue/processing`), then starts runtime and verifies automatic recovery and eventual processing.
 
 ## Validation Run
-- `nix-shell --run 'cargo test --test phase02_queue_orchestrator_provider_e2e --test orchestrator_workflow_engine'` -> **passed**.
+- `nix-shell --run 'cargo test --test message_flow_queue_orchestrator_provider_e2e --test orchestrator_workflow_engine'` -> **passed**.
