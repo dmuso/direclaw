@@ -1,5 +1,8 @@
-use direclaw::config::OrchestratorConfig;
-use std::collections::BTreeMap;
+use direclaw::config::{
+    AgentConfig, OrchestratorConfig, StepLimitsConfig, WorkflowConfig, WorkflowLimitsConfig,
+    WorkflowOrchestrationConfig, WorkflowStepConfig,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -101,6 +104,23 @@ fn run_id_from(output: &Output) -> String {
         .lines()
         .find_map(|line| line.strip_prefix("run_id=").map(|v| v.to_string()))
         .expect("run id in output")
+}
+
+fn workflow_run_ids(home: &Path) -> BTreeSet<String> {
+    let runs_dir = home.join(".direclaw/workflows/runs");
+    if !runs_dir.exists() {
+        return BTreeSet::new();
+    }
+    fs::read_dir(&runs_dir)
+        .expect("read runs dir")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().and_then(|v| v.to_str()) == Some("json"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.to_string())
+        })
+        .collect()
 }
 
 #[test]
@@ -425,6 +445,416 @@ fn workflow_commands_work() {
     );
 
     assert_ok(&run(temp.path(), &["workflow", "cancel", &run_id]));
+}
+
+#[test]
+fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+
+    assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
+
+    let orchestrators_path = temp.path().join(".direclaw/config-orchestrators.yaml");
+    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
+            .expect("parse orchestrators");
+    let orchestrator = orchestrators.get_mut("alpha").expect("alpha orchestrator");
+    orchestrator.default_workflow = "triage_roundtrip".to_string();
+    orchestrator.selector_agent = "default".to_string();
+    orchestrator.workflow_orchestration = Some(WorkflowOrchestrationConfig {
+        max_total_iterations: Some(8),
+        default_run_timeout_seconds: Some(25),
+        default_step_timeout_seconds: Some(5),
+        max_step_timeout_seconds: Some(5),
+    });
+    orchestrator.agents.insert(
+        "default".to_string(),
+        AgentConfig {
+            provider: "anthropic".to_string(),
+            model: "sonnet".to_string(),
+            private_workspace: None,
+            can_orchestrate_workflows: true,
+            shared_access: Vec::new(),
+        },
+    );
+    orchestrator.agents.insert(
+        "worker".to_string(),
+        AgentConfig {
+            provider: "openai".to_string(),
+            model: "gpt-5.2".to_string(),
+            private_workspace: None,
+            can_orchestrate_workflows: false,
+            shared_access: Vec::new(),
+        },
+    );
+    orchestrator.workflows = vec![WorkflowConfig {
+        id: "triage_roundtrip".to_string(),
+        version: 1,
+        inputs: serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("ticket".to_string()),
+            serde_yaml::Value::String("priority".to_string()),
+        ]),
+        limits: Some(WorkflowLimitsConfig {
+            max_total_iterations: Some(7),
+            run_timeout_seconds: Some(20),
+        }),
+        steps: vec![
+            WorkflowStepConfig {
+                id: "plan".to_string(),
+                step_type: "agent_task".to_string(),
+                agent: "worker".to_string(),
+                prompt: "plan ticket={{inputs.ticket}} priority={{inputs.priority}}".to_string(),
+                next: Some("review".to_string()),
+                on_approve: None,
+                on_reject: None,
+                outputs: Some(vec!["plan".to_string(), "summary".to_string()]),
+                output_files: Some(BTreeMap::from_iter([
+                    (
+                        "plan".to_string(),
+                        "reports/{{workflow.run_id}}/plan-{{workflow.attempt}}.md".to_string(),
+                    ),
+                    (
+                        "summary".to_string(),
+                        "reports/{{workflow.run_id}}/summary-{{workflow.attempt}}.txt".to_string(),
+                    ),
+                ])),
+                limits: Some(StepLimitsConfig {
+                    max_retries: Some(1),
+                }),
+            },
+            WorkflowStepConfig {
+                id: "review".to_string(),
+                step_type: "agent_review".to_string(),
+                agent: "worker".to_string(),
+                prompt: "review run {{workflow.run_id}}".to_string(),
+                next: None,
+                on_approve: Some("finalize".to_string()),
+                on_reject: Some("plan".to_string()),
+                outputs: None,
+                output_files: None,
+                limits: None,
+            },
+            WorkflowStepConfig {
+                id: "finalize".to_string(),
+                step_type: "agent_task".to_string(),
+                agent: "worker".to_string(),
+                prompt: "finalize run {{workflow.run_id}}".to_string(),
+                next: None,
+                on_approve: None,
+                on_reject: None,
+                outputs: Some(vec!["result".to_string()]),
+                output_files: Some(BTreeMap::from_iter([(
+                    "result".to_string(),
+                    "reports/{{workflow.run_id}}/result.json".to_string(),
+                )])),
+                limits: None,
+            },
+        ],
+    }];
+    fs::write(
+        &orchestrators_path,
+        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+    )
+    .expect("write orchestrators");
+
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let codex = bin_dir.join("codex");
+    fs::write(
+        &codex,
+        r#"#!/bin/sh
+set -eu
+args="$*"
+marker="$PWD/.first_plan_attempt_failed"
+if printf "%s" "$args" | grep -q "/steps/plan/" && [ ! -f "$marker" ]; then
+  touch "$marker"
+  echo '{not-json}'
+  exit 0
+fi
+if printf "%s" "$args" | grep -q "/steps/review/"; then
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\"}[/workflow_result]"}}'
+elif printf "%s" "$args" | grep -q "/steps/finalize/"; then
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":{\"status\":\"done\"}}[/workflow_result]"}}'
+else
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"plan\":\"Use checks\",\"summary\":\"roundtrip-ok\"}[/workflow_result]"}}'
+fi
+"#,
+    )
+    .expect("write codex mock");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&codex).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&codex, perms).expect("chmod");
+    }
+
+    let list = run(temp.path(), &["workflow", "list", "alpha"]);
+    assert_ok(&list);
+    assert!(stdout(&list).contains("triage_roundtrip"));
+    let show = run(
+        temp.path(),
+        &["workflow", "show", "alpha", "triage_roundtrip"],
+    );
+    assert_ok(&show);
+    let show_text = stdout(&show);
+    assert!(show_text.contains("inputs:"));
+    assert!(show_text.contains("output_files:"));
+    assert!(show_text.contains("max_retries: 1"));
+
+    let run_output = run_with_env(
+        temp.path(),
+        &[
+            "workflow",
+            "run",
+            "alpha",
+            "triage_roundtrip",
+            "--input",
+            "ticket=123",
+            "--input",
+            "priority=high",
+        ],
+        &[(
+            "DIRECLAW_PROVIDER_BIN_OPENAI",
+            codex.to_str().expect("utf8"),
+        )],
+    );
+    assert_ok(&run_output);
+    let run_id = run_id_from(&run_output);
+
+    let status = run(temp.path(), &["workflow", "status", &run_id]);
+    assert_ok(&status);
+    let status_text = stdout(&status);
+    assert!(status_text.contains("state=succeeded"));
+    assert!(status_text.contains("input_count=2"));
+    assert!(status_text.contains("input_keys=priority,ticket"));
+
+    let progress = run(temp.path(), &["workflow", "progress", &run_id]);
+    assert_ok(&progress);
+    let progress_stdout = stdout(&progress);
+    let progress_json_start = progress_stdout
+        .find('{')
+        .expect("progress output should include json object");
+    let progress_json: serde_json::Value =
+        serde_json::from_str(&progress_stdout[progress_json_start..]).expect("progress json");
+    assert_eq!(
+        progress_json["state"],
+        serde_json::Value::String("succeeded".to_string())
+    );
+
+    let run_root = temp.path().join(".direclaw/workflows/runs").join(&run_id);
+    let plan_attempt_1: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(run_root.join("steps/plan/attempts/1/result.json"))
+            .expect("plan attempt 1"),
+    )
+    .expect("parse attempt 1");
+    let plan_attempt_2: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(run_root.join("steps/plan/attempts/2/result.json"))
+            .expect("plan attempt 2"),
+    )
+    .expect("parse attempt 2");
+    assert_eq!(
+        plan_attempt_1["state"],
+        serde_json::Value::String("failed_retryable".to_string())
+    );
+    assert_eq!(
+        plan_attempt_2["state"],
+        serde_json::Value::String("succeeded".to_string())
+    );
+
+    let plan_output = run_root.join(format!(
+        "steps/plan/attempts/2/outputs/reports/{run_id}/plan-2.md"
+    ));
+    let summary_output = run_root.join(format!(
+        "steps/plan/attempts/2/outputs/reports/{run_id}/summary-2.txt"
+    ));
+    let result_output = run_root.join(format!(
+        "steps/finalize/attempts/1/outputs/reports/{run_id}/result.json"
+    ));
+    assert_eq!(
+        fs::read_to_string(plan_output).expect("plan output"),
+        "Use checks"
+    );
+    assert_eq!(
+        fs::read_to_string(summary_output).expect("summary output"),
+        "roundtrip-ok"
+    );
+    assert!(fs::read_to_string(result_output)
+        .expect("result output")
+        .contains("\"status\": \"done\""));
+
+    assert_ok(&run(temp.path(), &["workflow", "cancel", &run_id]));
+}
+
+#[test]
+fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
+
+    let orchestrators_path = temp.path().join(".direclaw/config-orchestrators.yaml");
+    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
+            .expect("parse orchestrators");
+    let orchestrator = orchestrators.get_mut("alpha").expect("alpha orchestrator");
+    orchestrator.default_workflow = "timeout_roundtrip".to_string();
+    orchestrator.selector_agent = "default".to_string();
+    orchestrator.workflow_orchestration = Some(WorkflowOrchestrationConfig {
+        max_total_iterations: Some(4),
+        default_run_timeout_seconds: Some(30),
+        default_step_timeout_seconds: Some(5),
+        max_step_timeout_seconds: Some(1),
+    });
+    orchestrator.agents.insert(
+        "default".to_string(),
+        AgentConfig {
+            provider: "openai".to_string(),
+            model: "gpt-5.2".to_string(),
+            private_workspace: None,
+            can_orchestrate_workflows: true,
+            shared_access: Vec::new(),
+        },
+    );
+    orchestrator.agents.insert(
+        "worker".to_string(),
+        AgentConfig {
+            provider: "openai".to_string(),
+            model: "gpt-5.2".to_string(),
+            private_workspace: None,
+            can_orchestrate_workflows: false,
+            shared_access: Vec::new(),
+        },
+    );
+    orchestrator.workflows = vec![WorkflowConfig {
+        id: "timeout_roundtrip".to_string(),
+        version: 1,
+        inputs: serde_yaml::Value::Sequence(Vec::new()),
+        limits: None,
+        steps: vec![WorkflowStepConfig {
+            id: "slow".to_string(),
+            step_type: "agent_task".to_string(),
+            agent: "worker".to_string(),
+            prompt: "slow".to_string(),
+            next: None,
+            on_approve: None,
+            on_reject: None,
+            outputs: None,
+            output_files: None,
+            limits: None,
+        }],
+    }];
+    fs::write(
+        &orchestrators_path,
+        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+    )
+    .expect("write orchestrators");
+
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let codex = bin_dir.join("codex");
+    fs::write(
+        &codex,
+        r#"#!/bin/sh
+set -eu
+sleep 2
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":\"slow-ok\"}[/workflow_result]"}}'
+"#,
+    )
+    .expect("write codex mock");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&codex).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&codex, perms).expect("chmod");
+    }
+
+    let before_ids = workflow_run_ids(temp.path());
+    let step_timeout_run = run_with_env(
+        temp.path(),
+        &["workflow", "run", "alpha", "timeout_roundtrip"],
+        &[(
+            "DIRECLAW_PROVIDER_BIN_OPENAI",
+            codex.to_str().expect("utf8"),
+        )],
+    );
+    assert_err_contains(&step_timeout_run, "workflow step timed out after 1s");
+
+    let after_step_timeout_ids = workflow_run_ids(temp.path());
+    assert_eq!(after_step_timeout_ids.len(), before_ids.len() + 1);
+    let first_new_run_id = after_step_timeout_ids
+        .difference(&before_ids)
+        .next()
+        .expect("new run id after step-timeout run")
+        .to_string();
+    let first_run_record: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".direclaw/workflows/runs")
+                .join(format!("{first_new_run_id}.json")),
+        )
+        .expect("read first run record"),
+    )
+    .expect("parse first run record");
+    assert_eq!(
+        first_run_record["state"],
+        serde_json::Value::String("failed".to_string())
+    );
+    assert!(first_run_record["terminalReason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("workflow step timed out after 1s"));
+
+    let mut orchestrators: BTreeMap<String, OrchestratorConfig> =
+        serde_yaml::from_str(&fs::read_to_string(&orchestrators_path).expect("read orchestrators"))
+            .expect("parse orchestrators");
+    let orchestrator = orchestrators.get_mut("alpha").expect("alpha orchestrator");
+    orchestrator.workflow_orchestration = Some(WorkflowOrchestrationConfig {
+        max_total_iterations: Some(4),
+        default_run_timeout_seconds: Some(1),
+        default_step_timeout_seconds: Some(5),
+        max_step_timeout_seconds: Some(5),
+    });
+    fs::write(
+        &orchestrators_path,
+        serde_yaml::to_string(&orchestrators).expect("serialize orchestrators"),
+    )
+    .expect("write orchestrators");
+
+    let run_timeout_run = run_with_env(
+        temp.path(),
+        &["workflow", "run", "alpha", "timeout_roundtrip"],
+        &[(
+            "DIRECLAW_PROVIDER_BIN_OPENAI",
+            codex.to_str().expect("utf8"),
+        )],
+    );
+    assert_err_contains(&run_timeout_run, "workflow run timed out after 1s");
+
+    let after_run_timeout_ids = workflow_run_ids(temp.path());
+    assert_eq!(after_run_timeout_ids.len(), before_ids.len() + 2);
+    let second_new_run_id = after_run_timeout_ids
+        .difference(&after_step_timeout_ids)
+        .next()
+        .expect("new run id after run-timeout run")
+        .to_string();
+    let second_run_record: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join(".direclaw/workflows/runs")
+                .join(format!("{second_new_run_id}.json")),
+        )
+        .expect("read second run record"),
+    )
+    .expect("parse second run record");
+    assert_eq!(
+        second_run_record["state"],
+        serde_json::Value::String("failed".to_string())
+    );
+    assert!(second_run_record["terminalReason"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("workflow run timed out after 1s"));
 }
 
 #[test]

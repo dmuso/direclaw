@@ -1,7 +1,7 @@
 use direclaw::config::Settings;
 use direclaw::orchestrator::WorkflowRunStore;
 use direclaw::provider::RunnerBinaries;
-use direclaw::queue::{IncomingMessage, QueuePaths};
+use direclaw::queue::{IncomingMessage, OutgoingMessage, QueuePaths};
 use direclaw::runtime::{
     bootstrap_state_root, drain_queue_once_with_binaries, recover_processing_queue_entries,
     run_supervisor, signal_stop, StatePaths,
@@ -137,6 +137,22 @@ fn read_outgoing_text(state_root: &Path) -> String {
     fs::read_to_string(path).expect("outgoing text")
 }
 
+fn read_outgoing_messages(state_root: &Path) -> Vec<OutgoingMessage> {
+    let out_dir = state_root.join("queue/outgoing");
+    let mut files: Vec<PathBuf> = fs::read_dir(&out_dir)
+        .expect("read outgoing")
+        .map(|e| e.expect("entry").path())
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            serde_json::from_str(&fs::read_to_string(path).expect("outgoing payload"))
+                .expect("parse outgoing payload")
+        })
+        .collect()
+}
+
 #[test]
 fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifacts() {
     let dir = tempdir().expect("tempdir");
@@ -176,6 +192,185 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     assert!(state_root
         .join("orchestrator/select/logs/sel-msg-1_attempt_0.invocation.json")
         .is_file());
+}
+
+#[test]
+fn channel_ingress_multi_step_workflow_reaches_terminal_state_and_writes_safe_outputs() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+
+    let claude = dir.path().join("claude-multi-selector");
+    let codex = dir.path().join("codex-multi-worker");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-multi\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(
+        &codex,
+        r#"#!/bin/sh
+set -eu
+args="$*"
+if printf "%s" "$args" | grep -q "/steps/plan/"; then
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"plan\":\"Plan: inspect logs\",\"summary\":\"Summary: collect traces\"}[/workflow_result]"}}'
+elif printf "%s" "$args" | grep -q "/steps/review/"; then
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\"}[/workflow_result]"}}'
+else
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":{\"status\":\"done\",\"ticket\":\"123\"}}[/workflow_result]"}}'
+fi
+"#,
+    );
+
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-multi"),
+        "anthropic",
+        1,
+        30,
+    );
+    fs::write(
+        dir.path().join("orch-multi/orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    inputs: [ticket]
+    limits:
+      max_total_iterations: 6
+      run_timeout_seconds: 40
+    steps:
+      - id: plan
+        type: agent_task
+        agent: worker
+        prompt: plan message={{inputs.user_message}}
+        outputs: [plan, summary]
+        output_files:
+          plan: artifacts/plan.md
+          summary: artifacts/summary.txt
+        next: review
+      - id: review
+        type: agent_review
+        agent: worker
+        prompt: review run={{workflow.run_id}}
+        on_approve: done
+        on_reject: plan
+      - id: done
+        type: agent_task
+        agent: worker
+        prompt: finalize
+        outputs: [result]
+        output_files:
+          result: artifacts/result.json
+"#,
+    )
+    .expect("write orchestrator");
+    let mut inbound = sample_message("msg-multi", "thread-multi");
+    inbound.message = "ship this".to_string();
+    write_incoming(&queue, &inbound);
+
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        4,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain");
+    assert_eq!(processed, 1);
+
+    let outgoing = read_outgoing_text(&state_root);
+    assert!(outgoing.contains("workflow started"));
+    let mut run_ids: Vec<String> = fs::read_dir(state_root.join("workflows/runs"))
+        .expect("run dir")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().and_then(|v| v.to_str()) == Some("json"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|v| v.to_str())
+                .map(|v| v.to_string())
+        })
+        .collect();
+    run_ids.sort();
+    let run_id = run_ids.pop().expect("run id");
+
+    let run_root = state_root.join(format!("workflows/runs/{run_id}"));
+    assert!(state_root
+        .join(format!("workflows/runs/{run_id}.json"))
+        .is_file());
+    assert!(run_root.join("progress.json").is_file());
+    assert!(run_root.join("engine.log").is_file());
+    let progress = fs::read_to_string(run_root.join("progress.json")).expect("progress");
+    assert!(progress.contains("\"state\": \"succeeded\""));
+    let engine_log = fs::read_to_string(run_root.join("engine.log")).expect("engine log");
+    assert!(engine_log.contains("transition=succeeded"));
+
+    for step in ["plan", "review", "done"] {
+        assert!(run_root
+            .join(format!("steps/{step}/attempts/1/result.json"))
+            .is_file());
+    }
+
+    let plan_output = run_root.join("steps/plan/attempts/1/outputs/artifacts/plan.md");
+    let summary_output = run_root.join("steps/plan/attempts/1/outputs/artifacts/summary.txt");
+    let result_output = run_root.join("steps/done/attempts/1/outputs/artifacts/result.json");
+    for output in [&plan_output, &summary_output, &result_output] {
+        assert!(output.is_file(), "missing output file {}", output.display());
+        let canonical = fs::canonicalize(output).expect("canonical output path");
+        assert!(
+            canonical.starts_with(&run_root),
+            "output escaped run root: {}",
+            canonical.display()
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(&plan_output).expect("plan output"),
+        "Plan: inspect logs"
+    );
+    assert_eq!(
+        fs::read_to_string(&summary_output).expect("summary output"),
+        "Summary: collect traces"
+    );
+    assert!(fs::read_to_string(&result_output)
+        .expect("result output")
+        .contains("\"status\": \"done\""));
+
+    let mut status_request = sample_message("msg-multi-status", "thread-multi");
+    status_request.workflow_run_id = Some(run_id.clone());
+    status_request.message = "/status".to_string();
+    write_incoming(&queue, &status_request);
+
+    let status_processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        2,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain status");
+    assert_eq!(status_processed, 1);
+
+    let status_outbound = read_outgoing_messages(&state_root)
+        .into_iter()
+        .find(|outbound| outbound.message_id == "msg-multi-status")
+        .expect("status outbound message");
+    assert_eq!(
+        status_outbound.workflow_run_id.as_deref(),
+        Some(run_id.as_str())
+    );
+    assert!(status_outbound.message.contains("workflow progress loaded"));
+    assert!(status_outbound.message.contains("state=succeeded"));
 }
 
 #[test]
@@ -588,6 +783,78 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
     assert!(timeout_log.contains("\"status\": \"failed\""));
     assert!(timeout_log.contains("\"timedOut\": true"));
     assert!(timeout_log.contains("timed out"));
+}
+
+#[test]
+fn malicious_output_file_template_is_rejected_and_security_log_records_denial() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let queue = QueuePaths::from_state_root(&state_root);
+
+    let claude = dir.path().join("claude-malicious-selector");
+    let codex = dir.path().join("codex-malicious-worker");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-malicious\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_openai_success_script(&codex);
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-malicious"),
+        "anthropic",
+        1,
+        30,
+    );
+    fs::write(
+        dir.path().join("orch-malicious/orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+        outputs: [result]
+        output_files:
+          result: ../../escape.md
+"#,
+    )
+    .expect("write malicious orchestrator");
+
+    write_incoming(&queue, &sample_message("msg-malicious", "thread-malicious"));
+    let err = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        1,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect_err("malicious output file template must fail");
+    assert!(err.contains("output path validation failed"));
+
+    let security_log =
+        fs::read_to_string(state_root.join("logs/security.log")).expect("security log");
+    assert!(security_log.contains("output path validation denied"));
+    assert!(security_log.contains("sel-msg-malicious"));
+    assert!(fs::read_dir(&queue.processing)
+        .expect("processing")
+        .next()
+        .is_none());
 }
 
 #[test]

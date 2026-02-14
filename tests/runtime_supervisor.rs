@@ -1,3 +1,4 @@
+use direclaw::queue::IncomingMessage;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -72,6 +73,81 @@ auth_sync:
         ),
     )
     .expect("settings");
+}
+
+fn write_workflow_settings(home: &Path) {
+    let workspace = home.join("workspace");
+    let orch_workspace = home.join("orch");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&orch_workspace).expect("orchestrator workspace");
+    fs::create_dir_all(home.join(".direclaw")).expect("config dir");
+    fs::write(
+        home.join(".direclaw/config.yaml"),
+        format!(
+            r#"
+workspaces_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {orch_workspace}
+    shared_access: []
+channel_profiles:
+  eng:
+    channel: slack
+    orchestrator_id: eng_orchestrator
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring:
+  heartbeat_interval: 1
+channels:
+  slack:
+    enabled: false
+auth_sync:
+  enabled: false
+"#,
+            workspace = workspace.display(),
+            orch_workspace = orch_workspace.display(),
+        ),
+    )
+    .expect("settings");
+    fs::write(
+        orch_workspace.join("orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+"#,
+    )
+    .expect("orchestrator");
+}
+
+fn write_script(path: &Path, body: &str) {
+    fs::write(path, body).expect("write script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).expect("chmod");
+    }
 }
 
 fn write_slack_settings(home: &Path, slack_enabled: bool) {
@@ -297,6 +373,82 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
     assert_ne!(before_started_at, after_started_at);
     assert!(after_text.contains("worker:queue_processor.state=running"));
 
+    stop_if_running(home);
+}
+
+#[test]
+fn start_recovers_processing_entry_and_processes_recovered_message() {
+    let temp = tempdir().expect("tempdir");
+    let home = temp.path();
+    write_workflow_settings(home);
+
+    let bin_dir = home.join("bin");
+    fs::create_dir_all(&bin_dir).expect("bin dir");
+    let claude = bin_dir.join("claude");
+    let codex = bin_dir.join("codex");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-recovered\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(
+        &codex,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"result\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+    );
+
+    let processing_dir = home.join(".direclaw/queue/processing");
+    fs::create_dir_all(&processing_dir).expect("processing dir");
+    let stale = IncomingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("eng".to_string()),
+        sender: "Dana".to_string(),
+        sender_id: "U42".to_string(),
+        message: "recover me".to_string(),
+        timestamp: 100,
+        message_id: "msg-recovered-supervisor".to_string(),
+        conversation_id: Some("thread-recovered-supervisor".to_string()),
+        files: Vec::new(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+    fs::write(
+        processing_dir.join("stale-msg.json"),
+        serde_json::to_vec(&stale).expect("serialize stale"),
+    )
+    .expect("write stale queue entry");
+
+    let started = run(
+        home,
+        &["start"],
+        &[
+            (
+                "DIRECLAW_PROVIDER_BIN_ANTHROPIC",
+                claude.to_str().expect("claude path"),
+            ),
+            (
+                "DIRECLAW_PROVIDER_BIN_OPENAI",
+                codex.to_str().expect("codex path"),
+            ),
+        ],
+    );
+    assert_ok(&started);
+    wait_for_status_line(home, "running=true", Duration::from_secs(4));
+
+    let outgoing_dir = home.join(".direclaw/queue/outgoing");
+    let start = Instant::now();
+    while fs::read_dir(&outgoing_dir)
+        .expect("outgoing")
+        .next()
+        .is_none()
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(20),
+            "recovered message was not processed"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let runtime_log = read_runtime_log(home);
+    assert!(runtime_log.contains("\"event\":\"queue.recovered\""));
     stop_if_running(home);
 }
 
