@@ -74,7 +74,7 @@ pub(super) fn cmd_setup() -> Result<String, String> {
         settings.channel_profiles.insert(
             "local-default".to_string(),
             ChannelProfile {
-                channel: "local".to_string(),
+                channel: ChannelKind::Local,
                 orchestrator_id: bootstrap.orchestrator_id.clone(),
                 slack_app_user_id: None,
                 require_mention_in_channels: None,
@@ -89,7 +89,7 @@ pub(super) fn cmd_setup() -> Result<String, String> {
         settings.channel_profiles.insert(
             format!("{}-local", bootstrap.orchestrator_id),
             ChannelProfile {
-                channel: "local".to_string(),
+                channel: ChannelKind::Local,
                 orchestrator_id: bootstrap.orchestrator_id.clone(),
                 slack_app_user_id: None,
                 require_mention_in_channels: None,
@@ -173,27 +173,17 @@ fn default_model_for_provider(provider: &str) -> &'static str {
 }
 
 fn parse_provider(value: &str) -> Result<String, String> {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized == "anthropic" || normalized == "openai" {
-        return Ok(normalized);
-    }
-    Err("provider must be one of: anthropic, openai".to_string())
-}
-
-fn is_valid_identifier(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    Ok(ConfigProviderKind::parse(value)?.to_string())
 }
 
 fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
-    if is_valid_identifier(value) {
-        return Ok(());
+    match kind {
+        "orchestrator id" => crate::config::OrchestratorId::parse(value).map(|_| ()),
+        "workflow id" => crate::config::WorkflowId::parse(value).map(|_| ()),
+        "step id" => crate::config::StepId::parse(value).map(|_| ()),
+        "agent id" => crate::config::AgentId::parse(value).map(|_| ()),
+        _ => Err(format!("unsupported identifier kind `{kind}`")),
     }
-    Err(format!(
-        "{kind} must use only ASCII letters, digits, '-' or '_'"
-    ))
 }
 
 fn validate_setup_bootstrap(settings: &Settings, bootstrap: &SetupBootstrap) -> Result<(), String> {
@@ -309,13 +299,11 @@ fn load_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
         bootstrap.orchestrator_id = first_orchestrator.clone();
         if let Some(orchestrator) = bootstrap.orchestrator_configs.get(first_orchestrator) {
             if let Some(selector) = orchestrator.agents.get(&orchestrator.selector_agent) {
-                bootstrap.provider = parse_provider(&selector.provider)?;
+                bootstrap.provider = selector.provider.to_string();
                 bootstrap.model = selector.model.clone();
             } else if let Some((_, agent)) = orchestrator.agents.iter().next() {
-                if let Ok(provider) = parse_provider(&agent.provider) {
-                    bootstrap.provider = provider;
-                    bootstrap.model = agent.model.clone();
-                }
+                bootstrap.provider = agent.provider.to_string();
+                bootstrap.model = agent.model.clone();
             }
             bootstrap.workflow_template = infer_workflow_template(orchestrator);
         }
@@ -987,14 +975,10 @@ fn provider_model_for_orchestrator(
 ) -> (String, String) {
     if let Some(cfg) = bootstrap.orchestrator_configs.get(orchestrator_id) {
         if let Some(selector) = cfg.agents.get(&cfg.selector_agent) {
-            if let Ok(provider) = parse_provider(&selector.provider) {
-                return (provider, selector.model.clone());
-            }
+            return (selector.provider.to_string(), selector.model.clone());
         }
         if let Some((_, agent)) = cfg.agents.iter().next() {
-            if let Ok(provider) = parse_provider(&agent.provider) {
-                return (provider, agent.model.clone());
-            }
+            return (agent.provider.to_string(), agent.model.clone());
         }
     }
     (bootstrap.provider.clone(), bootstrap.model.clone())
@@ -1413,7 +1397,7 @@ fn run_workflow_manager_tui(
                         limits: None,
                         steps: vec![WorkflowStepConfig {
                             id: "step_1".to_string(),
-                            step_type: "agent_task".to_string(),
+                            step_type: WorkflowStepType::AgentTask,
                             agent: selector_agent,
                             prompt: default_step_scaffold("agent_task"),
                             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -1871,7 +1855,7 @@ fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
         .unwrap_or_else(|| "<none>".to_string());
     vec![
         field_row("Step ID", Some(step.id.clone())),
-        field_row("Step Type", Some(step.step_type.clone())),
+        field_row("Step Type", Some(step.step_type.to_string())),
         field_row("Agent", Some(step.agent.clone())),
         field_row("Prompt", Some(step.prompt.clone())),
         field_row("Workspace Mode", Some(workspace_mode.to_string())),
@@ -2008,7 +1992,7 @@ fn run_workflow_steps_tui(
                     }
                     workflow.steps.push(WorkflowStepConfig {
                         id: step_id,
-                        step_type: "agent_task".to_string(),
+                        step_type: WorkflowStepType::AgentTask,
                         agent: selector_agent,
                         prompt: default_step_scaffold("agent_task"),
                         workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -2156,14 +2140,14 @@ fn run_workflow_step_detail_tui(
                                 .find(|step| step.id == current_step_id)
                         })
                     {
-                        step.step_type = if step.step_type == "agent_task" {
-                            "agent_review".to_string()
+                        step.step_type = if step.step_type == WorkflowStepType::AgentTask {
+                            WorkflowStepType::AgentReview
                         } else {
-                            "agent_task".to_string()
+                            WorkflowStepType::AgentTask
                         };
-                        step.prompt = default_step_scaffold(&step.step_type);
-                        step.outputs = default_step_output_contract(&step.step_type);
-                        step.output_files = default_step_output_files(&step.step_type);
+                        step.prompt = default_step_scaffold(step.step_type.as_str());
+                        step.outputs = default_step_output_contract(step.step_type.as_str());
+                        step.output_files = default_step_output_files(step.step_type.as_str());
                         status = "step type toggled".to_string();
                     }
                 }
@@ -2581,7 +2565,8 @@ fn run_agent_manager_tui(
                     cfg.agents.insert(
                         agent_id.clone(),
                         AgentConfig {
-                            provider: bootstrap.provider.clone(),
+                            provider: ConfigProviderKind::parse(&bootstrap.provider)
+                                .expect("setup provider remains valid"),
                             model: bootstrap.model.clone(),
                             private_workspace: Some(PathBuf::from(format!("agents/{agent_id}"))),
                             can_orchestrate_workflows: false,
@@ -2655,7 +2640,7 @@ fn run_agent_detail_tui(
                         .orchestrator_configs
                         .get(orchestrator_id)
                         .and_then(|cfg| cfg.agents.get(agent_id))
-                        .map(|a| a.provider.clone())
+                        .map(|a| a.provider.to_string())
                         .unwrap_or_else(|| "anthropic".to_string());
                     if let Some(value) = prompt_line_tui(
                         terminal,
@@ -2669,7 +2654,7 @@ fn run_agent_detail_tui(
                                     bootstrap.orchestrator_configs.get_mut(orchestrator_id)
                                 {
                                     if let Some(agent) = cfg.agents.get_mut(agent_id) {
-                                        agent.provider = provider;
+                                        agent.provider = ConfigProviderKind::parse(&provider)?;
                                         status = "agent provider updated".to_string();
                                     }
                                 }
@@ -2786,7 +2771,7 @@ fn agent_detail_menu_rows(
             .and_then(|cfg| {
                 cfg.agents.get(agent_id).map(|agent| {
                     (
-                        agent.provider.clone(),
+                        agent.provider.to_string(),
                         agent.model.clone(),
                         agent
                             .private_workspace
@@ -3153,6 +3138,12 @@ mod tests {
     fn validate_identifier_accepts_slug_and_rejects_spaces() {
         assert!(validate_identifier("workflow id", "feature_delivery").is_ok());
         assert!(validate_identifier("workflow id", "feature delivery").is_err());
+    }
+
+    #[test]
+    fn validate_identifier_rejects_unknown_kind() {
+        let err = validate_identifier("profile id", "profile_1").expect_err("unsupported kind");
+        assert!(err.contains("unsupported identifier kind"));
     }
 
     #[test]

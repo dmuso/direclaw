@@ -1,4 +1,4 @@
-use crate::config::{ChannelProfile, Settings};
+use crate::config::{ChannelKind, ChannelProfile, Settings};
 use crate::queue::{OutgoingMessage, QueuePaths};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -518,7 +518,7 @@ fn slack_profiles(settings: &Settings) -> BTreeMap<String, ChannelProfile> {
         .channel_profiles
         .iter()
         .filter_map(|(id, profile)| {
-            if profile.channel == "slack" {
+            if profile.channel == ChannelKind::Slack {
                 Some((id.clone(), profile.clone()))
             } else {
                 None

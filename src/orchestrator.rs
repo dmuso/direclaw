@@ -1,7 +1,7 @@
 use crate::cli;
 use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, Settings,
-    WorkflowConfig, WorkflowStepConfig, WorkflowStepWorkspaceMode,
+    WorkflowConfig, WorkflowStepConfig, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
 use crate::provider::{
     consume_reset_flag, run_provider, write_file_backed_prompt, InvocationLog, ProviderError,
@@ -1911,7 +1911,7 @@ pub fn evaluate_step_result(
 ) -> Result<StepEvaluation, OrchestratorError> {
     let parsed = parse_workflow_result_envelope(raw_output)?;
     validate_outputs_contract(step, &parsed)?;
-    if step.step_type == "agent_review" {
+    if step.step_type == WorkflowStepType::AgentReview {
         let approve = parse_review_decision(&parsed)?;
         let next = if approve {
             step.on_approve.clone()
@@ -3648,7 +3648,7 @@ impl FunctionRegistry {
                     ("channelProfileId".to_string(), Value::String(profile_id)),
                     (
                         "channel".to_string(),
-                        Value::String(profile.channel.clone()),
+                        Value::String(profile.channel.to_string()),
                     ),
                     (
                         "orchestratorId".to_string(),
@@ -4544,7 +4544,7 @@ channels: {}
 
         let step = WorkflowStepConfig {
             id: "plan".to_string(),
-            step_type: "agent_task".to_string(),
+            step_type: WorkflowStepType::AgentTask,
             agent: "worker".to_string(),
             prompt: "prompt".to_string(),
             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,

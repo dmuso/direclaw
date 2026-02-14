@@ -1,6 +1,7 @@
 use direclaw::config::{
-    AgentConfig, OrchestratorConfig, StepLimitsConfig, WorkflowConfig, WorkflowLimitsConfig,
-    WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepWorkspaceMode,
+    AgentConfig, ConfigProviderKind, OrchestratorConfig, StepLimitsConfig, WorkflowConfig,
+    WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepType,
+    WorkflowStepWorkspaceMode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -504,7 +505,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
     orchestrator.agents.insert(
         "worker".to_string(),
         AgentConfig {
-            provider: "openai".to_string(),
+            provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
             private_workspace: None,
             can_orchestrate_workflows: false,
@@ -519,7 +520,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
         steps: vec![
             WorkflowStepConfig {
                 id: "s1".to_string(),
-                step_type: "agent_task".to_string(),
+                step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "s1".to_string(),
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -541,7 +542,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
             },
             WorkflowStepConfig {
                 id: "s2".to_string(),
-                step_type: "agent_task".to_string(),
+                step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "s2".to_string(),
                 workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
@@ -563,7 +564,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
             },
             WorkflowStepConfig {
                 id: "s3".to_string(),
-                step_type: "agent_task".to_string(),
+                step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "s3".to_string(),
                 workspace_mode: WorkflowStepWorkspaceMode::AgentWorkspace,
@@ -673,7 +674,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
     orchestrator.agents.insert(
         "default".to_string(),
         AgentConfig {
-            provider: "anthropic".to_string(),
+            provider: ConfigProviderKind::Anthropic,
             model: "sonnet".to_string(),
             private_workspace: None,
             can_orchestrate_workflows: true,
@@ -683,7 +684,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
     orchestrator.agents.insert(
         "worker".to_string(),
         AgentConfig {
-            provider: "openai".to_string(),
+            provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
             private_workspace: None,
             can_orchestrate_workflows: false,
@@ -704,7 +705,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
         steps: vec![
             WorkflowStepConfig {
                 id: "plan".to_string(),
-                step_type: "agent_task".to_string(),
+                step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "plan ticket={{inputs.ticket}} priority={{inputs.priority}}".to_string(),
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -728,7 +729,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
             },
             WorkflowStepConfig {
                 id: "review".to_string(),
-                step_type: "agent_review".to_string(),
+                step_type: WorkflowStepType::AgentReview,
                 agent: "worker".to_string(),
                 prompt: "review run {{workflow.run_id}}".to_string(),
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -760,7 +761,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
             },
             WorkflowStepConfig {
                 id: "finalize".to_string(),
-                step_type: "agent_task".to_string(),
+                step_type: WorkflowStepType::AgentTask,
                 agent: "worker".to_string(),
                 prompt: "finalize run {{workflow.run_id}}".to_string(),
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -932,7 +933,7 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
     orchestrator.agents.insert(
         "default".to_string(),
         AgentConfig {
-            provider: "openai".to_string(),
+            provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
             private_workspace: None,
             can_orchestrate_workflows: true,
@@ -942,7 +943,7 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
     orchestrator.agents.insert(
         "worker".to_string(),
         AgentConfig {
-            provider: "openai".to_string(),
+            provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
             private_workspace: None,
             can_orchestrate_workflows: false,
@@ -956,7 +957,7 @@ fn workflow_run_enforces_orchestration_timeouts_from_cli_config() {
         limits: None,
         steps: vec![WorkflowStepConfig {
             id: "slow".to_string(),
-            step_type: "agent_task".to_string(),
+            step_type: WorkflowStepType::AgentTask,
             agent: "worker".to_string(),
             prompt: "slow".to_string(),
             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,

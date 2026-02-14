@@ -1,5 +1,6 @@
 use direclaw::config::{
-    AuthSyncConfig, ChannelConfig, ChannelProfile, Monitoring, Settings, SettingsOrchestrator,
+    AuthSyncConfig, ChannelConfig, ChannelKind, ChannelProfile, Monitoring, Settings,
+    SettingsOrchestrator,
 };
 use direclaw::queue::{OutgoingMessage, QueuePaths};
 use direclaw::slack::{sync_once, SlackError};
@@ -135,7 +136,7 @@ fn sample_settings(
     channel_profiles.insert(
         "slack_main".to_string(),
         ChannelProfile {
-            channel: "slack".to_string(),
+            channel: ChannelKind::Slack,
             orchestrator_id: "main".to_string(),
             slack_app_user_id: Some("UAPP".to_string()),
             require_mention_in_channels: Some(require_mention),
@@ -445,7 +446,7 @@ fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
     settings.channel_profiles.insert(
         "slack_alt".to_string(),
         ChannelProfile {
-            channel: "slack".to_string(),
+            channel: ChannelKind::Slack,
             orchestrator_id: "main".to_string(),
             slack_app_user_id: Some("UAPPALT".to_string()),
             require_mention_in_channels: Some(true),

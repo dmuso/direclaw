@@ -1,9 +1,9 @@
 use crate::config::{
     default_global_config_path, load_orchestrator_config, AgentConfig, AuthSyncConfig,
-    AuthSyncSource, ChannelProfile, ConfigError, OrchestratorConfig, Settings,
-    SettingsOrchestrator, StepLimitsConfig, ValidationOptions, WorkflowConfig,
-    WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
-    WorkflowStepWorkspaceMode,
+    AuthSyncSource, ChannelKind, ChannelProfile, ConfigError, ConfigProviderKind,
+    OrchestratorConfig, Settings, SettingsOrchestrator, StepLimitsConfig, ValidationOptions,
+    WorkflowConfig, WorkflowLimitsConfig, WorkflowOrchestrationConfig, WorkflowStepConfig,
+    WorkflowStepType, WorkflowStepWorkspaceMode,
 };
 use crate::orchestrator::{
     verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
@@ -540,7 +540,7 @@ fn cmd_send(args: &[String]) -> Result<String, String> {
     let ts = now_secs();
     let msg_id = format!("msg-{}", now_nanos());
     let incoming = IncomingMessage {
-        channel: profile.channel.clone(),
+        channel: profile.channel.to_string(),
         channel_profile_id: Some(profile_id.clone()),
         sender: "cli".to_string(),
         sender_id: "cli".to_string(),
@@ -1452,7 +1452,7 @@ fn cmd_orchestrator_agent(args: &[String]) -> Result<String, String> {
             orchestrator.agents.insert(
                 agent_id.clone(),
                 AgentConfig {
-                    provider: "anthropic".to_string(),
+                    provider: ConfigProviderKind::Anthropic,
                     model: "sonnet".to_string(),
                     private_workspace: Some(private_workspace),
                     can_orchestrate_workflows: false,
@@ -1515,7 +1515,7 @@ fn cmd_orchestrator_agent(args: &[String]) -> Result<String, String> {
                 .agents
                 .get_mut(&agent_id)
                 .ok_or_else(|| format!("unknown agent `{agent_id}`"))?;
-            agent.provider = "anthropic".to_string();
+            agent.provider = ConfigProviderKind::Anthropic;
             agent.model = "sonnet".to_string();
             agent.can_orchestrate_workflows = false;
             save_orchestrator_config(&settings, orchestrator_id, &orchestrator)?;
@@ -1581,7 +1581,7 @@ fn cmd_workflow(args: &[String]) -> Result<String, String> {
                 limits: None,
                 steps: vec![WorkflowStepConfig {
                     id: "step_1".to_string(),
-                    step_type: "agent_task".to_string(),
+                    step_type: WorkflowStepType::AgentTask,
                     agent: selector,
                     prompt: default_step_scaffold("agent_task"),
                     workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -1740,7 +1740,7 @@ fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
             }
             let mut settings = load_settings()?;
             let id = args[1].clone();
-            let channel = args[2].clone();
+            let channel = ChannelKind::parse(&args[2])?;
             let orchestrator_id = args[3].clone();
             if !settings.orchestrators.contains_key(&orchestrator_id) {
                 return Err(format!("unknown orchestrator `{orchestrator_id}`"));
@@ -1979,7 +1979,7 @@ pub(super) fn default_step_output_files(step_type: &str) -> Option<BTreeMap<Stri
 fn workflow_step(id: &str, step_type: &str, agent: &str, prompt: &str) -> WorkflowStepConfig {
     WorkflowStepConfig {
         id: id.to_string(),
-        step_type: step_type.to_string(),
+        step_type: WorkflowStepType::parse(step_type).expect("default step type is valid"),
         agent: agent.to_string(),
         prompt: format!("{prompt}\n\n{}", default_step_prompt(step_type)),
         workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
@@ -1999,7 +1999,7 @@ fn agent_config(
     can_orchestrate_workflows: bool,
 ) -> AgentConfig {
     AgentConfig {
-        provider: provider.to_string(),
+        provider: ConfigProviderKind::parse(provider).expect("default provider is valid"),
         model: model.to_string(),
         private_workspace: Some(Path::new(private_workspace).to_path_buf()),
         can_orchestrate_workflows,

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 TASK_DIR="docs/build/tasks"
-SPEC="docs/build/workflow-system-implementation-plan.md"
+SPEC="docs/build/config-typing-and-type-driven-setup-tui-plan.md"
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "Error: 'codex' CLI is not installed or not in PATH." >&2
@@ -20,7 +20,12 @@ fi
 task_files=()
 while IFS= read -r task_file; do
   task_files+=("$task_file")
-done < <(find "$TASK_DIR" -maxdepth 1 -type f ! -name '*-review.*' | sort)
+done < <(
+  find "$TASK_DIR" -maxdepth 1 -type f \
+    \( -name 'phase-*.md' -o -name 'task-*.md' \) \
+    ! -name '*-review.*' \
+    | sort
+)
 
 if [[ ${#task_files[@]} -eq 0 ]]; then
   echo "No task files found in $TASK_DIR"

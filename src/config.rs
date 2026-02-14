@@ -1,4 +1,5 @@
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,179 @@ pub const GLOBAL_STATE_DIR: &str = ".direclaw";
 pub const GLOBAL_SETTINGS_FILE_NAME: &str = "config.yaml";
 pub const GLOBAL_ORCHESTRATORS_FILE_NAME: &str = "config-orchestrators.yaml";
 
+fn validate_identifier_value(kind: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{kind} must be non-empty"));
+    }
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "{kind} must use only ASCII letters, digits, '-' or '_'"
+    ))
+}
+
+macro_rules! define_id_type {
+    ($name:ident, $kind:literal) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn parse(raw: &str) -> Result<Self, String> {
+                validate_identifier_value($kind, raw)?;
+                Ok(Self(raw.to_string()))
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl std::borrow::Borrow<str> for $name {
+            fn borrow(&self) -> &str {
+                self.as_str()
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::parse(&value)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let raw = String::deserialize(deserializer)?;
+                Self::parse(&raw).map_err(|err| {
+                    D::Error::custom(format!("invalid {} `{}`: {}", $kind, raw, err))
+                })
+            }
+        }
+    };
+}
+
+define_id_type!(OrchestratorId, "orchestrator id");
+define_id_type!(WorkflowId, "workflow id");
+define_id_type!(StepId, "step id");
+define_id_type!(AgentId, "agent id");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigProviderKind {
+    Anthropic,
+    #[serde(rename = "openai")]
+    OpenAi,
+}
+
+impl ConfigProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "anthropic" => Ok(Self::Anthropic),
+            "openai" => Ok(Self::OpenAi),
+            _ => Err("provider must be one of: anthropic, openai".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for ConfigProviderKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    Local,
+    Slack,
+    Discord,
+    Telegram,
+    Whatsapp,
+}
+
+impl ChannelKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Slack => "slack",
+            Self::Discord => "discord",
+            Self::Telegram => "telegram",
+            Self::Whatsapp => "whatsapp",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "local" => Ok(Self::Local),
+            "slack" => Ok(Self::Slack),
+            "discord" => Ok(Self::Discord),
+            "telegram" => Ok(Self::Telegram),
+            "whatsapp" => Ok(Self::Whatsapp),
+            _ => {
+                Err("channel must be one of: local, slack, discord, telegram, whatsapp".to_string())
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ChannelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStepType {
+    AgentTask,
+    AgentReview,
+}
+
+impl WorkflowStepType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentTask => "agent_task",
+            Self::AgentReview => "agent_review",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "agent_task" => Ok(Self::AgentTask),
+            "agent_review" => Ok(Self::AgentReview),
+            _ => Err("step type must be one of: agent_task, agent_review".to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkflowStepType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Settings {
     #[serde(alias = "workspace_path")]
@@ -58,7 +232,7 @@ pub struct SettingsOrchestrator {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChannelProfile {
-    pub channel: String,
+    pub channel: ChannelKind,
     pub orchestrator_id: String,
     pub slack_app_user_id: Option<String>,
     pub require_mention_in_channels: Option<bool>,
@@ -118,7 +292,7 @@ pub struct OrchestratorConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentConfig {
-    pub provider: String,
+    pub provider: ConfigProviderKind,
     pub model: String,
     #[serde(default)]
     pub private_workspace: Option<PathBuf>,
@@ -144,7 +318,7 @@ pub struct WorkflowConfig {
 pub struct WorkflowStepConfig {
     pub id: String,
     #[serde(rename = "type")]
-    pub step_type: String,
+    pub step_type: WorkflowStepType,
     pub agent: String,
     pub prompt: String,
     #[serde(default = "default_workflow_step_workspace_mode")]
@@ -276,6 +450,7 @@ impl Settings {
         }
 
         for (orchestrator_id, orchestrator) in &self.orchestrators {
+            OrchestratorId::parse(orchestrator_id).map_err(ConfigError::Settings)?;
             for grant in &orchestrator.shared_access {
                 if !shared_keys.contains(grant) {
                     return Err(ConfigError::Settings(format!(
@@ -286,13 +461,18 @@ impl Settings {
         }
 
         for (profile_id, profile) in &self.channel_profiles {
+            if profile_id.trim().is_empty() {
+                return Err(ConfigError::Settings(
+                    "channel profile id must be non-empty".to_string(),
+                ));
+            }
             if !self.orchestrators.contains_key(&profile.orchestrator_id) {
                 return Err(ConfigError::Settings(format!(
                     "channel profile `{profile_id}` references unknown orchestrator `{}`",
                     profile.orchestrator_id
                 )));
             }
-            if profile.channel == "slack" {
+            if profile.channel == ChannelKind::Slack {
                 if profile
                     .slack_app_user_id
                     .as_ref()
@@ -366,6 +546,7 @@ impl Settings {
     }
 
     pub fn resolve_private_workspace(&self, orchestrator_id: &str) -> Result<PathBuf, ConfigError> {
+        OrchestratorId::parse(orchestrator_id).map_err(ConfigError::Settings)?;
         let orchestrator = self.orchestrators.get(orchestrator_id).ok_or_else(|| {
             ConfigError::MissingOrchestrator {
                 orchestrator_id: orchestrator_id.to_string(),
@@ -401,6 +582,7 @@ impl OrchestratorConfig {
     }
 
     pub fn validate(&self, settings: &Settings, orchestrator_id: &str) -> Result<(), ConfigError> {
+        OrchestratorId::parse(orchestrator_id).map_err(ConfigError::Orchestrator)?;
         if self.id != orchestrator_id {
             return Err(ConfigError::Orchestrator(format!(
                 "orchestrator id mismatch: expected `{orchestrator_id}`, got `{}`",
@@ -458,11 +640,7 @@ impl OrchestratorConfig {
             })?;
 
         for (agent_id, agent) in &self.agents {
-            if agent.provider.trim().is_empty() {
-                return Err(ConfigError::Orchestrator(format!(
-                    "agent `{agent_id}` requires non-empty `provider`"
-                )));
-            }
+            AgentId::parse(agent_id).map_err(ConfigError::Orchestrator)?;
             if agent.model.trim().is_empty() {
                 return Err(ConfigError::Orchestrator(format!(
                     "agent `{agent_id}` requires non-empty `model`"
@@ -478,6 +656,7 @@ impl OrchestratorConfig {
         }
 
         for workflow in &self.workflows {
+            WorkflowId::parse(&workflow.id).map_err(ConfigError::Orchestrator)?;
             if workflow.steps.is_empty() {
                 return Err(ConfigError::Orchestrator(format!(
                     "workflow `{}` requires at least one step",
@@ -485,6 +664,8 @@ impl OrchestratorConfig {
                 )));
             }
             for step in &workflow.steps {
+                StepId::parse(&step.id).map_err(ConfigError::Orchestrator)?;
+                AgentId::parse(&step.agent).map_err(ConfigError::Orchestrator)?;
                 if !self.agents.contains_key(&step.agent) {
                     return Err(ConfigError::Orchestrator(format!(
                         "workflow `{}` step `{}` references unknown agent `{}`",
@@ -495,12 +676,6 @@ impl OrchestratorConfig {
                     return Err(ConfigError::Orchestrator(format!(
                         "workflow `{}` step `{}` requires non-empty prompt",
                         workflow.id, step.id
-                    )));
-                }
-                if step.step_type != "agent_task" && step.step_type != "agent_review" {
-                    return Err(ConfigError::Orchestrator(format!(
-                        "workflow `{}` step `{}` has unsupported type `{}`",
-                        workflow.id, step.id, step.step_type
                     )));
                 }
                 let outputs = step.outputs.as_ref().ok_or_else(|| {
@@ -945,5 +1120,91 @@ workspace_mode: unknown_mode
         )
         .expect_err("unknown workspace_mode must fail");
         assert!(err.to_string().contains("workspace_mode"));
+    }
+
+    #[test]
+    fn typed_enums_round_trip_with_snake_case_yaml() {
+        let agent: AgentConfig = serde_yaml::from_str(
+            r#"
+provider: openai
+model: gpt-5.3-codex
+can_orchestrate_workflows: false
+"#,
+        )
+        .expect("parse agent");
+        assert_eq!(agent.provider, ConfigProviderKind::OpenAi);
+        let encoded = serde_yaml::to_string(&agent).expect("encode agent");
+        assert!(encoded.contains("provider: openai"));
+
+        let profile: ChannelProfile = serde_yaml::from_str(
+            r#"
+channel: slack
+orchestrator_id: main
+slack_app_user_id: U123
+require_mention_in_channels: true
+"#,
+        )
+        .expect("parse profile");
+        assert_eq!(profile.channel, ChannelKind::Slack);
+        let encoded = serde_yaml::to_string(&profile).expect("encode profile");
+        assert!(encoded.contains("channel: slack"));
+
+        let step: WorkflowStepConfig = serde_yaml::from_str(
+            r#"
+id: review
+type: agent_review
+agent: reviewer
+prompt: review it
+"#,
+        )
+        .expect("parse step");
+        assert_eq!(step.step_type, WorkflowStepType::AgentReview);
+        let encoded = serde_yaml::to_string(&step).expect("encode step");
+        assert!(encoded.contains("type: agent_review"));
+    }
+
+    #[test]
+    fn typed_enums_reject_invalid_values_with_parse_errors() {
+        let provider_err = serde_yaml::from_str::<AgentConfig>(
+            r#"
+provider: invalid
+model: sonnet
+"#,
+        )
+        .expect_err("invalid provider should fail");
+        assert!(provider_err.to_string().contains("provider"));
+
+        let channel_err = serde_yaml::from_str::<ChannelProfile>(
+            r#"
+channel: invalid
+orchestrator_id: main
+"#,
+        )
+        .expect_err("invalid channel should fail");
+        assert!(channel_err.to_string().contains("channel"));
+
+        let step_err = serde_yaml::from_str::<WorkflowStepConfig>(
+            r#"
+id: s1
+type: invalid
+agent: worker
+prompt: test
+"#,
+        )
+        .expect_err("invalid step type should fail");
+        assert!(step_err.to_string().contains("type"));
+    }
+
+    #[test]
+    fn id_wrappers_accept_valid_and_reject_invalid_values() {
+        assert!(OrchestratorId::parse("main_01").is_ok());
+        assert!(WorkflowId::parse("feature-delivery").is_ok());
+        assert!(StepId::parse("step_1").is_ok());
+        assert!(AgentId::parse("router").is_ok());
+
+        assert!(OrchestratorId::parse("main dev").is_err());
+        assert!(WorkflowId::parse("").is_err());
+        assert!(StepId::parse("step!").is_err());
+        assert!(AgentId::parse("agent/id").is_err());
     }
 }
