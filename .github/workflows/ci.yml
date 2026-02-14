@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - master
 
 jobs:
   checks:
@@ -26,8 +26,8 @@ jobs:
       - name: Test Suite
         run: nix-shell --run 'cargo test --all'
 
-      - name: Docs Link Check
-        run: nix-shell --run 'cargo test --test docs_phase00_baseline markdown_links_and_paths_resolve_for_contributor_and_operator_docs'
+      - name: Docs Readiness Check
+        run: nix-shell --run 'cargo test --test docs_operator_and_install_readiness'
 
       - name: Docs Clean Install Smoke
         run: |
