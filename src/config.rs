@@ -5,6 +5,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub(crate) mod setup_draft;
+pub(crate) use setup_draft::{OrchestrationLimitField, SetupDraft};
+
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error("failed to read file {path}: {source}")]
@@ -924,37 +927,7 @@ impl OrchestratorConfig {
                 "`selector_timeout_seconds` must be >= 1".to_string(),
             ));
         }
-        if self.workflows.is_empty() {
-            return Err(ConfigError::Orchestrator(
-                "`workflows` must be non-empty".to_string(),
-            ));
-        }
-
-        if !self.agents.contains_key(&self.selector_agent) {
-            return Err(ConfigError::Orchestrator(format!(
-                "`selector_agent` `{}` must exist in `agents`",
-                self.selector_agent
-            )));
-        }
-
-        let selector = self
-            .agents
-            .get(&self.selector_agent)
-            .expect("checked above");
-        if !selector.can_orchestrate_workflows {
-            return Err(ConfigError::Orchestrator(format!(
-                "selector agent `{}` must set `can_orchestrate_workflows: true`",
-                self.selector_agent
-            )));
-        }
-
-        let workflow_ids: HashSet<&str> = self.workflows.iter().map(|w| w.id.as_str()).collect();
-        if !workflow_ids.contains(self.default_workflow.as_str()) {
-            return Err(ConfigError::Orchestrator(format!(
-                "`default_workflow` `{}` is not present in `workflows`",
-                self.default_workflow
-            )));
-        }
+        self.validate_setup_invariants()?;
 
         let orchestrator_grants = settings
             .orchestrators
@@ -982,25 +955,84 @@ impl OrchestratorConfig {
 
         for workflow in &self.workflows {
             WorkflowId::parse(&workflow.id).map_err(ConfigError::Orchestrator)?;
+            for step in &workflow.steps {
+                StepId::parse(&step.id).map_err(ConfigError::Orchestrator)?;
+                AgentId::parse(&step.agent).map_err(ConfigError::Orchestrator)?;
+                if step.prompt.trim().is_empty() {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires non-empty prompt",
+                        workflow.id, step.id
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_setup_invariants(&self) -> Result<(), ConfigError> {
+        if self.workflows.is_empty() {
+            return Err(ConfigError::Orchestrator(
+                "`workflows` must be non-empty".to_string(),
+            ));
+        }
+        if self.agents.is_empty() {
+            return Err(ConfigError::Orchestrator(
+                "`agents` must be non-empty".to_string(),
+            ));
+        }
+        if !self.agents.contains_key(&self.selector_agent) {
+            return Err(ConfigError::Orchestrator(format!(
+                "`selector_agent` `{}` must exist in `agents`",
+                self.selector_agent
+            )));
+        }
+        let selector = self
+            .agents
+            .get(&self.selector_agent)
+            .expect("checked above");
+        if !selector.can_orchestrate_workflows {
+            return Err(ConfigError::Orchestrator(format!(
+                "selector agent `{}` must set `can_orchestrate_workflows: true`",
+                self.selector_agent
+            )));
+        }
+
+        let mut workflow_ids = HashSet::new();
+        for workflow in &self.workflows {
+            if !workflow_ids.insert(workflow.id.as_str()) {
+                return Err(ConfigError::Orchestrator(format!(
+                    "workflow id `{}` must be unique",
+                    workflow.id
+                )));
+            }
+        }
+        if !workflow_ids.contains(self.default_workflow.as_str()) {
+            return Err(ConfigError::Orchestrator(format!(
+                "`default_workflow` `{}` is not present in `workflows`",
+                self.default_workflow
+            )));
+        }
+
+        for workflow in &self.workflows {
             if workflow.steps.is_empty() {
                 return Err(ConfigError::Orchestrator(format!(
                     "workflow `{}` requires at least one step",
                     workflow.id
                 )));
             }
+            let mut step_ids = HashSet::new();
             for step in &workflow.steps {
-                StepId::parse(&step.id).map_err(ConfigError::Orchestrator)?;
-                AgentId::parse(&step.agent).map_err(ConfigError::Orchestrator)?;
+                if !step_ids.insert(step.id.as_str()) {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` contains duplicate step id `{}`",
+                        workflow.id, step.id
+                    )));
+                }
                 if !self.agents.contains_key(&step.agent) {
                     return Err(ConfigError::Orchestrator(format!(
                         "workflow `{}` step `{}` references unknown agent `{}`",
                         workflow.id, step.id, step.agent
-                    )));
-                }
-                if step.prompt.trim().is_empty() {
-                    return Err(ConfigError::Orchestrator(format!(
-                        "workflow `{}` step `{}` requires non-empty prompt",
-                        workflow.id, step.id
                     )));
                 }
                 if step.outputs.is_empty() {
