@@ -13,7 +13,7 @@ Primary reference:
 
 ### P06-T01 Deliver complete user guide for first-time operators
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Expand `docs/user-guide/README.md` into a full navigation entrypoint.
   - Add step-by-step install and first-run walkthrough for release binaries.
@@ -26,7 +26,7 @@ Primary reference:
 
 ### P06-T02 Add operator runbook for production usage
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Document service management patterns (systemd/launchd examples).
   - Document log locations, backup strategy, and incident procedures.
@@ -38,7 +38,7 @@ Primary reference:
 
 ### P06-T03 Add project hygiene and release governance files
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Add:
     - `LICENSE`
@@ -53,7 +53,7 @@ Primary reference:
 
 ### P06-T04 Implement release blocker checklist enforcement
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Add a release checklist document aligned to plan go/no-go criteria.
   - Add CI gate script to verify:
@@ -68,7 +68,7 @@ Primary reference:
 
 ### P06-T05 Final release candidate E2E validation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Implementation Notes:
   - Run clean-environment scenario:
     - install binary
@@ -81,4 +81,3 @@ Primary reference:
   - Final release candidate demonstrates full end-to-end user workflow.
 - Automated Test Requirements:
   - Automated smoke suite and evidence artifact generation in CI.
-

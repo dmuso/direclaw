@@ -161,6 +161,17 @@ direclaw orchestrator add main
 
 - [`docs/user-guide/provider-auth-sync-1password.md`](docs/user-guide/provider-auth-sync-1password.md)
 
+4. For production operations (service management, backups, incidents, upgrade/rollback), use:
+
+- [`docs/user-guide/operator-runbook.md`](docs/user-guide/operator-runbook.md)
+
+## Governance
+
+- [`LICENSE`](LICENSE)
+- [`CHANGELOG.md`](CHANGELOG.md)
+- [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- [`SECURITY.md`](SECURITY.md)
+
 ### Useful commands
 
 ```bash

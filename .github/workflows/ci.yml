@@ -28,3 +28,8 @@ jobs:
 
       - name: Docs Link Check
         run: nix-shell --run 'cargo test --test docs_phase00_baseline markdown_links_and_paths_resolve_for_contributor_and_operator_docs'
+
+      - name: Docs Clean Install Smoke
+        run: |
+          nix-shell --run 'cargo build --locked'
+          nix-shell --run './scripts/ci/docs-clean-install-smoke.sh target/debug/direclaw'

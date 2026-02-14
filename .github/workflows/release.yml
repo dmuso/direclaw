@@ -121,6 +121,24 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+
+      - name: Release Blocker Suite
+        shell: bash
+        run: |
+          nix-shell --run 'cargo fmt --all -- --check'
+          nix-shell --run 'cargo clippy --all-targets --all-features -- -D warnings'
+          nix-shell --run 'cargo test --all'
+          echo "ok" > dist/tests.ok
+
+      - name: Docs Validation Smoke
+        shell: bash
+        run: |
+          nix-shell --run 'cargo build --locked'
+          nix-shell --run './scripts/ci/docs-clean-install-smoke.sh target/debug/direclaw'
+          echo "ok" > dist/docs.ok
+
       - name: Validate Artifact Names
         shell: bash
         run: |
@@ -175,6 +193,17 @@ jobs:
             echo "release notes still contain unreplaced template placeholders"
             exit 1
           fi
+
+      - name: Enforce Release Blockers
+        shell: bash
+        run: |
+          ./scripts/ci/release-gate.sh \
+            --artifacts-dir dist \
+            --tests-marker dist/tests.ok \
+            --docs-marker dist/docs.ok \
+            --traceability-file docs/build/review/requirement-traceability.md \
+            --checklist-file docs/build/release-checklist.md \
+            --release-tag "${{ steps.tag.outputs.value }}"
 
       - name: Publish GitHub Release
         if: github.event_name == 'push' || inputs.publish == true
