@@ -58,13 +58,15 @@ direclaw setup
 ```
 
 This initializes runtime state under `~/.direclaw` and writes `~/.direclaw/config.yaml` when absent.
+In interactive terminals, `setup` opens a full-screen menu to view/edit workspace, orchestrator, provider/model, and workflow bundle choices.
 
-### 3. Create your first orchestrator
+### 3. Verify your orchestrator
 
 ```bash
-direclaw orchestrator add main
 direclaw orchestrator list
 ```
+
+`direclaw setup` creates the default `main` orchestrator on clean installs.
 
 ### 4. Configure Slack profile and auth
 

@@ -125,13 +125,13 @@ Here's an example workflow to show what DireClaw can do:
 direclaw setup
 ```
 
-This bootstraps runtime state (under `~/.direclaw`) and creates a default global config at `~/.direclaw/config.yaml` if it does not already exist.
-On first run in an interactive terminal, setup also asks you to choose:
-- your initial orchestrator id
+This bootstraps runtime state (under `~/.direclaw`) and opens a full-screen setup UI in interactive terminals so you can view and configure:
+- workspace path
+- primary orchestrator id
 - provider/model defaults
-- an example workflow bundle (`minimal`, `engineering`, or `product`)
+- workflow bundle (`minimal`, `engineering`, or `product`)
 
-Setup then creates the first orchestrator config in `~/.direclaw/config-orchestrators.yaml`.
+Setup can be re-run any time to review or update these values. It writes global settings to `~/.direclaw/config.yaml` and orchestrator definitions to `~/.direclaw/config-orchestrators.yaml`.
 
 ### Basic lifecycle commands
 
@@ -143,7 +143,7 @@ direclaw stop
 ```
 
 ### Common configuration flow
-1. If you skipped first-run prompts (for example in non-interactive setup), create an orchestrator:
+1. In non-interactive setup environments, create an orchestrator:
 
 ```bash
 direclaw orchestrator add main

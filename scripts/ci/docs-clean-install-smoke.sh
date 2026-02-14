@@ -23,7 +23,9 @@ export PATH="$TMP_BIN:${PATH}"
 
 # Match documented first-run flow from docs/user-guide/README.md.
 direclaw setup >/dev/null
-direclaw orchestrator add main >/dev/null
+if ! direclaw orchestrator list | grep -qx "main"; then
+  direclaw orchestrator add main >/dev/null
+fi
 direclaw channel-profile add slack_main slack main \
   --slack-app-user-id U0123456789 \
   --require-mention-in-channels true >/dev/null

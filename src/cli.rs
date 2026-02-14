@@ -16,13 +16,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod setup_tui;
+use self::setup_tui::SetupWorkflowBundle;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RuntimePreferences {
@@ -36,7 +38,7 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
     }
 
     match args[0].as_str() {
-        "setup" => cmd_setup(),
+        "setup" => setup_tui::cmd_setup(),
         "start" => cmd_start(),
         "stop" => cmd_stop(),
         "restart" => cmd_restart(),
@@ -226,6 +228,31 @@ fn save_orchestrator_config(
     Ok(path)
 }
 
+fn save_orchestrator_registry(
+    settings: &Settings,
+    registry: &BTreeMap<String, OrchestratorConfig>,
+) -> Result<PathBuf, String> {
+    for (orchestrator_id, orchestrator) in registry {
+        orchestrator
+            .validate(settings, orchestrator_id)
+            .map_err(map_config_err)?;
+        let private_workspace = settings
+            .resolve_private_workspace(orchestrator_id)
+            .map_err(map_config_err)?;
+        fs::create_dir_all(&private_workspace)
+            .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
+    }
+    let path = default_orchestrators_config_path().map_err(map_config_err)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    let body = serde_yaml::to_string(registry)
+        .map_err(|e| format!("failed to encode orchestrators: {e}"))?;
+    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
 fn remove_orchestrator_config(orchestrator_id: &str) -> Result<(), String> {
     let path = default_orchestrators_config_path().map_err(map_config_err)?;
     if !path.exists() {
@@ -246,211 +273,6 @@ fn load_orchestrator_or_err(
     orchestrator_id: &str,
 ) -> Result<OrchestratorConfig, String> {
     load_orchestrator_config(settings, orchestrator_id).map_err(map_config_err)
-}
-
-fn cmd_setup() -> Result<String, String> {
-    let paths = ensure_runtime_root()?;
-    let config_path = default_global_config_path().map_err(map_config_err)?;
-
-    if config_path.exists() {
-        let settings = load_settings()?;
-        fs::create_dir_all(&settings.workspaces_path).map_err(|e| {
-            format!(
-                "failed to create workspace {}: {e}",
-                settings.workspaces_path.display()
-            )
-        })?;
-        return Ok(format!(
-            "setup complete\nconfig={}\nstate_root={}\nworkspace={}",
-            config_path.display(),
-            paths.root.display(),
-            settings.workspaces_path.display()
-        ));
-    }
-
-    let bootstrap = collect_setup_bootstrap(&paths)?;
-    fs::create_dir_all(&bootstrap.workspaces_path).map_err(|e| {
-        format!(
-            "failed to create workspace {}: {e}",
-            bootstrap.workspaces_path.display()
-        )
-    })?;
-
-    let settings = Settings {
-        workspaces_path: bootstrap.workspaces_path.clone(),
-        shared_workspaces: BTreeMap::new(),
-        orchestrators: BTreeMap::from_iter([(
-            bootstrap.orchestrator_id.clone(),
-            SettingsOrchestrator {
-                private_workspace: None,
-                shared_access: Vec::new(),
-            },
-        )]),
-        channel_profiles: BTreeMap::new(),
-        monitoring: Default::default(),
-        channels: BTreeMap::new(),
-        auth_sync: AuthSyncConfig::default(),
-    };
-    let path = save_settings(&settings)?;
-    let orchestrator = initial_orchestrator_config(
-        &bootstrap.orchestrator_id,
-        &bootstrap.provider,
-        &bootstrap.model,
-        bootstrap.bundle,
-    );
-    let orchestrator_path =
-        save_orchestrator_config(&settings, &bootstrap.orchestrator_id, &orchestrator)?;
-    let prefs = RuntimePreferences {
-        provider: Some(bootstrap.provider.clone()),
-        model: Some(bootstrap.model.clone()),
-    };
-    save_preferences(&paths, &prefs)?;
-    Ok(format!(
-        "setup complete\nconfig={}\nstate_root={}\nworkspace={}\norchestrator={}\nworkflow_bundle={}\nprovider={}\nmodel={}\norchestrator_config={}",
-        path.display(),
-        paths.root.display(),
-        bootstrap.workspaces_path.display(),
-        bootstrap.orchestrator_id,
-        bootstrap.bundle.as_str(),
-        bootstrap.provider,
-        bootstrap.model,
-        orchestrator_path.display()
-    ))
-}
-
-#[derive(Debug, Clone, Copy)]
-enum SetupWorkflowBundle {
-    Minimal,
-    Engineering,
-    Product,
-}
-
-impl SetupWorkflowBundle {
-    fn as_str(self) -> &'static str {
-        match self {
-            SetupWorkflowBundle::Minimal => "minimal",
-            SetupWorkflowBundle::Engineering => "engineering",
-            SetupWorkflowBundle::Product => "product",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SetupBootstrap {
-    workspaces_path: PathBuf,
-    orchestrator_id: String,
-    provider: String,
-    model: String,
-    bundle: SetupWorkflowBundle,
-}
-
-fn is_interactive_setup() -> bool {
-    io::stdin().is_terminal() && io::stdout().is_terminal()
-}
-
-fn prompt_with_default(prompt: &str, default: &str) -> Result<String, String> {
-    print!("{prompt} [{default}]: ");
-    io::stdout()
-        .flush()
-        .map_err(|e| format!("failed to flush prompt: {e}"))?;
-    let mut line = String::new();
-    let read = io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("failed to read prompt input: {e}"))?;
-    if read == 0 {
-        return Ok(default.to_string());
-    }
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        Ok(default.to_string())
-    } else {
-        Ok(trimmed.to_string())
-    }
-}
-
-fn prompt_until_valid<F>(prompt: &str, default: &str, mut validate: F) -> Result<String, String>
-where
-    F: FnMut(&str) -> Result<(), String>,
-{
-    loop {
-        let value = prompt_with_default(prompt, default)?;
-        match validate(&value) {
-            Ok(_) => return Ok(value),
-            Err(err) => {
-                println!("{err}");
-            }
-        }
-    }
-}
-
-fn default_model_for_provider(provider: &str) -> &'static str {
-    if provider == "openai" {
-        "gpt-5.3-codex"
-    } else {
-        "sonnet"
-    }
-}
-
-fn parse_provider(value: &str) -> Result<String, String> {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized == "anthropic" || normalized == "openai" {
-        return Ok(normalized);
-    }
-    Err("provider must be one of: anthropic, openai".to_string())
-}
-
-fn parse_workflow_bundle(value: &str) -> Result<SetupWorkflowBundle, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "minimal" => Ok(SetupWorkflowBundle::Minimal),
-        "engineering" => Ok(SetupWorkflowBundle::Engineering),
-        "product" => Ok(SetupWorkflowBundle::Product),
-        _ => Err("workflow bundle must be one of: minimal, engineering, product".to_string()),
-    }
-}
-
-fn collect_setup_bootstrap(paths: &StatePaths) -> Result<SetupBootstrap, String> {
-    let default_workspace = paths.root.join("workspaces");
-    if !is_interactive_setup() {
-        return Ok(SetupBootstrap {
-            workspaces_path: default_workspace,
-            orchestrator_id: "main".to_string(),
-            provider: "anthropic".to_string(),
-            model: "sonnet".to_string(),
-            bundle: SetupWorkflowBundle::Minimal,
-        });
-    }
-
-    println!("DireClaw first-run setup");
-    let orchestrator_id = prompt_until_valid("First orchestrator id", "main", |value| {
-        if value.trim().is_empty() {
-            return Err("orchestrator id must be non-empty".to_string());
-        }
-        Ok(())
-    })?;
-    let provider = parse_provider(&prompt_until_valid(
-        "Provider (anthropic|openai)",
-        "anthropic",
-        |value| parse_provider(value).map(|_| ()),
-    )?)?;
-    let model = prompt_until_valid("Model", default_model_for_provider(&provider), |value| {
-        if value.trim().is_empty() {
-            return Err("model must be non-empty".to_string());
-        }
-        Ok(())
-    })?;
-    let bundle = parse_workflow_bundle(&prompt_until_valid(
-        "Workflow bundle (minimal|engineering|product)",
-        "minimal",
-        |value| parse_workflow_bundle(value).map(|_| ()),
-    )?)?;
-
-    Ok(SetupBootstrap {
-        workspaces_path: default_workspace,
-        orchestrator_id,
-        provider,
-        model,
-        bundle,
-    })
 }
 
 fn cmd_start() -> Result<String, String> {
@@ -2128,10 +1950,10 @@ fn initial_orchestrator_config(
     model: &str,
     bundle: SetupWorkflowBundle,
 ) -> OrchestratorConfig {
-    let selector = "selector".to_string();
+    let selector = "default".to_string();
     let mut agents = BTreeMap::from_iter([(
         selector.clone(),
-        agent_config(provider, model, "agents/selector", true),
+        agent_config(provider, model, "agents/default", true),
     )]);
     let (default_workflow, workflows) = match bundle {
         SetupWorkflowBundle::Minimal => {

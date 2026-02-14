@@ -44,8 +44,10 @@ When you configure multiple Slack profiles, these profile-specific token variabl
 
 ```bash
 direclaw setup
-direclaw orchestrator add main
+direclaw orchestrator list
 ```
+
+On clean installs, `setup` provisions the default `main` orchestrator automatically.
 
 ## 4. Enable Slack channel and add a Slack channel profile
 
