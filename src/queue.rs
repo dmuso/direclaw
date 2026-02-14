@@ -166,10 +166,19 @@ pub struct Scheduled<T> {
     pub value: T,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PerKeyScheduler<T> {
     pending: VecDeque<Scheduled<T>>,
     active_keys: HashSet<OrderingKey>,
+}
+
+impl<T> Default for PerKeyScheduler<T> {
+    fn default() -> Self {
+        Self {
+            pending: VecDeque::new(),
+            active_keys: HashSet::new(),
+        }
+    }
 }
 
 impl<T> PerKeyScheduler<T> {
@@ -212,6 +221,10 @@ impl<T> PerKeyScheduler<T> {
 
     pub fn active_len(&self) -> usize {
         self.active_keys.len()
+    }
+
+    pub fn drain_pending(&mut self) -> Vec<Scheduled<T>> {
+        self.pending.drain(..).collect()
     }
 }
 

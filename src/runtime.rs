@@ -1,5 +1,6 @@
 use crate::config::Settings;
 use crate::orchestrator::{self, FunctionRegistry, RoutedSelectorAction, WorkflowRunStore};
+use crate::provider::{self, ProviderError, ProviderKind, ProviderRequest, RunnerBinaries};
 use crate::queue::{self, OutgoingMessage, QueuePaths};
 use crate::slack;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,10 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const QUEUE_MAX_CONCURRENCY: usize = 4;
+const QUEUE_MIN_POLL_MS: u64 = 100;
+const QUEUE_MAX_POLL_MS: u64 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PollingDefaults {
@@ -752,6 +757,19 @@ fn run_worker(
         return;
     }
 
+    if matches!(spec.runtime, WorkerRuntime::QueueProcessor) {
+        run_queue_processor_loop(
+            spec.id,
+            state_root,
+            settings,
+            stop,
+            events,
+            slow_shutdown,
+            QUEUE_MAX_CONCURRENCY,
+        );
+        return;
+    }
+
     loop {
         if stop.load(Ordering::Relaxed) {
             if slow_shutdown {
@@ -761,7 +779,7 @@ fn run_worker(
         }
 
         let tick = match spec.runtime {
-            WorkerRuntime::QueueProcessor => tick_queue_worker(&state_root, &settings),
+            WorkerRuntime::QueueProcessor => Ok(()),
             WorkerRuntime::OrchestratorDispatcher => Ok(()),
             WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
             WorkerRuntime::Heartbeat => Ok(()),
@@ -798,50 +816,548 @@ fn run_worker(
     });
 }
 
-fn tick_queue_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
-    let paths = QueuePaths::from_state_root(state_root);
-    if let Some(claimed) = queue::claim_oldest(&paths).map_err(|e| e.to_string())? {
-        let run_store = WorkflowRunStore::new(state_root);
-        let functions = FunctionRegistry::with_run_store(
-            vec![
-                "workflow.status".to_string(),
-                "workflow.cancel".to_string(),
-                "orchestrator.list".to_string(),
-            ],
-            run_store,
-        );
-        let action = orchestrator::process_queued_message(
-            state_root,
-            settings,
-            &claimed.payload,
-            now_secs(),
-            &BTreeMap::new(),
-            &functions,
-            |_attempt, _request| None,
-        )
-        .map_err(|e| {
-            let _ = queue::requeue_failure(&paths, &claimed);
-            e.to_string()
-        })?;
+#[derive(Debug)]
+struct QueueTaskCompletion {
+    key: queue::OrderingKey,
+    error: Option<String>,
+}
 
-        let (response_message, response_agent) = action_to_outbound(&action);
-        let outgoing = OutgoingMessage {
-            channel: claimed.payload.channel.clone(),
-            channel_profile_id: claimed.payload.channel_profile_id.clone(),
-            sender: claimed.payload.sender.clone(),
-            message: response_message,
-            original_message: claimed.payload.message.clone(),
-            timestamp: now_secs(),
-            message_id: claimed.payload.message_id.clone(),
-            agent: response_agent,
-            conversation_id: claimed.payload.conversation_id.clone(),
-            files: Vec::new(),
-            workflow_run_id: claimed.payload.workflow_run_id.clone(),
-            workflow_step_id: claimed.payload.workflow_step_id.clone(),
-        };
-        queue::complete_success(&paths, &claimed, &outgoing).map_err(|e| e.to_string())?;
+#[derive(Debug, Clone)]
+struct QueueProcessorLoopConfig {
+    slow_shutdown: bool,
+    max_concurrency: usize,
+    binaries: RunnerBinaries,
+}
+
+pub fn recover_processing_queue_entries(state_root: &Path) -> Result<Vec<PathBuf>, String> {
+    let queue_paths = QueuePaths::from_state_root(state_root);
+    let mut recovered = Vec::new();
+    let mut entries = Vec::new();
+
+    for entry in fs::read_dir(&queue_paths.processing).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_file() {
+            entries.push(path);
+        }
     }
+    entries.sort();
+
+    for (index, processing_path) in entries.into_iter().enumerate() {
+        let name = processing_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or("message.json");
+        let target = queue_paths
+            .incoming
+            .join(format!("recovered_{index}_{name}"));
+        fs::rename(&processing_path, &target).map_err(|e| {
+            format!(
+                "failed to recover processing file {}: {}",
+                processing_path.display(),
+                e
+            )
+        })?;
+        recovered.push(target);
+    }
+
+    Ok(recovered)
+}
+
+pub fn drain_queue_once(
+    state_root: &Path,
+    settings: &Settings,
+    max_concurrency: usize,
+) -> Result<usize, String> {
+    let binaries = resolve_runner_binaries();
+    drain_queue_once_with_binaries(state_root, settings, max_concurrency, &binaries)
+}
+
+pub fn drain_queue_once_with_binaries(
+    state_root: &Path,
+    settings: &Settings,
+    max_concurrency: usize,
+    binaries: &RunnerBinaries,
+) -> Result<usize, String> {
+    let queue_paths = QueuePaths::from_state_root(state_root);
+    let mut scheduler = queue::PerKeyScheduler::default();
+    let (result_tx, result_rx) = mpsc::channel::<QueueTaskCompletion>();
+    let mut in_flight = 0usize;
+    let mut processed = 0usize;
+
+    while let Some(claimed) = queue::claim_oldest(&queue_paths).map_err(|e| e.to_string())? {
+        let key = queue::derive_ordering_key(&claimed.payload);
+        scheduler.enqueue(key, claimed);
+    }
+
+    loop {
+        let available = max_concurrency.saturating_sub(in_flight);
+        if available > 0 {
+            for scheduled in scheduler.dequeue_runnable(available) {
+                let tx = result_tx.clone();
+                let root = state_root.to_path_buf();
+                let cfg = settings.clone();
+                let bins = binaries.clone();
+                let _ = thread::spawn(move || {
+                    let result = process_claimed_message(&root, &cfg, scheduled.value, &bins).err();
+                    let _ = tx.send(QueueTaskCompletion {
+                        key: scheduled.key,
+                        error: result,
+                    });
+                });
+                in_flight += 1;
+            }
+        }
+
+        if in_flight == 0 {
+            break;
+        }
+
+        let completion = match result_rx.recv_timeout(Duration::from_millis(QUEUE_MIN_POLL_MS)) {
+            Ok(done) => done,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err("queue worker completion channel disconnected".to_string())
+            }
+        };
+        in_flight = in_flight.saturating_sub(1);
+        scheduler.complete(&completion.key);
+        if completion.error.is_none() {
+            processed += 1;
+        } else if let Some(error) = completion.error {
+            return Err(error);
+        }
+    }
+
+    Ok(processed)
+}
+
+fn run_queue_processor_loop(
+    worker_id: String,
+    state_root: PathBuf,
+    settings: Settings,
+    stop: Arc<AtomicBool>,
+    events: Sender<WorkerEvent>,
+    slow_shutdown: bool,
+    max_concurrency: usize,
+) {
+    let config = QueueProcessorLoopConfig {
+        slow_shutdown,
+        max_concurrency,
+        binaries: resolve_runner_binaries(),
+    };
+    run_queue_processor_loop_with_binaries(worker_id, state_root, settings, stop, events, config);
+}
+
+fn run_queue_processor_loop_with_binaries(
+    worker_id: String,
+    state_root: PathBuf,
+    settings: Settings,
+    stop: Arc<AtomicBool>,
+    events: Sender<WorkerEvent>,
+    config: QueueProcessorLoopConfig,
+) {
+    match recover_processing_queue_entries(&state_root) {
+        Ok(recovered) => {
+            for path in recovered {
+                append_runtime_log(
+                    &StatePaths::new(&state_root),
+                    "info",
+                    "queue.recovered",
+                    &format!("requeued {}", path.display()),
+                );
+            }
+        }
+        Err(error) => {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: worker_id.clone(),
+                at: now_secs(),
+                message: error,
+                fatal: false,
+            });
+        }
+    }
+
+    let queue_paths = QueuePaths::from_state_root(&state_root);
+    let (result_tx, result_rx) = mpsc::channel::<QueueTaskCompletion>();
+    let mut scheduler = queue::PerKeyScheduler::default();
+    let mut in_flight = 0usize;
+    let mut backoff_ms = QUEUE_MIN_POLL_MS;
+    loop {
+        let stopping = stop.load(Ordering::Relaxed);
+
+        if !stopping {
+            let mut claim_budget = config.max_concurrency.saturating_mul(4);
+            while claim_budget > 0 {
+                match queue::claim_oldest(&queue_paths) {
+                    Ok(Some(claimed)) => {
+                        let key = queue::derive_ordering_key(&claimed.payload);
+                        scheduler.enqueue(key, claimed);
+                    }
+                    Ok(None) => break,
+                    Err(err) => {
+                        let _ = events.send(WorkerEvent::Error {
+                            worker_id: worker_id.clone(),
+                            at: now_secs(),
+                            message: err.to_string(),
+                            fatal: false,
+                        });
+                        break;
+                    }
+                }
+                claim_budget -= 1;
+            }
+        }
+
+        let available_slots = config.max_concurrency.saturating_sub(in_flight);
+        if !stopping && available_slots > 0 {
+            for scheduled in scheduler.dequeue_runnable(available_slots) {
+                let tx = result_tx.clone();
+                let root = state_root.clone();
+                let cfg = settings.clone();
+                let bins = config.binaries.clone();
+                let _ = thread::spawn(move || {
+                    let err = process_claimed_message(&root, &cfg, scheduled.value, &bins).err();
+                    let _ = tx.send(QueueTaskCompletion {
+                        key: scheduled.key,
+                        error: err,
+                    });
+                });
+                in_flight += 1;
+            }
+        }
+
+        while let Ok(done) = result_rx.try_recv() {
+            handle_queue_task_completion(&worker_id, &events, &mut scheduler, &mut in_flight, done);
+        }
+
+        if stopping {
+            if in_flight == 0 {
+                for pending in scheduler.drain_pending() {
+                    let _ = queue::requeue_failure(&queue_paths, &pending.value);
+                }
+                if config.slow_shutdown {
+                    thread::sleep(Duration::from_secs(6));
+                }
+                break;
+            }
+            match result_rx.recv_timeout(Duration::from_millis(QUEUE_MIN_POLL_MS)) {
+                Ok(done) => handle_queue_task_completion(
+                    &worker_id,
+                    &events,
+                    &mut scheduler,
+                    &mut in_flight,
+                    done,
+                ),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    in_flight = 0;
+                }
+            }
+            continue;
+        }
+
+        if scheduler.pending_len() == 0 && in_flight == 0 {
+            let _ = events.send(WorkerEvent::Heartbeat {
+                worker_id: worker_id.clone(),
+                at: now_secs(),
+            });
+            if !sleep_with_stop(&stop, Duration::from_millis(backoff_ms)) {
+                if config.slow_shutdown {
+                    thread::sleep(Duration::from_secs(6));
+                }
+                break;
+            }
+            backoff_ms = (backoff_ms.saturating_mul(2)).min(QUEUE_MAX_POLL_MS);
+        } else {
+            backoff_ms = QUEUE_MIN_POLL_MS;
+            thread::sleep(Duration::from_millis(QUEUE_MIN_POLL_MS));
+        }
+    }
+
+    let _ = events.send(WorkerEvent::Stopped {
+        worker_id,
+        at: now_secs(),
+    });
+}
+
+fn handle_queue_task_completion(
+    worker_id: &str,
+    events: &Sender<WorkerEvent>,
+    scheduler: &mut queue::PerKeyScheduler<queue::ClaimedMessage>,
+    in_flight: &mut usize,
+    done: QueueTaskCompletion,
+) {
+    *in_flight = in_flight.saturating_sub(1);
+    scheduler.complete(&done.key);
+    if let Some(message) = done.error {
+        let _ = events.send(WorkerEvent::Error {
+            worker_id: worker_id.to_string(),
+            at: now_secs(),
+            message,
+            fatal: false,
+        });
+    } else {
+        let _ = events.send(WorkerEvent::Heartbeat {
+            worker_id: worker_id.to_string(),
+            at: now_secs(),
+        });
+    }
+}
+
+fn process_claimed_message(
+    state_root: &Path,
+    settings: &Settings,
+    claimed: queue::ClaimedMessage,
+    binaries: &RunnerBinaries,
+) -> Result<(), String> {
+    let queue_paths = QueuePaths::from_state_root(state_root);
+    let run_store = WorkflowRunStore::new(state_root);
+    let functions = FunctionRegistry::with_run_store(
+        vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ],
+        run_store,
+    );
+
+    let action = orchestrator::process_queued_message(
+        state_root,
+        settings,
+        &claimed.payload,
+        now_secs(),
+        &BTreeMap::new(),
+        &functions,
+        |attempt, request, orchestrator_cfg| {
+            run_selector_attempt_with_provider(
+                state_root,
+                settings,
+                request,
+                orchestrator_cfg,
+                attempt,
+                binaries,
+            )
+            .ok()
+        },
+    )
+    .map_err(|e| {
+        let _ = queue::requeue_failure(&queue_paths, &claimed);
+        e.to_string()
+    })?;
+
+    let (response_message, response_agent) = action_to_outbound(&action);
+    let outgoing = OutgoingMessage {
+        channel: claimed.payload.channel.clone(),
+        channel_profile_id: claimed.payload.channel_profile_id.clone(),
+        sender: claimed.payload.sender.clone(),
+        message: response_message,
+        original_message: claimed.payload.message.clone(),
+        timestamp: now_secs(),
+        message_id: claimed.payload.message_id.clone(),
+        agent: response_agent,
+        conversation_id: claimed.payload.conversation_id.clone(),
+        files: Vec::new(),
+        workflow_run_id: claimed.payload.workflow_run_id.clone(),
+        workflow_step_id: claimed.payload.workflow_step_id.clone(),
+    };
+    queue::complete_success(&queue_paths, &claimed, &outgoing).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn run_selector_attempt_with_provider(
+    state_root: &Path,
+    settings: &Settings,
+    request: &orchestrator::SelectorRequest,
+    orchestrator_cfg: &crate::config::OrchestratorConfig,
+    attempt: u32,
+    binaries: &RunnerBinaries,
+) -> Result<String, String> {
+    let selector_agent = orchestrator_cfg
+        .agents
+        .get(&orchestrator_cfg.selector_agent)
+        .ok_or_else(|| {
+            format!(
+                "selector agent `{}` missing from orchestrator config",
+                orchestrator_cfg.selector_agent
+            )
+        })?;
+    let provider = ProviderKind::try_from(selector_agent.provider.as_str())
+        .map_err(|e| format!("invalid selector provider: {e}"))?;
+
+    let private_workspace = settings
+        .resolve_private_workspace(&orchestrator_cfg.id)
+        .map_err(|e| e.to_string())?;
+    let cwd = match &selector_agent.private_workspace {
+        Some(path) if path.is_absolute() => path.clone(),
+        Some(path) => private_workspace.join(path),
+        None => private_workspace
+            .join("agents")
+            .join(&orchestrator_cfg.selector_agent),
+    };
+    fs::create_dir_all(&cwd).map_err(|e| e.to_string())?;
+
+    let request_json = serde_json::to_string_pretty(request).map_err(|e| e.to_string())?;
+    let prompt = format!(
+        "You are the workflow selector. Return a strict JSON object only with no prose.\n{}",
+        request_json
+    );
+    let context = format!(
+        "orchestratorId={}\nselectorAgent={}\nattempt={attempt}",
+        orchestrator_cfg.id, orchestrator_cfg.selector_agent
+    );
+    let request_id = format!("{}_attempt_{attempt}", request.selector_id);
+    let artifacts = provider::write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
+        .map_err(|e| e.to_string())?;
+
+    let provider_request = ProviderRequest {
+        agent_id: orchestrator_cfg.selector_agent.clone(),
+        provider: provider.clone(),
+        model: selector_agent.model.clone(),
+        cwd: cwd.clone(),
+        message: format!(
+            "Read [file: {}] and [file: {}]. Return only the selector JSON object.",
+            artifacts.prompt_file.display(),
+            artifacts
+                .context_files
+                .first()
+                .map(|v| v.display().to_string())
+                .unwrap_or_default()
+        ),
+        prompt_artifacts: artifacts.clone(),
+        timeout: Duration::from_secs(30),
+        reset_requested: false,
+        fresh_on_failure: false,
+        env_overrides: BTreeMap::new(),
+    };
+
+    match provider::run_provider(&provider_request, binaries) {
+        Ok(result) => {
+            persist_selector_invocation_log(
+                state_root,
+                &request.selector_id,
+                attempt,
+                Some(&result.log),
+                None,
+            );
+            Ok(result.message)
+        }
+        Err(err) => {
+            let log = provider_error_log(&err);
+            let error_text = err.to_string();
+            persist_selector_invocation_log(
+                state_root,
+                &request.selector_id,
+                attempt,
+                log.as_ref(),
+                Some(&error_text),
+            );
+            Err(error_text)
+        }
+    }
+}
+
+fn provider_error_log(err: &ProviderError) -> Option<provider::InvocationLog> {
+    match err {
+        ProviderError::MissingBinary { log, .. } => Some((**log).clone()),
+        ProviderError::NonZeroExit { log, .. } => Some((**log).clone()),
+        ProviderError::Timeout { log, .. } => Some((**log).clone()),
+        ProviderError::ParseFailure { log, .. } => log.as_ref().map(|v| (**v).clone()),
+        ProviderError::UnknownProvider(_)
+        | ProviderError::UnsupportedAnthropicModel(_)
+        | ProviderError::Io { .. } => None,
+    }
+}
+
+fn persist_selector_invocation_log(
+    state_root: &Path,
+    selector_id: &str,
+    attempt: u32,
+    log: Option<&provider::InvocationLog>,
+    error: Option<&str>,
+) {
+    let path = state_root
+        .join("orchestrator/select/logs")
+        .join(format!("{selector_id}_attempt_{attempt}.invocation.json"));
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let mut payload = Map::new();
+    payload.insert(
+        "selectorId".to_string(),
+        Value::String(selector_id.to_string()),
+    );
+    payload.insert("attempt".to_string(), Value::from(attempt));
+    payload.insert("timestamp".to_string(), Value::from(now_secs()));
+    payload.insert(
+        "status".to_string(),
+        Value::String(
+            if error.is_some() {
+                "failed"
+            } else {
+                "succeeded"
+            }
+            .to_string(),
+        ),
+    );
+    if let Some(error) = error {
+        payload.insert("error".to_string(), Value::String(error.to_string()));
+    }
+
+    if let Some(log) = log {
+        payload.insert("agentId".to_string(), Value::String(log.agent_id.clone()));
+        payload.insert(
+            "provider".to_string(),
+            Value::String(log.provider.to_string()),
+        );
+        payload.insert("model".to_string(), Value::String(log.model.clone()));
+        payload.insert(
+            "commandForm".to_string(),
+            Value::String(log.command_form.clone()),
+        );
+        payload.insert(
+            "workingDirectory".to_string(),
+            Value::String(log.working_directory.display().to_string()),
+        );
+        payload.insert(
+            "promptFile".to_string(),
+            Value::String(log.prompt_file.display().to_string()),
+        );
+        payload.insert(
+            "contextFiles".to_string(),
+            Value::Array(
+                log.context_files
+                    .iter()
+                    .map(|v| Value::String(v.display().to_string()))
+                    .collect(),
+            ),
+        );
+        payload.insert(
+            "exitCode".to_string(),
+            match log.exit_code {
+                Some(v) => Value::from(v),
+                None => Value::Null,
+            },
+        );
+        payload.insert("timedOut".to_string(), Value::Bool(log.timed_out));
+    }
+
+    let encoded = match serde_json::to_vec_pretty(&Value::Object(payload)) {
+        Ok(encoded) => encoded,
+        Err(_) => return,
+    };
+    let _ = fs::write(path, encoded);
+}
+
+fn resolve_runner_binaries() -> RunnerBinaries {
+    RunnerBinaries {
+        anthropic: std::env::var("DIRECLAW_PROVIDER_BIN_ANTHROPIC")
+            .unwrap_or_else(|_| "claude".to_string()),
+        openai: std::env::var("DIRECLAW_PROVIDER_BIN_OPENAI")
+            .unwrap_or_else(|_| "codex".to_string()),
+    }
 }
 
 fn action_to_outbound(action: &RoutedSelectorAction) -> (String, String) {
@@ -1003,6 +1519,8 @@ fn sync_parent_dir(_parent: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::queue::{IncomingMessage, QueuePaths};
+    use std::sync::mpsc::RecvTimeoutError;
     use tempfile::tempdir;
 
     #[test]
@@ -1119,5 +1637,167 @@ mod tests {
 
         clear_start_lock(&paths);
         reserve_start_lock(&paths).expect("reserve after clear");
+    }
+
+    fn sample_incoming(message_id: &str) -> IncomingMessage {
+        IncomingMessage {
+            channel: "slack".to_string(),
+            channel_profile_id: Some("eng".to_string()),
+            sender: "Dana".to_string(),
+            sender_id: "U42".to_string(),
+            message: "help".to_string(),
+            timestamp: 100,
+            message_id: message_id.to_string(),
+            conversation_id: Some("thread-1".to_string()),
+            files: Vec::new(),
+            workflow_run_id: None,
+            workflow_step_id: None,
+        }
+    }
+
+    fn write_settings_and_orchestrator(
+        workspace_root: &Path,
+        orchestrator_workspace: &Path,
+    ) -> Settings {
+        fs::create_dir_all(orchestrator_workspace).expect("orchestrator workspace");
+        fs::write(
+            orchestrator_workspace.join("orchestrator.yaml"),
+            r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+"#,
+        )
+        .expect("write orchestrator");
+
+        serde_yaml::from_str(&format!(
+            r#"
+workspace_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {orchestrator_workspace}
+    shared_access: []
+channel_profiles:
+  eng:
+    channel: slack
+    orchestrator_id: eng_orchestrator
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring: {{}}
+channels: {{}}
+"#,
+            workspace = workspace_root.display(),
+            orchestrator_workspace = orchestrator_workspace.display()
+        ))
+        .expect("settings")
+    }
+
+    #[test]
+    fn queue_worker_stop_while_in_flight_completes_and_terminates() {
+        let dir = tempdir().expect("tempdir");
+        let state_root = dir.path().join(".direclaw");
+        let paths = StatePaths::new(&state_root);
+        bootstrap_state_root(&paths).expect("bootstrap");
+        let queue = QueuePaths::from_state_root(&state_root);
+
+        let settings = write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"));
+        fs::write(
+            queue.incoming.join("msg-stop.json"),
+            serde_json::to_vec(&sample_incoming("msg-stop")).expect("serialize"),
+        )
+        .expect("write incoming");
+
+        let claude = dir.path().join("claude-sleep");
+        fs::write(
+            &claude,
+            "#!/bin/sh\nsleep 1\necho '{\"selectorId\":\"sel-msg-stop\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+        )
+        .expect("write script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&claude).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&claude, perms).expect("chmod");
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel::<WorkerEvent>();
+        let handle = thread::spawn({
+            let stop = stop.clone();
+            let settings = settings.clone();
+            let state_root = state_root.clone();
+            let binaries = RunnerBinaries {
+                anthropic: claude.display().to_string(),
+                openai: "unused".to_string(),
+            };
+            let config = QueueProcessorLoopConfig {
+                slow_shutdown: false,
+                max_concurrency: 1,
+                binaries,
+            };
+            move || {
+                run_queue_processor_loop_with_binaries(
+                    "queue_processor".to_string(),
+                    state_root,
+                    settings,
+                    stop,
+                    tx,
+                    config,
+                )
+            }
+        });
+
+        let start = std::time::Instant::now();
+        while fs::read_dir(&queue.processing)
+            .expect("processing dir")
+            .next()
+            .is_none()
+        {
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "queue task never moved to processing"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        stop.store(true, Ordering::Relaxed);
+
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(WorkerEvent::Stopped { .. }) => break,
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) => panic!("queue worker did not terminate"),
+                Err(RecvTimeoutError::Disconnected) => {
+                    panic!("queue worker event channel disconnected before stop event")
+                }
+            }
+        }
+        handle.join().expect("join queue worker");
+
+        assert!(
+            fs::read_dir(&queue.processing)
+                .expect("processing dir")
+                .next()
+                .is_none(),
+            "processing directory should be empty after stop"
+        );
     }
 }

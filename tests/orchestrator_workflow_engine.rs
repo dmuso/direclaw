@@ -573,7 +573,7 @@ channels: {{}}
         300,
         &active,
         &functions,
-        |attempt, _request| {
+        |attempt, _request, _orchestrator| {
             if attempt == 0 {
                 Some("not-json".to_string())
             } else {
@@ -697,7 +697,7 @@ channels: {{}}
         300,
         &BTreeMap::new(),
         &functions,
-        |_attempt, _request| None,
+        |_attempt, _request, _orchestrator| None,
     )
     .expect_err("workspace check must fail");
     assert!(err.to_string().contains("workspace access denied"));
@@ -783,7 +783,7 @@ workflows:
         300,
         &BTreeMap::new(),
         &functions,
-        |_attempt, _request| {
+        |_attempt, _request, _orchestrator| {
             Some(
                 r#"{
               "selectorId":"sel-message-1",

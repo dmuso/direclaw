@@ -1627,7 +1627,7 @@ pub fn process_queued_message<F>(
     mut next_selector_attempt: F,
 ) -> Result<RoutedSelectorAction, OrchestratorError>
 where
-    F: FnMut(u32, &SelectorRequest) -> Option<String>,
+    F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
 {
     let run_store = WorkflowRunStore::new(state_root);
     if let Some(run_id) = inbound
@@ -1726,7 +1726,7 @@ where
     let _ = artifact_store.move_request_to_processing(&request.selector_id)?;
 
     let selection = resolve_selector_with_retries(&orchestrator, &request, |attempt| {
-        next_selector_attempt(attempt, &request)
+        next_selector_attempt(attempt, &request, &orchestrator)
     });
     artifact_store.persist_selector_result(&selection.result)?;
     artifact_store.persist_selector_log(
