@@ -94,12 +94,18 @@ fn default_true() -> bool {
     true
 }
 
+fn default_selector_timeout_seconds() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OrchestratorConfig {
     pub id: String,
     pub selector_agent: String,
     pub default_workflow: String,
     pub selection_max_retries: u32,
+    #[serde(default = "default_selector_timeout_seconds")]
+    pub selector_timeout_seconds: u64,
     pub agents: BTreeMap<String, AgentConfig>,
     #[serde(default)]
     pub workflows: Vec<WorkflowConfig>,
@@ -370,6 +376,11 @@ impl OrchestratorConfig {
         if self.selection_max_retries == 0 {
             return Err(ConfigError::Orchestrator(
                 "`selection_max_retries` must be >= 1".to_string(),
+            ));
+        }
+        if self.selector_timeout_seconds == 0 {
+            return Err(ConfigError::Orchestrator(
+                "`selector_timeout_seconds` must be >= 1".to_string(),
             ));
         }
         if self.workflows.is_empty() {
@@ -667,6 +678,57 @@ workflows:
         match err {
             ConfigError::Orchestrator(message) => {
                 assert!(message.contains("default_workflow"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn orchestrator_validation_rejects_zero_selector_timeout_seconds() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspace_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators:
+  alpha:
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("parse settings");
+
+        let config: OrchestratorConfig = serde_yaml::from_str(
+            r#"
+id: alpha
+selector_agent: router
+default_workflow: real
+selection_max_retries: 1
+selector_timeout_seconds: 0
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+workflows:
+  - id: real
+    version: 1
+    steps:
+      - id: step_1
+        type: agent_task
+        agent: router
+        prompt: hello
+"#,
+        )
+        .expect("parse orchestrator");
+
+        let err = config
+            .validate(&settings, "alpha")
+            .expect_err("validation should fail");
+        match err {
+            ConfigError::Orchestrator(message) => {
+                assert!(message.contains("selector_timeout_seconds"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

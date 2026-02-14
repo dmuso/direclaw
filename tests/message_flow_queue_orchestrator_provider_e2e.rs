@@ -48,6 +48,7 @@ fn write_settings_and_orchestrator(
     orchestrator_workspace: &Path,
     selector_provider: &str,
     selection_max_retries: u32,
+    selector_timeout_seconds: u64,
 ) -> Settings {
     fs::create_dir_all(orchestrator_workspace).expect("orchestrator workspace");
     fs::write(
@@ -58,6 +59,7 @@ id: eng_orchestrator
 selector_agent: router
 default_workflow: triage
 selection_max_retries: {selection_max_retries}
+selector_timeout_seconds: {selector_timeout_seconds}
 agents:
   router:
     provider: {selector_provider}
@@ -134,7 +136,7 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     );
 
     let settings =
-        write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"), "anthropic", 1);
+        write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"), "anthropic", 1, 30);
     write_incoming(&queue, &sample_message("msg-1", "thread-1"));
 
     let processed = drain_queue_once_with_binaries(
@@ -212,8 +214,13 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
 
     let claude_fail = dir.path().join("claude-fail");
     write_script(&claude_fail, "#!/bin/sh\necho fail 1>&2\nexit 7\n");
-    let settings_fail =
-        write_settings_and_orchestrator(dir.path(), &dir.path().join("orch-fail"), "anthropic", 1);
+    let settings_fail = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-fail"),
+        "anthropic",
+        1,
+        30,
+    );
     write_incoming(&queue, &sample_message("msg-fail", "thread-1"));
     let processed = drain_queue_once_with_binaries(
         &state_root,
@@ -232,8 +239,13 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
 
     let codex_bad = dir.path().join("codex-bad");
     write_script(&codex_bad, "#!/bin/sh\necho '{not-json}'\n");
-    let settings_parse =
-        write_settings_and_orchestrator(dir.path(), &dir.path().join("orch-parse"), "openai", 1);
+    let settings_parse = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-parse"),
+        "openai",
+        1,
+        30,
+    );
     write_incoming(&queue, &sample_message("msg-parse", "thread-2"));
     let processed = drain_queue_once_with_binaries(
         &state_root,
@@ -262,11 +274,12 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
     let queue = QueuePaths::from_state_root(&state_root);
 
     let claude_timeout = dir.path().join("claude-timeout");
-    write_script(&claude_timeout, "#!/bin/sh\nsleep 35\necho too-late\n");
+    write_script(&claude_timeout, "#!/bin/sh\nsleep 2\necho too-late\n");
     let settings = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-timeout"),
         "anthropic",
+        1,
         1,
     );
     write_incoming(&queue, &sample_message("msg-timeout", "thread-timeout"));
@@ -365,6 +378,7 @@ fn supervisor_start_recovers_processing_entries_and_processes_message() {
         &dir.path().join("orch-restart"),
         "anthropic",
         1,
+        30,
     );
     let stale = sample_message("msg-restart", "thread-restart");
     fs::write(
@@ -431,7 +445,7 @@ fn queue_runtime_enforces_same_key_ordering_and_cross_key_concurrency() {
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
     let queue = QueuePaths::from_state_root(&state_root);
     let orch_ws = dir.path().join("orch-order");
-    let settings = write_settings_and_orchestrator(dir.path(), &orch_ws, "anthropic", 1);
+    let settings = write_settings_and_orchestrator(dir.path(), &orch_ws, "anthropic", 1, 30);
 
     let claude = dir.path().join("claude-order");
     write_script(

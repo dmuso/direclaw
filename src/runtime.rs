@@ -1235,7 +1235,7 @@ fn run_selector_attempt_with_provider(
                 .unwrap_or_default()
         ),
         prompt_artifacts: artifacts.clone(),
-        timeout: Duration::from_secs(30),
+        timeout: Duration::from_secs(orchestrator_cfg.selector_timeout_seconds),
         reset_requested: false,
         fresh_on_failure: false,
         env_overrides: BTreeMap::new(),

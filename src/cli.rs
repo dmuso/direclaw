@@ -1913,6 +1913,7 @@ fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
         selector_agent: selector.clone(),
         default_workflow: workflow_id.clone(),
         selection_max_retries: 1,
+        selector_timeout_seconds: 30,
         agents: BTreeMap::from_iter([(
             selector,
             AgentConfig {

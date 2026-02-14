@@ -2858,6 +2858,7 @@ where
                     selector_agent: "none".to_string(),
                     default_workflow: "none".to_string(),
                     selection_max_retries: 1,
+                    selector_timeout_seconds: 30,
                     agents: BTreeMap::new(),
                     workflows: Vec::new(),
                     workflow_orchestration: None,
