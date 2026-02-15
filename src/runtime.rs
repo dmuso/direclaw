@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod channel_worker;
 pub mod logging;
+pub mod ownership_lock;
 pub mod queue_worker;
 pub mod recovery;
 pub mod state_paths;
@@ -14,16 +15,18 @@ pub mod supervisor;
 pub mod worker_registry;
 
 pub use logging::append_runtime_log;
+pub use ownership_lock::{
+    cleanup_stale_supervisor, clear_start_lock, is_process_alive, reserve_start_lock, signal_stop,
+    spawn_supervisor_process, stop_active_supervisor, supervisor_ownership_state,
+    write_supervisor_lock_pid, OwnershipState, StopResult,
+};
 pub use queue_worker::{drain_queue_once, drain_queue_once_with_binaries};
 pub use recovery::recover_processing_queue_entries;
 pub use state_paths::{
     bootstrap_state_root, default_state_root_path, StatePaths, DEFAULT_STATE_ROOT_DIR,
 };
 pub use supervisor::{
-    cleanup_stale_supervisor, clear_start_lock, is_process_alive, load_supervisor_state,
-    reserve_start_lock, run_supervisor, save_supervisor_state, signal_stop,
-    spawn_supervisor_process, stop_active_supervisor, supervisor_ownership_state,
-    write_supervisor_lock_pid, OwnershipState, StopResult, SupervisorState, WorkerHealth,
+    load_supervisor_state, run_supervisor, save_supervisor_state, SupervisorState, WorkerHealth,
 };
 pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
 
