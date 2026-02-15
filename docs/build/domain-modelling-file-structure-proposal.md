@@ -236,3 +236,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 15:02 - Extracted provider output parsing logic to `src/provider/output_parse.rs`, re-exported parser APIs from `provider` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 15:06 - Extracted runtime worker identity/state/registry concerns to `src/runtime/worker_registry.rs`, re-exported APIs from `runtime` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 15:12 - Extracted runtime supervisor state/ownership/lock lifecycle APIs to `src/runtime/supervisor.rs`, re-exported supervisor APIs from `runtime` for compatibility, and added integration coverage for the new module path.
+- 2026-02-15 15:16 - Extracted runtime queue startup recovery behavior to `src/runtime/recovery.rs`, re-exported recovery APIs from `runtime` for compatibility, and added integration coverage for the new module path.
