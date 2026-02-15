@@ -1,5 +1,6 @@
 pub mod load;
 pub mod orchestrator_file;
+pub mod orchestrators_registry;
 pub mod paths;
 pub mod save;
 pub mod settings;
@@ -12,13 +13,12 @@ pub use orchestrator_file::{
     StepLimitsConfig, WorkflowConfig, WorkflowLimitsConfig, WorkflowOrchestrationConfig,
     WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
+pub use orchestrators_registry::{remove_orchestrator_config, save_orchestrator_registry};
 pub use paths::{
     default_global_config_path, default_orchestrators_config_path, GLOBAL_ORCHESTRATORS_FILE_NAME,
     GLOBAL_SETTINGS_FILE_NAME, GLOBAL_STATE_DIR,
 };
-pub use save::{
-    remove_orchestrator_config, save_orchestrator_config, save_orchestrator_registry, save_settings,
-};
+pub use save::{save_orchestrator_config, save_settings};
 pub use settings::{
     AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelKind, ChannelProfile, Monitoring,
     Settings, SettingsOrchestrator, ValidationOptions,
