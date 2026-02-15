@@ -98,6 +98,20 @@ fn config_load_module_exposes_loader_functions() {
 }
 
 #[test]
+fn config_validate_module_exposes_validation_entry_points() {
+    let _settings_validate: fn(
+        &Settings,
+        ValidationOptions,
+    ) -> Result<(), direclaw::config::ConfigError> = direclaw::config::validate::validate_settings;
+    let _orchestrator_validate: fn(
+        &OrchestratorConfig,
+        &Settings,
+        &str,
+    ) -> Result<(), direclaw::config::ConfigError> =
+        direclaw::config::validate::validate_orchestrator_config;
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [

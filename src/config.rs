@@ -6,6 +6,7 @@ pub mod paths;
 pub mod settings;
 pub(crate) mod setup_draft;
 pub mod typed_fields;
+pub mod validate;
 pub use load::{load_global_settings, load_orchestrator_config};
 pub use orchestrator_file::{
     agent_editable_fields, AgentConfig, AgentEditableField, ConfigProviderKind, OrchestratorConfig,
@@ -26,6 +27,7 @@ pub use typed_fields::{
     OutputContractKey, OutputKey, PathTemplate, StepId, WorkflowId, WorkflowInputKey,
     WorkflowInputs,
 };
+pub use validate::{validate_orchestrator_config, validate_settings};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
