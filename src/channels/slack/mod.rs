@@ -1,5 +1,6 @@
 use crate::config::{ChannelKind, ChannelProfile, Settings};
 use crate::queue::{OutgoingMessage, QueuePaths};
+use cursor_store::{load_cursor_state, save_cursor_state};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
 const OUTBOUND_CHUNK_CHARS: usize = 3500;
+
+pub mod cursor_store;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SlackError {
@@ -93,11 +96,6 @@ struct EnvConfig {
     bot_token: String,
     app_token: String,
     allowlist: BTreeSet<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-struct SlackCursorState {
-    conversations: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -527,37 +525,6 @@ fn slack_profiles(settings: &Settings) -> BTreeMap<String, ChannelProfile> {
         .collect()
 }
 
-fn cursor_state_path(state_root: &Path, profile_id: &str) -> PathBuf {
-    state_root
-        .join("channels/slack")
-        .join(sanitize_component(profile_id))
-        .join("cursor.json")
-}
-
-fn load_cursor_state(state_root: &Path, profile_id: &str) -> Result<SlackCursorState, SlackError> {
-    let path = cursor_state_path(state_root, profile_id);
-    if !path.exists() {
-        return Ok(SlackCursorState::default());
-    }
-    let raw = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
-    serde_json::from_str(&raw).map_err(|e| json_error(&path, e))
-}
-
-fn save_cursor_state(
-    state_root: &Path,
-    profile_id: &str,
-    state: &SlackCursorState,
-) -> Result<(), SlackError> {
-    let path = cursor_state_path(state_root, profile_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let body = serde_json::to_vec_pretty(state).map_err(|e| json_error(&path, e))?;
-    fs::write(&tmp, body).map_err(|e| io_error(&tmp, e))?;
-    fs::rename(&tmp, &path).map_err(|e| io_error(&path, e))
-}
-
 fn should_accept_channel_message(
     profile: &ChannelProfile,
     allowlist: &BTreeSet<String>,
@@ -972,12 +939,12 @@ mod tests {
     fn cursor_state_round_trip_is_stable() {
         let temp = tempdir().expect("tempdir");
         let state_root = temp.path().join(".direclaw");
-        let mut state = SlackCursorState::default();
+        let mut state = cursor_store::SlackCursorState::default();
         state
             .conversations
             .insert("C123".to_string(), "1700000000.1".to_string());
-        save_cursor_state(&state_root, "profile.main", &state).expect("save");
-        let loaded = load_cursor_state(&state_root, "profile.main").expect("load");
+        cursor_store::save_cursor_state(&state_root, "profile.main", &state).expect("save");
+        let loaded = cursor_store::load_cursor_state(&state_root, "profile.main").expect("load");
         assert_eq!(loaded, state);
     }
 }
