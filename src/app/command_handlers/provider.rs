@@ -1,4 +1,4 @@
-use crate::commands::{ensure_runtime_root, load_preferences, save_preferences};
+use crate::app::command_support::{ensure_runtime_root, load_preferences, save_preferences};
 
 pub fn cmd_provider(args: &[String]) -> Result<String, String> {
     let paths = ensure_runtime_root()?;

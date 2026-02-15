@@ -1,4 +1,4 @@
-use crate::commands::ensure_runtime_root;
+use crate::app::command_support::ensure_runtime_root;
 use crate::runtime::load_supervisor_state;
 use std::fs;
 

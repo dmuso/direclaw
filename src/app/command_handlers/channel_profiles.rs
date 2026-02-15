@@ -1,4 +1,4 @@
-use crate::commands::{load_settings, save_settings};
+use crate::app::command_support::{load_settings, save_settings};
 use crate::config::{ChannelKind, ChannelProfile};
 
 pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {

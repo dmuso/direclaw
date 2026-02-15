@@ -11,19 +11,9 @@ use crate::app::command_handlers::orchestrators::cmd_orchestrator;
 use crate::app::command_handlers::provider::{cmd_model, cmd_provider};
 use crate::app::command_handlers::update::cmd_update;
 use crate::app::command_handlers::workflows::cmd_workflow;
-use crate::config::{
-    default_global_config_path, load_orchestrator_config, ConfigError, OrchestratorConfig,
-    Settings, ValidationOptions,
-};
+use crate::config::{load_orchestrator_config, Settings};
 use crate::orchestrator::{OrchestratorError, RunState, WorkflowRunStore};
-use crate::runtime::{bootstrap_state_root, default_state_root_path, StatePaths};
-use crate::workflow::{initial_orchestrator_config, WorkflowTemplate};
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use crate::app::cli::cli_help_lines;
 pub use crate::app::cli::parse_cli_verb;
@@ -37,6 +27,20 @@ pub use crate::app::command_catalog::V1_FUNCTIONS;
 pub use crate::app::command_dispatch::plan_function_invocation;
 pub use crate::app::command_dispatch::FunctionExecutionPlan;
 pub use crate::app::command_dispatch::InternalFunction;
+pub use crate::app::command_support::default_orchestrator_config;
+pub use crate::app::command_support::ensure_runtime_root;
+pub use crate::app::command_support::load_orchestrator_or_err;
+pub use crate::app::command_support::load_preferences;
+pub use crate::app::command_support::load_settings;
+pub use crate::app::command_support::map_config_err;
+pub use crate::app::command_support::now_nanos;
+pub use crate::app::command_support::now_secs;
+pub use crate::app::command_support::remove_orchestrator_config;
+pub use crate::app::command_support::save_orchestrator_config;
+pub use crate::app::command_support::save_orchestrator_registry;
+pub use crate::app::command_support::save_preferences;
+pub use crate::app::command_support::save_settings;
+pub use crate::app::command_support::RuntimePreferences;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionExecutionContext<'a> {
@@ -293,12 +297,6 @@ fn remap_missing_run_error(run_id: &str, err: OrchestratorError) -> Orchestrator
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct RuntimePreferences {
-    pub(crate) provider: Option<String>,
-    pub(crate) model: Option<String>,
-}
-
 pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     if args.is_empty() {
         return Ok(crate::app::cli::help_text());
@@ -329,153 +327,11 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     }
 }
 
-pub(crate) fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-pub(crate) fn now_nanos() -> i128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i128)
-        .unwrap_or(0)
-}
-
-pub(crate) fn map_config_err(err: ConfigError) -> String {
-    err.to_string()
-}
-
-fn state_root() -> Result<PathBuf, String> {
-    default_state_root_path().map_err(|e| e.to_string())
-}
-
-pub(crate) fn ensure_runtime_root() -> Result<StatePaths, String> {
-    let root = state_root()?;
-    let paths = StatePaths::new(root);
-    bootstrap_state_root(&paths).map_err(|e| e.to_string())?;
-    Ok(paths)
-}
-
-fn preferences_path(paths: &StatePaths) -> PathBuf {
-    paths.root.join("runtime/preferences.yaml")
-}
-
-pub(crate) fn load_preferences(paths: &StatePaths) -> Result<RuntimePreferences, String> {
-    let path = preferences_path(paths);
-    if !path.exists() {
-        return Ok(RuntimePreferences::default());
-    }
-    let raw =
-        fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_yaml::from_str(&raw).map_err(|e| format!("failed to parse {}: {e}", path.display()))
-}
-
-pub(crate) fn save_preferences(
-    paths: &StatePaths,
-    prefs: &RuntimePreferences,
-) -> Result<(), String> {
-    let path = preferences_path(paths);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let body =
-        serde_yaml::to_string(prefs).map_err(|e| format!("failed to encode preferences: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))
-}
-
-pub(crate) fn load_settings() -> Result<Settings, String> {
-    let path = default_global_config_path().map_err(map_config_err)?;
-    let settings = Settings::from_path(&path).map_err(map_config_err)?;
-    settings
-        .validate(ValidationOptions {
-            require_shared_paths_exist: false,
-        })
-        .map_err(map_config_err)?;
-    Ok(settings)
-}
-
-pub(crate) fn save_settings(settings: &Settings) -> Result<PathBuf, String> {
-    settings
-        .validate(ValidationOptions {
-            require_shared_paths_exist: false,
-        })
-        .map_err(map_config_err)?;
-
-    let path = default_global_config_path().map_err(map_config_err)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let body =
-        serde_yaml::to_string(settings).map_err(|e| format!("failed to encode settings: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(path)
-}
-
-pub(crate) fn save_orchestrator_config(
-    settings: &Settings,
-    orchestrator_id: &str,
-    orchestrator: &OrchestratorConfig,
-) -> Result<PathBuf, String> {
-    orchestrator
-        .validate(settings, orchestrator_id)
-        .map_err(map_config_err)?;
-    let private_workspace = settings
-        .resolve_private_workspace(orchestrator_id)
-        .map_err(map_config_err)?;
-    fs::create_dir_all(&private_workspace)
-        .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
-    let path = private_workspace.join("orchestrator.yaml");
-    let body = serde_yaml::to_string(orchestrator)
-        .map_err(|e| format!("failed to encode orchestrator: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(path)
-}
-
-pub(crate) fn save_orchestrator_registry(
-    settings: &Settings,
-    registry: &BTreeMap<String, OrchestratorConfig>,
-) -> Result<PathBuf, String> {
-    let mut saved = None;
-    for (orchestrator_id, orchestrator) in registry {
-        let path = save_orchestrator_config(settings, orchestrator_id, orchestrator)?;
-        saved = Some(path);
-    }
-    saved.ok_or_else(|| "no orchestrator configs to save".to_string())
-}
-
-pub(crate) fn remove_orchestrator_config(
-    settings: &Settings,
-    orchestrator_id: &str,
-) -> Result<(), String> {
-    let private_workspace = settings
-        .resolve_private_workspace(orchestrator_id)
-        .map_err(map_config_err)?;
-    let path = private_workspace.join("orchestrator.yaml");
-    if !path.exists() {
-        return Ok(());
-    }
-    fs::remove_file(&path).map_err(|e| format!("failed to remove {}: {e}", path.display()))
-}
-
-pub(crate) fn load_orchestrator_or_err(
-    settings: &Settings,
-    orchestrator_id: &str,
-) -> Result<OrchestratorConfig, String> {
-    load_orchestrator_config(settings, orchestrator_id).map_err(map_config_err)
-}
-
-pub(crate) fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
-    initial_orchestrator_config(id, "anthropic", "sonnet", WorkflowTemplate::Minimal)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{AuthSyncConfig, Monitoring, SettingsOrchestrator};
+    use std::collections::BTreeMap;
     use tempfile::tempdir;
 
     #[test]
