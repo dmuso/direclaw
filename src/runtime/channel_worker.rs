@@ -8,6 +8,21 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PollingDefaults {
+    pub queue_poll_interval_secs: u64,
+    pub outbound_poll_interval_secs: u64,
+}
+
+impl Default for PollingDefaults {
+    fn default() -> Self {
+        Self {
+            queue_poll_interval_secs: 1,
+            outbound_poll_interval_secs: 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerRuntime {
     QueueProcessor,

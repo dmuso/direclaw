@@ -17,6 +17,7 @@ pub mod worker_registry;
 pub(crate) use crate::shared::fs_atomic::atomic_write_file;
 pub use crate::shared::fs_atomic::canonicalize_existing;
 pub(crate) use crate::shared::time::now_secs;
+pub use channel_worker::PollingDefaults;
 pub use logging::append_runtime_log;
 pub use ownership_lock::{
     cleanup_stale_supervisor, clear_start_lock, is_process_alive, reserve_start_lock, signal_stop,
@@ -36,21 +37,6 @@ pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
 const QUEUE_MAX_CONCURRENCY: usize = 4;
 const QUEUE_MIN_POLL_MS: u64 = 100;
 const QUEUE_MAX_POLL_MS: u64 = 1000;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PollingDefaults {
-    pub queue_poll_interval_secs: u64,
-    pub outbound_poll_interval_secs: u64,
-}
-
-impl Default for PollingDefaults {
-    fn default() -> Self {
-        Self {
-            queue_poll_interval_secs: 1,
-            outbound_poll_interval_secs: 1,
-        }
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
