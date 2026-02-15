@@ -139,6 +139,14 @@ fn app_cli_module_exposes_cli_verb_and_help_surface() {
 }
 
 #[test]
+fn app_provider_command_handler_module_exposes_provider_and_model_commands() {
+    let _provider_cmd: fn(&[String]) -> Result<String, String> =
+        direclaw::app::command_handlers::provider::cmd_provider;
+    let _model_cmd: fn(&[String]) -> Result<String, String> =
+        direclaw::app::command_handlers::provider::cmd_model;
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
