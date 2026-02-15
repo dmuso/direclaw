@@ -226,3 +226,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 14:26 - Moved `send` and `channels` command handling to `src/app/command_handlers/channels.rs`, updated command wiring, and added integration coverage.
 - 2026-02-15 14:29 - Added `src/app/command_support.rs` for runtime/config command helpers, updated app/tui handlers to consume it directly, and converted `src/commands.rs` to compatibility re-exports for those helpers.
 - 2026-02-15 14:34 - Extracted queue file-tag and outbound normalization logic to `src/queue/file_tags.rs`, re-exported queue helper APIs for compatibility, and added integration coverage for the new module path.
+- 2026-02-15 14:36 - Extracted per-key queue scheduler domain logic to `src/queue/scheduler.rs`, re-exported scheduler APIs from `queue` for compatibility, and added integration coverage for the new module path.
