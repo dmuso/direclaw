@@ -3,7 +3,6 @@ use crate::orchestrator::{self, FunctionRegistry, RoutedSelectorAction, Workflow
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
 use crate::slack;
-use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
@@ -14,11 +13,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod logging;
 pub mod recovery;
 pub mod state_paths;
 pub mod supervisor;
 pub mod worker_registry;
 
+pub use logging::append_runtime_log;
 pub use recovery::recover_processing_queue_entries;
 pub use state_paths::{
     bootstrap_state_root, default_state_root_path, StatePaths, DEFAULT_STATE_ROOT_DIR,
@@ -139,32 +140,6 @@ struct WorkerSpec {
 
 pub fn canonicalize_existing(path: &Path) -> Result<PathBuf, std::io::Error> {
     fs::canonicalize(path)
-}
-
-pub fn append_runtime_log(paths: &StatePaths, level: &str, event: &str, message: &str) {
-    let path = paths.runtime_log_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let payload = Value::Object(Map::from_iter([
-        (
-            "timestamp".to_string(),
-            Value::Number(serde_json::Number::from(now_secs())),
-        ),
-        ("level".to_string(), Value::String(level.to_string())),
-        ("event".to_string(), Value::String(event.to_string())),
-        ("message".to_string(), Value::String(message.to_string())),
-    ]));
-
-    let Ok(line) = serde_json::to_string(&payload) else {
-        return;
-    };
-
-    let _ = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
 }
 
 pub fn run_supervisor(state_root: &Path, settings: Settings) -> Result<(), RuntimeError> {
