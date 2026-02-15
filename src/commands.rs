@@ -1,3 +1,4 @@
+use crate::app::command_handlers::agents::cmd_orchestrator_agent;
 use crate::app::command_handlers::attach::cmd_attach;
 use crate::app::command_handlers::auth::cmd_auth;
 use crate::app::command_handlers::channel_profiles::cmd_channel_profile;
@@ -10,8 +11,8 @@ use crate::app::command_handlers::provider::{cmd_model, cmd_provider};
 use crate::app::command_handlers::update::cmd_update;
 use crate::app::command_handlers::workflows::cmd_workflow;
 use crate::config::{
-    default_global_config_path, load_orchestrator_config, AgentConfig, ConfigError,
-    ConfigProviderKind, OrchestratorConfig, Settings, ValidationOptions,
+    default_global_config_path, load_orchestrator_config, ConfigError, OrchestratorConfig,
+    Settings, ValidationOptions,
 };
 use crate::orchestrator::{OrchestratorError, RunState, WorkflowRunStore};
 use crate::queue::IncomingMessage;
@@ -530,124 +531,6 @@ fn cmd_channels(args: &[String]) -> Result<String, String> {
         ));
     }
     Err("usage: channels reset | channels slack sync".to_string())
-}
-
-fn cmd_orchestrator_agent(args: &[String]) -> Result<String, String> {
-    if args.is_empty() {
-        return Err("usage: orchestrator-agent <list|add|show|remove|reset> ...".to_string());
-    }
-
-    match args[0].as_str() {
-        "list" => {
-            if args.len() != 2 {
-                return Err("usage: orchestrator-agent list <orchestrator_id>".to_string());
-            }
-            let settings = load_settings()?;
-            let orchestrator = load_orchestrator_or_err(&settings, &args[1])?;
-            Ok(orchestrator
-                .agents
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n"))
-        }
-        "add" => {
-            if args.len() != 3 {
-                return Err(
-                    "usage: orchestrator-agent add <orchestrator_id> <agent_id>".to_string()
-                );
-            }
-            let settings = load_settings()?;
-            let orchestrator_id = &args[1];
-            let agent_id = args[2].clone();
-            let mut orchestrator = load_orchestrator_or_err(&settings, orchestrator_id)?;
-            if orchestrator.agents.contains_key(&agent_id) {
-                return Err(format!("agent `{agent_id}` already exists"));
-            }
-            let private_workspace = settings
-                .resolve_private_workspace(orchestrator_id)
-                .map_err(map_config_err)?
-                .join("agents")
-                .join(&agent_id);
-            fs::create_dir_all(&private_workspace)
-                .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
-            orchestrator.agents.insert(
-                agent_id.clone(),
-                AgentConfig {
-                    provider: ConfigProviderKind::Anthropic,
-                    model: "sonnet".to_string(),
-                    private_workspace: Some(private_workspace),
-                    can_orchestrate_workflows: false,
-                    shared_access: Vec::new(),
-                },
-            );
-            save_orchestrator_config(&settings, orchestrator_id, &orchestrator)?;
-            Ok(format!(
-                "agent added\norchestrator={}\nagent={}",
-                orchestrator_id, agent_id
-            ))
-        }
-        "show" => {
-            if args.len() != 3 {
-                return Err(
-                    "usage: orchestrator-agent show <orchestrator_id> <agent_id>".to_string(),
-                );
-            }
-            let settings = load_settings()?;
-            let orchestrator = load_orchestrator_or_err(&settings, &args[1])?;
-            let agent = orchestrator
-                .agents
-                .get(&args[2])
-                .ok_or_else(|| format!("unknown agent `{}`", args[2]))?;
-            Ok(format!(
-                "id={}\nprovider={}\nmodel={}\ncan_orchestrate_workflows={}",
-                args[2], agent.provider, agent.model, agent.can_orchestrate_workflows
-            ))
-        }
-        "remove" => {
-            if args.len() != 3 {
-                return Err(
-                    "usage: orchestrator-agent remove <orchestrator_id> <agent_id>".to_string(),
-                );
-            }
-            let settings = load_settings()?;
-            let orchestrator_id = &args[1];
-            let agent_id = args[2].clone();
-            let mut orchestrator = load_orchestrator_or_err(&settings, orchestrator_id)?;
-            if orchestrator.agents.remove(&agent_id).is_none() {
-                return Err(format!("unknown agent `{agent_id}`"));
-            }
-            save_orchestrator_config(&settings, orchestrator_id, &orchestrator)?;
-            Ok(format!(
-                "agent removed\norchestrator={}\nagent={}",
-                orchestrator_id, agent_id
-            ))
-        }
-        "reset" => {
-            if args.len() != 3 {
-                return Err(
-                    "usage: orchestrator-agent reset <orchestrator_id> <agent_id>".to_string(),
-                );
-            }
-            let settings = load_settings()?;
-            let orchestrator_id = &args[1];
-            let agent_id = args[2].clone();
-            let mut orchestrator = load_orchestrator_or_err(&settings, orchestrator_id)?;
-            let agent = orchestrator
-                .agents
-                .get_mut(&agent_id)
-                .ok_or_else(|| format!("unknown agent `{agent_id}`"))?;
-            agent.provider = ConfigProviderKind::Anthropic;
-            agent.model = "sonnet".to_string();
-            agent.can_orchestrate_workflows = false;
-            save_orchestrator_config(&settings, orchestrator_id, &orchestrator)?;
-            Ok(format!(
-                "agent reset\norchestrator={}\nagent={}",
-                orchestrator_id, agent_id
-            ))
-        }
-        other => Err(format!("unknown orchestrator-agent subcommand `{other}`")),
-    }
 }
 
 pub(crate) fn default_orchestrator_config(id: &str) -> OrchestratorConfig {

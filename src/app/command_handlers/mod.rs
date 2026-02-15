@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod attach;
 pub mod auth;
 pub mod channel_profiles;
