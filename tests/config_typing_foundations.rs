@@ -177,6 +177,12 @@ fn app_channel_profile_command_handler_module_exposes_command() {
 }
 
 #[test]
+fn app_orchestrator_command_handler_module_exposes_command() {
+    let _orchestrator_cmd: fn(&[String]) -> Result<String, String> =
+        direclaw::app::command_handlers::orchestrators::cmd_orchestrator;
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
