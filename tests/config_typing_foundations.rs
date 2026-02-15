@@ -147,6 +147,14 @@ fn app_provider_command_handler_module_exposes_provider_and_model_commands() {
 }
 
 #[test]
+fn app_doctor_and_attach_command_handler_modules_expose_commands() {
+    let _doctor_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::doctor::cmd_doctor;
+    let _attach_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::attach::cmd_attach;
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
