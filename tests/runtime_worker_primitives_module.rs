@@ -1,7 +1,7 @@
-use direclaw::runtime::worker_primitives::{queue_polling_defaults, QueuePollingDefaults};
+use direclaw::runtime::queue_worker::{queue_polling_defaults, QueuePollingDefaults};
 
 #[test]
-fn runtime_worker_primitives_module_exposes_queue_polling_defaults() {
+fn runtime_queue_worker_module_exposes_queue_polling_defaults() {
     assert_eq!(
         queue_polling_defaults(),
         QueuePollingDefaults {

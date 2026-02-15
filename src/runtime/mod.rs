@@ -1,10 +1,8 @@
 #[cfg(test)]
 use std::fs;
-#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::thread;
-#[cfg(test)]
 use std::time::Duration;
 
 pub mod channel_worker;
@@ -15,7 +13,6 @@ pub mod queue_worker;
 pub mod recovery;
 pub mod state_paths;
 pub mod supervisor;
-pub mod worker_primitives;
 pub mod worker_registry;
 
 pub use crate::shared::errors::RuntimeError;
@@ -30,6 +27,7 @@ pub use ownership_lock::{
     write_supervisor_lock_pid, OwnershipState, StopResult,
 };
 pub use queue_worker::{drain_queue_once, drain_queue_once_with_binaries};
+pub use queue_worker::{queue_polling_defaults, QueuePollingDefaults};
 pub use recovery::recover_processing_queue_entries;
 pub use state_paths::{
     bootstrap_state_root, default_state_root_path, StatePaths, DEFAULT_STATE_ROOT_DIR,
@@ -37,11 +35,42 @@ pub use state_paths::{
 pub use supervisor::{
     load_supervisor_state, run_supervisor, save_supervisor_state, SupervisorState, WorkerHealth,
 };
-pub use worker_primitives::{queue_polling_defaults, QueuePollingDefaults};
-pub(crate) use worker_primitives::{
-    sleep_with_stop, WorkerEvent, QUEUE_MAX_CONCURRENCY, QUEUE_MAX_POLL_MS, QUEUE_MIN_POLL_MS,
-};
 pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
+
+#[derive(Debug, Clone)]
+pub(crate) enum WorkerEvent {
+    Started {
+        worker_id: String,
+        at: i64,
+    },
+    Heartbeat {
+        worker_id: String,
+        at: i64,
+    },
+    Error {
+        worker_id: String,
+        at: i64,
+        message: String,
+        fatal: bool,
+    },
+    Stopped {
+        worker_id: String,
+        at: i64,
+    },
+}
+
+pub(crate) fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
+    let mut remaining = total;
+    while remaining > Duration::from_millis(0) {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let step = remaining.min(Duration::from_millis(200));
+        std::thread::sleep(step);
+        remaining = remaining.saturating_sub(step);
+    }
+    !stop.load(Ordering::Relaxed)
+}
 
 #[cfg(test)]
 mod tests {

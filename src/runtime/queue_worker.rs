@@ -1,6 +1,6 @@
 use super::{
     append_runtime_log, now_secs, recover_processing_queue_entries, sleep_with_stop, StatePaths,
-    WorkerEvent, QUEUE_MAX_POLL_MS, QUEUE_MIN_POLL_MS,
+    WorkerEvent,
 };
 use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
@@ -17,6 +17,25 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+
+pub const QUEUE_MAX_CONCURRENCY: usize = 4;
+pub const QUEUE_MIN_POLL_MS: u64 = 100;
+pub const QUEUE_MAX_POLL_MS: u64 = 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuePollingDefaults {
+    pub max_concurrency: usize,
+    pub min_poll_ms: u64,
+    pub max_poll_ms: u64,
+}
+
+pub fn queue_polling_defaults() -> QueuePollingDefaults {
+    QueuePollingDefaults {
+        max_concurrency: QUEUE_MAX_CONCURRENCY,
+        min_poll_ms: QUEUE_MIN_POLL_MS,
+        max_poll_ms: QUEUE_MAX_POLL_MS,
+    }
+}
 
 #[derive(Debug)]
 struct QueueTaskCompletion {

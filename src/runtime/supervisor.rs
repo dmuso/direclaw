@@ -1,6 +1,6 @@
 use super::{
     append_runtime_log, atomic_write_file, bootstrap_state_root, channel_worker, now_secs,
-    ownership_lock, RuntimeError, StatePaths, WorkerEvent, WorkerState, QUEUE_MAX_CONCURRENCY,
+    ownership_lock, queue_worker, RuntimeError, StatePaths, WorkerEvent, WorkerState,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -112,7 +112,7 @@ pub fn run_supervisor(
                     events: tx,
                     should_fail,
                     slow_shutdown,
-                    queue_max_concurrency: QUEUE_MAX_CONCURRENCY,
+                    queue_max_concurrency: queue_worker::QUEUE_MAX_CONCURRENCY,
                 },
             )
         }));
