@@ -7,6 +7,7 @@ pub mod routing;
 pub mod run_store;
 pub mod selector;
 pub mod selector_artifacts;
+pub mod step_execution;
 pub mod transitions;
 pub mod workspace_access;
 
