@@ -31,7 +31,7 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     }
 
     match parse_cli_verb(args[0].as_str()) {
-        CliVerb::Setup => crate::tui::setup::cmd_setup(),
+        CliVerb::Setup => crate::setup::actions::cmd_setup(),
         CliVerb::Start => daemon::cmd_start(),
         CliVerb::Stop => daemon::cmd_stop(),
         CliVerb::Restart => daemon::cmd_restart(),
