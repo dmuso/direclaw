@@ -1,6 +1,7 @@
 pub mod file_tags;
 pub mod lifecycle;
 pub mod message;
+pub mod outbound;
 pub mod paths;
 pub mod scheduler;
 pub use file_tags::{
@@ -8,6 +9,9 @@ pub use file_tags::{
 };
 pub use lifecycle::{claim_oldest, complete_success, requeue_failure, ClaimedMessage};
 pub use message::{IncomingMessage, OutgoingMessage};
+pub use outbound::{
+    OutboundContent, OUTBOUND_MAX_CHARS, OUTBOUND_TRUNCATE_KEEP_CHARS, OUTBOUND_TRUNCATION_SUFFIX,
+};
 pub use paths::{is_valid_queue_json_filename, outgoing_filename, QueuePaths};
 pub use scheduler::{derive_ordering_key, OrderingKey, PerKeyScheduler, Scheduled};
 
@@ -25,17 +29,6 @@ pub enum QueueError {
         #[source]
         source: serde_json::Error,
     },
-}
-
-pub const OUTBOUND_MAX_CHARS: usize = 4000;
-pub const OUTBOUND_TRUNCATE_KEEP_CHARS: usize = 3900;
-pub const OUTBOUND_TRUNCATION_SUFFIX: &str = "\n\n[Response truncated...]";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutboundContent {
-    pub message: String,
-    pub files: Vec<String>,
-    pub omitted_files: Vec<String>,
 }
 
 #[cfg(test)]
