@@ -1,8 +1,7 @@
 use crate::app::command_support::{ensure_runtime_root, map_config_err};
 use crate::config::{
     agent_editable_fields, default_global_config_path, AgentEditableField, ConfigProviderKind,
-    OrchestrationLimitField, OutputKey, PathTemplate, WorkflowInputs, WorkflowStepConfig,
-    WorkflowStepWorkspaceMode,
+    OrchestrationLimitField, OutputKey, WorkflowStepConfig, WorkflowStepWorkspaceMode,
 };
 use crate::setup::navigation::{
     setup_action_from_key, setup_screen_item_count, setup_transition, NavState, SetupAction,
@@ -15,8 +14,9 @@ use crate::setup::screens::{
 };
 use crate::setup::state::{
     default_model_for_provider, infer_workflow_template, model_options_for_provider,
-    provider_options, setup_workflow_template_index, workflow_template_from_index,
-    workflow_template_options, SetupState,
+    output_files_as_csv, parse_csv_values, parse_output_files, provider_options,
+    setup_workflow_template_index, unique_step_id, workflow_inputs_as_csv,
+    workflow_template_from_index, workflow_template_options, SetupState,
 };
 use crate::templates::orchestrator_templates::WorkflowTemplate as SetupWorkflowTemplate;
 use crossterm::cursor::{Hide, Show};
@@ -1131,69 +1131,6 @@ fn workflow_detail_menu_rows(
         field_row("Run Timeout Seconds", Some(run_timeout_seconds)),
         field_row("Steps", Some(step_count)),
     ]
-}
-
-fn workflow_inputs_as_csv(inputs: &WorkflowInputs) -> String {
-    let parts: Vec<String> = inputs
-        .as_slice()
-        .iter()
-        .map(|key| key.as_str().to_string())
-        .collect();
-    if parts.is_empty() {
-        "<none>".to_string()
-    } else {
-        parts.join(",")
-    }
-}
-
-fn parse_csv_values(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect()
-}
-
-fn output_files_as_csv(output_files: &BTreeMap<OutputKey, PathTemplate>) -> String {
-    if output_files.is_empty() {
-        return "<none>".to_string();
-    }
-    output_files
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn parse_output_files(raw: &str) -> Result<BTreeMap<OutputKey, PathTemplate>, String> {
-    let mut output_files = BTreeMap::new();
-    for entry in parse_csv_values(raw) {
-        let (key, value) = entry
-            .split_once('=')
-            .ok_or_else(|| "output_files must use key=path entries".to_string())?;
-        let key = key.trim();
-        let value = value.trim();
-        if key.is_empty() || value.is_empty() {
-            return Err("output_files entries require non-empty key and path".to_string());
-        }
-        let key = OutputKey::parse_output_file_key(key)?;
-        let value = PathTemplate::parse(value)?;
-        output_files.insert(key, value);
-    }
-    Ok(output_files)
-}
-
-fn unique_step_id(existing: &[WorkflowStepConfig], base: &str) -> String {
-    if !existing.iter().any(|step| step.id == base) {
-        return base.to_string();
-    }
-    let mut idx = 2usize;
-    loop {
-        let candidate = format!("{base}_{idx}");
-        if !existing.iter().any(|step| step.id == candidate) {
-            return candidate;
-        }
-        idx += 1;
-    }
 }
 
 fn run_workflow_detail_tui(
@@ -2667,7 +2604,10 @@ mod tests {
 
     #[test]
     fn workflow_inputs_as_csv_handles_empty_sequence() {
-        assert_eq!(workflow_inputs_as_csv(&WorkflowInputs::default()), "<none>");
+        assert_eq!(
+            workflow_inputs_as_csv(&crate::config::WorkflowInputs::default()),
+            "<none>"
+        );
     }
 
     #[test]
@@ -2806,7 +2746,8 @@ mod tests {
         let mut state = test_setup_state();
         let key = OutputKey::parse("summary").expect("output key");
         let missing_key = OutputKey::parse("missing").expect("output key");
-        let template = PathTemplate::parse("outputs/summary.md").expect("path template");
+        let template =
+            crate::config::PathTemplate::parse("outputs/summary.md").expect("path template");
 
         assert!(state
             .set_step_outputs("main", "default", "step_1", Vec::new())
