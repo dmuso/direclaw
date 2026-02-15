@@ -1,5 +1,6 @@
-use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::shared::serde_ext::parse_via_string;
 
 pub fn validate_identifier_value(kind: &str, value: &str) -> Result<(), String> {
     if value.is_empty() {
@@ -58,10 +59,7 @@ macro_rules! define_id_type {
             where
                 D: Deserializer<'de>,
             {
-                let raw = String::deserialize(deserializer)?;
-                Self::parse(&raw).map_err(|err| {
-                    D::Error::custom(format!("invalid {} `{}`: {}", $kind, raw, err))
-                })
+                parse_via_string(deserializer, $kind, Self::parse)
             }
         }
     };

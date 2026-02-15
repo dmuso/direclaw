@@ -1,5 +1,6 @@
 use crate::shared::ids::validate_identifier_value;
 pub use crate::shared::ids::{AgentId, OrchestratorId, StepId, WorkflowId};
+use crate::shared::serde_ext::parse_via_string;
 use serde::de::Error as _;
 use serde::ser::Serializer;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -30,9 +31,7 @@ impl<'de> Deserialize<'de> for WorkflowInputKey {
     where
         D: Deserializer<'de>,
     {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw)
-            .map_err(|err| D::Error::custom(format!("invalid workflow input key `{raw}`: {err}")))
+        parse_via_string(deserializer, "workflow input key", Self::parse)
     }
 }
 
@@ -170,9 +169,7 @@ impl<'de> Deserialize<'de> for OutputKey {
     where
         D: Deserializer<'de>,
     {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw)
-            .map_err(|err| D::Error::custom(format!("invalid output key `{raw}`: {err}")))
+        parse_via_string(deserializer, "output key", Self::parse)
     }
 }
 
@@ -205,9 +202,7 @@ impl<'de> Deserialize<'de> for PathTemplate {
     where
         D: Deserializer<'de>,
     {
-        let raw = String::deserialize(deserializer)?;
-        Self::parse(&raw)
-            .map_err(|err| D::Error::custom(format!("invalid path template `{raw}`: {err}")))
+        parse_via_string(deserializer, "path template", Self::parse)
     }
 }
 
