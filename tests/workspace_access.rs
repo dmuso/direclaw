@@ -1,6 +1,7 @@
 use direclaw::config::{ConfigError, OrchestratorConfig, Settings};
-use direclaw::orchestrator::{
-    enforce_workspace_access, resolve_workspace_access_context, OrchestratorError,
+use direclaw::orchestration::error::OrchestratorError;
+use direclaw::orchestration::workspace_access::{
+    enforce_workspace_access, resolve_workspace_access_context,
 };
 use std::path::PathBuf;
 

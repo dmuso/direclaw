@@ -1,13 +1,26 @@
 use direclaw::config::{OrchestratorConfig, OutputKey, PathTemplate, Settings};
-use direclaw::orchestrator::{
-    enforce_execution_safety, evaluate_step_result, parse_and_validate_selector_result,
-    parse_workflow_result_envelope, process_queued_message, render_step_prompt,
-    resolve_execution_safety_limits, resolve_selector_with_retries, resolve_step_output_paths,
-    route_selector_action, ExecutionSafetyLimits, FunctionRegistry, RouteContext,
-    RoutedSelectorAction, RunState, SelectorAction, SelectorArtifactStore, SelectorRequest,
-    SelectorResult, SelectorStatus, StatusResolutionInput, StepAttemptRecord, WorkflowEngine,
-    WorkflowRunRecord, WorkflowRunStore,
+use direclaw::orchestration::function_registry::FunctionRegistry;
+use direclaw::orchestration::output_contract::{
+    evaluate_step_result, parse_workflow_result_envelope, resolve_step_output_paths,
 };
+use direclaw::orchestration::prompt_render::render_step_prompt;
+use direclaw::orchestration::routing::{process_queued_message, StatusResolutionInput};
+use direclaw::orchestration::run_store::{
+    RunState, StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore,
+};
+use direclaw::orchestration::selector::{
+    parse_and_validate_selector_result, resolve_selector_with_retries, SelectorAction,
+    SelectorRequest, SelectorResult, SelectorStatus,
+};
+use direclaw::orchestration::selector_artifacts::SelectorArtifactStore;
+use direclaw::orchestration::transitions::{
+    route_selector_action, RouteContext, RoutedSelectorAction,
+};
+use direclaw::orchestration::workflow_engine::{
+    enforce_execution_safety, resolve_execution_safety_limits, ExecutionSafetyLimits,
+    WorkflowEngine,
+};
+use direclaw::orchestration::workspace_access::resolve_workspace_access_context;
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::{bootstrap_state_root, StatePaths};
@@ -1876,11 +1889,8 @@ channels: {{}}
         private_workspace.display()
     ))
     .expect("settings");
-    let workspace_context = direclaw::orchestrator::resolve_workspace_access_context(
-        &settings,
-        "engineering_orchestrator",
-    )
-    .expect("workspace context");
+    let workspace_context = resolve_workspace_access_context(&settings, "engineering_orchestrator")
+        .expect("workspace context");
     let orchestrator: OrchestratorConfig = serde_yaml::from_str(&format!(
         r#"
 id: engineering_orchestrator

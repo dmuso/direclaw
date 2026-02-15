@@ -1,9 +1,9 @@
 use direclaw::config::{OrchestratorConfig, WorkflowConfig};
+use direclaw::orchestration::error::OrchestratorError;
 use direclaw::orchestration::run_store::{RunState, WorkflowRunRecord, WorkflowRunStore};
 use direclaw::orchestration::workflow_engine::{
     is_retryable_step_error, resolve_next_step_pointer, ExecutionSafetyLimits, WorkflowEngine,
 };
-use direclaw::orchestrator::OrchestratorError;
 use direclaw::provider::RunnerBinaries;
 use serde_json::Map;
 use tempfile::tempdir;

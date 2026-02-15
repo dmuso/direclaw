@@ -1,5 +1,5 @@
 use direclaw::config::Settings;
-use direclaw::orchestrator::WorkflowRunStore;
+use direclaw::orchestration::run_store::{RunState, WorkflowRunStore};
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::{IncomingMessage, OutgoingMessage, QueuePaths};
 use direclaw::runtime::{
@@ -423,7 +423,7 @@ fn workflow_bound_message_resumes_run_execution_when_not_status_command() {
     assert_eq!(processed, 1);
 
     let run = run_store.load_run("run-resume-1").expect("load run");
-    assert_eq!(run.state, direclaw::orchestrator::RunState::Succeeded);
+    assert_eq!(run.state, RunState::Succeeded);
     assert!(state_root
         .join("workflows/runs/run-resume-1/steps/start/attempts/1/result.json")
         .is_file());
@@ -452,7 +452,7 @@ fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
     run_store
         .transition_state(
             &mut run,
-            direclaw::orchestrator::RunState::Running,
+            RunState::Running,
             2,
             "running",
             false,
@@ -988,7 +988,7 @@ fn recovered_workflow_bound_message_resumes_existing_run_after_restart() {
     assert_eq!(processed, 1);
 
     let run = run_store.load_run("run-recovered-1").expect("run");
-    assert_eq!(run.state, direclaw::orchestrator::RunState::Succeeded);
+    assert_eq!(run.state, RunState::Succeeded);
     assert!(state_root
         .join("workflows/runs/run-recovered-1/steps/start/attempts/1/result.json")
         .is_file());
