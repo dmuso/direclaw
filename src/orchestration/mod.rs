@@ -1,4 +1,5 @@
 pub mod diagnostics;
+pub mod error;
 pub mod function_registry;
 pub mod output_contract;
 pub mod progress;
