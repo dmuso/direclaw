@@ -1,4 +1,4 @@
-use super::{now_secs, queue_worker, sleep_with_stop, WorkerEvent};
+use super::{heartbeat_worker, now_secs, queue_worker, sleep_with_stop, WorkerEvent};
 use crate::config::Settings;
 use crate::slack;
 use std::path::{Path, PathBuf};
@@ -148,7 +148,7 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
             WorkerRuntime::QueueProcessor => Ok(()),
             WorkerRuntime::OrchestratorDispatcher => Ok(()),
             WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
-            WorkerRuntime::Heartbeat => Ok(()),
+            WorkerRuntime::Heartbeat => heartbeat_worker::tick_heartbeat_worker(),
         };
 
         match tick {

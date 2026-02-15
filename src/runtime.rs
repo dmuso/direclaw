@@ -6,6 +6,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod channel_worker;
+pub mod heartbeat_worker;
 pub mod logging;
 pub mod ownership_lock;
 pub mod queue_worker;
