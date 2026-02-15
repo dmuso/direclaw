@@ -229,3 +229,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 14:36 - Extracted per-key queue scheduler domain logic to `src/queue/scheduler.rs`, re-exported scheduler APIs from `queue` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 14:39 - Extracted queue lifecycle claim/complete/requeue behavior to `src/queue/lifecycle.rs`, re-exported lifecycle APIs from `queue` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 14:41 - Extracted queue path/filename helpers to `src/queue/paths.rs`, re-exported paths APIs from `queue` for compatibility, and added integration coverage for the new module path.
+- 2026-02-15 14:44 - Extracted queue message types to `src/queue/message.rs`, re-exported message APIs from `queue` for compatibility, and added integration coverage for the new module path.
