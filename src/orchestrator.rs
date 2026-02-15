@@ -4,9 +4,7 @@ use crate::config::{
     OutputKey, PathTemplate, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
     WorkflowStepWorkspaceMode,
 };
-use crate::orchestration::diagnostics::{
-    append_security_log, persist_selector_invocation_log, provider_error_log,
-};
+use crate::orchestration::diagnostics::append_security_log;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
 pub use crate::orchestration::output_contract::{
     evaluate_step_result, interpolate_output_template, parse_review_decision,
@@ -20,8 +18,8 @@ pub use crate::orchestration::run_store::{
 };
 pub use crate::orchestration::selector::{
     parse_and_validate_selector_result, resolve_orchestrator_id, resolve_selector_with_retries,
-    FunctionArgSchema, FunctionArgType, FunctionSchema, SelectionResolution, SelectorAction,
-    SelectorRequest, SelectorResult, SelectorStatus,
+    run_selector_attempt_with_provider, FunctionArgSchema, FunctionArgType, FunctionSchema,
+    SelectionResolution, SelectorAction, SelectorRequest, SelectorResult, SelectorStatus,
 };
 pub use crate::orchestration::selector_artifacts::SelectorArtifactStore;
 pub use crate::orchestration::transitions::{
@@ -36,18 +34,14 @@ pub use crate::orchestration::workspace_access::{
     enforce_workspace_access, resolve_agent_workspace_root, resolve_workspace_access_context,
     verify_orchestrator_workspace_access, WorkspaceAccessContext,
 };
-use crate::provider::{
-    run_provider, write_file_backed_prompt, ProviderKind, ProviderRequest, RunnerBinaries,
-};
+use crate::provider::RunnerBinaries;
 use crate::queue::IncomingMessage;
 #[cfg(test)]
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -136,113 +130,6 @@ fn missing_run_for_io(run_id: &str, err: &OrchestratorError) -> Option<Orchestra
             })
         }
         _ => None,
-    }
-}
-
-pub fn run_selector_attempt_with_provider(
-    state_root: &Path,
-    settings: &Settings,
-    request: &SelectorRequest,
-    orchestrator: &OrchestratorConfig,
-    attempt: u32,
-    binaries: &RunnerBinaries,
-) -> Result<String, String> {
-    let selector_agent = orchestrator
-        .agents
-        .get(&orchestrator.selector_agent)
-        .ok_or_else(|| {
-            format!(
-                "selector agent `{}` missing from orchestrator config",
-                orchestrator.selector_agent
-            )
-        })?;
-    let provider = ProviderKind::try_from(selector_agent.provider.as_str())
-        .map_err(|err| format!("invalid selector provider: {err}"))?;
-
-    let private_workspace = settings
-        .resolve_private_workspace(&orchestrator.id)
-        .map_err(|err| err.to_string())?;
-    let cwd = resolve_agent_workspace_root(
-        &private_workspace,
-        &orchestrator.selector_agent,
-        selector_agent,
-    );
-    fs::create_dir_all(&cwd).map_err(|err| err.to_string())?;
-
-    let request_json = serde_json::to_string_pretty(request).map_err(|err| err.to_string())?;
-    let selector_result_path = cwd
-        .join("orchestrator")
-        .join("select")
-        .join("results")
-        .join(format!("{}_attempt_{attempt}.json", request.selector_id));
-    if let Some(parent) = selector_result_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-
-    let prompt = format!(
-        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Apply the user message and available workflow/function context.\n3. Output exactly one structured JSON selector result to this path:\n{}\n4. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
-        selector_result_path.display()
-    );
-    let context = format!(
-        "orchestratorId={}\nselectorAgent={}\nattempt={attempt}\nselectorResultPath={}",
-        orchestrator.id,
-        orchestrator.selector_agent,
-        selector_result_path.display()
-    );
-    let request_id = format!("{}_attempt_{attempt}", request.selector_id);
-    let artifacts = write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
-        .map_err(|err| err.to_string())?;
-
-    let provider_request = ProviderRequest {
-        agent_id: orchestrator.selector_agent.clone(),
-        provider,
-        model: selector_agent.model.clone(),
-        cwd: cwd.clone(),
-        message: format!(
-            "Read [file: {}] and [file: {}]. Write selector result JSON to: {}",
-            artifacts.prompt_file.display(),
-            artifacts
-                .context_files
-                .first()
-                .map(|path| path.display().to_string())
-                .unwrap_or_default(),
-            selector_result_path.display()
-        ),
-        prompt_artifacts: artifacts,
-        timeout: Duration::from_secs(orchestrator.selector_timeout_seconds),
-        reset_requested: false,
-        fresh_on_failure: false,
-        env_overrides: BTreeMap::new(),
-    };
-
-    match run_provider(&provider_request, binaries) {
-        Ok(result) => {
-            persist_selector_invocation_log(
-                state_root,
-                &request.selector_id,
-                attempt,
-                Some(&result.log),
-                None,
-            );
-            fs::read_to_string(&selector_result_path).map_err(|err| {
-                format!(
-                    "selector did not write result file at {}: {}",
-                    selector_result_path.display(),
-                    err
-                )
-            })
-        }
-        Err(err) => {
-            let error_text = err.to_string();
-            persist_selector_invocation_log(
-                state_root,
-                &request.selector_id,
-                attempt,
-                provider_error_log(&err),
-                Some(&error_text),
-            );
-            Err(error_text)
-        }
     }
 }
 

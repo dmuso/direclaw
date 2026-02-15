@@ -1,10 +1,13 @@
 use direclaw::config::OrchestratorConfig;
 use direclaw::orchestration::selector::{
-    parse_and_validate_selector_result, resolve_selector_with_retries, FunctionArgSchema,
-    FunctionArgType, FunctionSchema, SelectorAction, SelectorRequest, SelectorStatus,
+    parse_and_validate_selector_result, resolve_selector_with_retries,
+    run_selector_attempt_with_provider, FunctionArgSchema, FunctionArgType, FunctionSchema,
+    SelectorAction, SelectorRequest, SelectorStatus,
 };
+use direclaw::provider::RunnerBinaries;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use tempfile::tempdir;
 
 fn sample_request() -> SelectorRequest {
     SelectorRequest {
@@ -106,4 +109,41 @@ fn selector_module_rejects_unknown_argument() {
     assert!(err
         .to_string()
         .contains("unknown argument `bogus` for function `workflow.status`"));
+}
+
+#[test]
+fn selector_module_exposes_selector_provider_attempt_runner() {
+    let settings: direclaw::config::Settings = serde_yaml::from_str(
+        r#"
+workspaces_path: /tmp/workspaces
+shared_workspaces: {}
+orchestrators:
+  eng:
+    shared_access: []
+channel_profiles:
+  engineering:
+    channel: slack
+    orchestrator_id: eng
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring: {}
+channels: {}
+"#,
+    )
+    .expect("settings");
+    let request = sample_request();
+    let temp = tempdir().expect("tempdir");
+    let binaries = RunnerBinaries::default();
+
+    let err = run_selector_attempt_with_provider(
+        temp.path(),
+        &settings,
+        &request,
+        &sample_orchestrator(),
+        0,
+        &binaries,
+    )
+    .expect_err("selector agent must exist");
+
+    assert!(err.contains("selector agent `selector` missing"));
 }

@@ -1,10 +1,18 @@
 use crate::app::command_catalog::FunctionArgTypeDef;
 use crate::config::{OrchestratorConfig, Settings};
+use crate::orchestration::diagnostics::{persist_selector_invocation_log, provider_error_log};
+use crate::orchestration::workspace_access::resolve_agent_workspace_root;
 use crate::orchestrator::OrchestratorError;
+use crate::provider::{
+    run_provider, write_file_backed_prompt, ProviderKind, ProviderRequest, RunnerBinaries,
+};
 use crate::queue::IncomingMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
 
 pub fn resolve_orchestrator_id(
     settings: &Settings,
@@ -25,6 +33,113 @@ pub fn resolve_orchestrator_id(
             channel_profile_id: channel_profile_id.to_string(),
         })?;
     Ok(profile.orchestrator_id.clone())
+}
+
+pub fn run_selector_attempt_with_provider(
+    state_root: &Path,
+    settings: &Settings,
+    request: &SelectorRequest,
+    orchestrator: &OrchestratorConfig,
+    attempt: u32,
+    binaries: &RunnerBinaries,
+) -> Result<String, String> {
+    let selector_agent = orchestrator
+        .agents
+        .get(&orchestrator.selector_agent)
+        .ok_or_else(|| {
+            format!(
+                "selector agent `{}` missing from orchestrator config",
+                orchestrator.selector_agent
+            )
+        })?;
+    let provider = ProviderKind::try_from(selector_agent.provider.as_str())
+        .map_err(|err| format!("invalid selector provider: {err}"))?;
+
+    let private_workspace = settings
+        .resolve_private_workspace(&orchestrator.id)
+        .map_err(|err| err.to_string())?;
+    let cwd = resolve_agent_workspace_root(
+        &private_workspace,
+        &orchestrator.selector_agent,
+        selector_agent,
+    );
+    fs::create_dir_all(&cwd).map_err(|err| err.to_string())?;
+
+    let request_json = serde_json::to_string_pretty(request).map_err(|err| err.to_string())?;
+    let selector_result_path = cwd
+        .join("orchestrator")
+        .join("select")
+        .join("results")
+        .join(format!("{}_attempt_{attempt}.json", request.selector_id));
+    if let Some(parent) = selector_result_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+
+    let prompt = format!(
+        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Apply the user message and available workflow/function context.\n3. Output exactly one structured JSON selector result to this path:\n{}\n4. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
+        selector_result_path.display()
+    );
+    let context = format!(
+        "orchestratorId={}\nselectorAgent={}\nattempt={attempt}\nselectorResultPath={}",
+        orchestrator.id,
+        orchestrator.selector_agent,
+        selector_result_path.display()
+    );
+    let request_id = format!("{}_attempt_{attempt}", request.selector_id);
+    let artifacts = write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
+        .map_err(|err| err.to_string())?;
+
+    let provider_request = ProviderRequest {
+        agent_id: orchestrator.selector_agent.clone(),
+        provider,
+        model: selector_agent.model.clone(),
+        cwd: cwd.clone(),
+        message: format!(
+            "Read [file: {}] and [file: {}]. Write selector result JSON to: {}",
+            artifacts.prompt_file.display(),
+            artifacts
+                .context_files
+                .first()
+                .map(|path| path.display().to_string())
+                .unwrap_or_default(),
+            selector_result_path.display()
+        ),
+        prompt_artifacts: artifacts,
+        timeout: Duration::from_secs(orchestrator.selector_timeout_seconds),
+        reset_requested: false,
+        fresh_on_failure: false,
+        env_overrides: BTreeMap::new(),
+    };
+
+    match run_provider(&provider_request, binaries) {
+        Ok(result) => {
+            persist_selector_invocation_log(
+                state_root,
+                &request.selector_id,
+                attempt,
+                Some(&result.log),
+                None,
+            );
+            fs::read_to_string(&selector_result_path).map_err(|err| {
+                format!(
+                    "selector did not write result file at {}: {}",
+                    selector_result_path.display(),
+                    err
+                )
+            })
+        }
+        Err(err) => {
+            let error_text = err.to_string();
+            persist_selector_invocation_log(
+                state_root,
+                &request.selector_id,
+                attempt,
+                provider_error_log(&err),
+                Some(&error_text),
+            );
+            Err(error_text)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
