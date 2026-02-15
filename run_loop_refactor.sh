@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 SPEC="docs/build/domain-modelling-file-structure-proposal.md"
-LOOP_COUNT="${1:-${LOOP_COUNT:-20}}"
+LOOP_COUNT="${1:-${LOOP_COUNT:-40}}"
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "Error: 'codex' CLI is not installed or not in PATH." >&2

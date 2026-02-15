@@ -1,10 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FunctionArgTypeDef {
-    String,
-    Boolean,
-    Integer,
-    Object,
-}
+use crate::orchestration::selector::FunctionArgType;
+
+pub type FunctionArgTypeDef = FunctionArgType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionArgDef {

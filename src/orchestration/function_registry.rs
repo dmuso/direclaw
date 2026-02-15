@@ -38,7 +38,7 @@ impl FunctionRegistry {
                         (
                             arg.name.to_string(),
                             FunctionArgSchema {
-                                arg_type: arg.arg_type.into(),
+                                arg_type: arg.arg_type,
                                 required: arg.required,
                                 description: arg.description.to_string(),
                             },

@@ -1,4 +1,3 @@
-use crate::app::command_catalog::FunctionArgTypeDef;
 use crate::config::{OrchestratorConfig, Settings};
 use crate::orchestration::diagnostics::{persist_selector_invocation_log, provider_error_log};
 use crate::orchestration::error::OrchestratorError;
@@ -142,7 +141,7 @@ pub fn run_selector_attempt_with_provider(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FunctionArgType {
     String,
@@ -169,17 +168,6 @@ impl std::fmt::Display for FunctionArgType {
             Self::Boolean => write!(f, "boolean"),
             Self::Integer => write!(f, "integer"),
             Self::Object => write!(f, "object"),
-        }
-    }
-}
-
-impl From<FunctionArgTypeDef> for FunctionArgType {
-    fn from(value: FunctionArgTypeDef) -> Self {
-        match value {
-            FunctionArgTypeDef::String => Self::String,
-            FunctionArgTypeDef::Boolean => Self::Boolean,
-            FunctionArgTypeDef::Integer => Self::Integer,
-            FunctionArgTypeDef::Object => Self::Object,
         }
     }
 }
