@@ -20,8 +20,4 @@ fi
 for ((i = 1; i <= LOOP_COUNT; i++)); do
   echo "=== Continuing refactor ($i/$LOOP_COUNT) ==="
   codex exec --yolo "We are iteratively refactoring to a better domain model which requires splitting files and moving/grouping related functgionality. The end goal of our domain structure is documented in '$SPEC'. This is a living, working document. At the bottom of the document there is a running log of iterative changes that have been made so far. Continue this work. Analyse the document, the current file structure, and the running log and identify the next logical change to move us one step closer to the desired outcome. Ensure all tests pass once your change is made. Update the running log and add an entry for your work once done. Commit your work as the last step."
-
-  if [[ "$status" -ne 0 ]]; then
-    exit "$status"
-  fi
 done
