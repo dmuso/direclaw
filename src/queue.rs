@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 
 pub mod file_tags;
 pub mod lifecycle;
+pub mod paths;
 pub mod scheduler;
 pub use file_tags::{
     append_inbound_file_tags, extract_inbound_file_tags, prepare_outbound_content,
 };
 pub use lifecycle::{claim_oldest, complete_success, requeue_failure, ClaimedMessage};
+pub use paths::{is_valid_queue_json_filename, outgoing_filename, QueuePaths};
 pub use scheduler::{derive_ordering_key, OrderingKey, PerKeyScheduler, Scheduled};
 
 #[derive(Debug, thiserror::Error)]
@@ -69,13 +70,6 @@ pub struct OutgoingMessage {
     pub workflow_step_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueuePaths {
-    pub incoming: PathBuf,
-    pub processing: PathBuf,
-    pub outgoing: PathBuf,
-}
-
 pub const OUTBOUND_MAX_CHARS: usize = 4000;
 pub const OUTBOUND_TRUNCATE_KEEP_CHARS: usize = 3900;
 pub const OUTBOUND_TRUNCATION_SUFFIX: &str = "\n\n[Response truncated...]";
@@ -87,61 +81,13 @@ pub struct OutboundContent {
     pub omitted_files: Vec<String>,
 }
 
-impl QueuePaths {
-    pub fn from_state_root(state_root: &Path) -> Self {
-        Self {
-            incoming: state_root.join("queue/incoming"),
-            processing: state_root.join("queue/processing"),
-            outgoing: state_root.join("queue/outgoing"),
-        }
-    }
-}
-
-pub fn outgoing_filename(channel: &str, message_id: &str, timestamp: i64) -> String {
-    if channel == "heartbeat" {
-        format!("{}.json", sanitize_filename_component(message_id))
-    } else {
-        format!(
-            "{}_{}_{}.json",
-            sanitize_filename_component(channel),
-            sanitize_filename_component(message_id),
-            timestamp
-        )
-    }
-}
-
-pub fn is_valid_queue_json_filename(filename: &str) -> bool {
-    let path = Path::new(filename);
-    if path.extension().and_then(|v| v.to_str()) != Some("json") {
-        return false;
-    }
-
-    if let Some(stem) = path.file_stem().and_then(|v| v.to_str()) {
-        return !stem.trim().is_empty();
-    }
-
-    false
-}
-
-fn sanitize_filename_component(raw: &str) -> String {
-    raw.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
 
-    fn write_incoming_file(dir: &Path, name: &str, payload: &IncomingMessage) {
+    fn write_incoming_file(dir: &std::path::Path, name: &str, payload: &IncomingMessage) {
         let path = dir.join(name);
         fs::write(
             path,

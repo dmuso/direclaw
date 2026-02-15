@@ -228,3 +228,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 14:34 - Extracted queue file-tag and outbound normalization logic to `src/queue/file_tags.rs`, re-exported queue helper APIs for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 14:36 - Extracted per-key queue scheduler domain logic to `src/queue/scheduler.rs`, re-exported scheduler APIs from `queue` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 14:39 - Extracted queue lifecycle claim/complete/requeue behavior to `src/queue/lifecycle.rs`, re-exported lifecycle APIs from `queue` for compatibility, and added integration coverage for the new module path.
+- 2026-02-15 14:41 - Extracted queue path/filename helpers to `src/queue/paths.rs`, re-exported paths APIs from `queue` for compatibility, and added integration coverage for the new module path.
