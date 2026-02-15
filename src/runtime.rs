@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod channel_worker;
 pub mod logging;
 pub mod queue_worker;
 pub mod recovery;
@@ -427,7 +428,7 @@ fn run_worker(
         let tick = match spec.runtime {
             WorkerRuntime::QueueProcessor => Ok(()),
             WorkerRuntime::OrchestratorDispatcher => Ok(()),
-            WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
+            WorkerRuntime::Slack => channel_worker::tick_slack_worker(&state_root, &settings),
             WorkerRuntime::Heartbeat => Ok(()),
         };
 
@@ -460,12 +461,6 @@ fn run_worker(
         worker_id: spec.id,
         at: now_secs(),
     });
-}
-
-fn tick_slack_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
-    slack::sync_once(state_root, settings)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
 }
 
 fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
