@@ -1,7 +1,10 @@
 #[cfg(test)]
 use std::fs;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
 use std::thread;
+#[cfg(test)]
 use std::time::Duration;
 
 pub mod channel_worker;
@@ -12,6 +15,7 @@ pub mod queue_worker;
 pub mod recovery;
 pub mod state_paths;
 pub mod supervisor;
+pub mod worker_primitives;
 pub mod worker_registry;
 
 pub use crate::shared::errors::RuntimeError;
@@ -33,46 +37,11 @@ pub use state_paths::{
 pub use supervisor::{
     load_supervisor_state, run_supervisor, save_supervisor_state, SupervisorState, WorkerHealth,
 };
+pub use worker_primitives::{queue_polling_defaults, QueuePollingDefaults};
+pub(crate) use worker_primitives::{
+    sleep_with_stop, WorkerEvent, QUEUE_MAX_CONCURRENCY, QUEUE_MAX_POLL_MS, QUEUE_MIN_POLL_MS,
+};
 pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
-
-const QUEUE_MAX_CONCURRENCY: usize = 4;
-const QUEUE_MIN_POLL_MS: u64 = 100;
-const QUEUE_MAX_POLL_MS: u64 = 1000;
-
-#[derive(Debug, Clone)]
-pub(crate) enum WorkerEvent {
-    Started {
-        worker_id: String,
-        at: i64,
-    },
-    Heartbeat {
-        worker_id: String,
-        at: i64,
-    },
-    Error {
-        worker_id: String,
-        at: i64,
-        message: String,
-        fatal: bool,
-    },
-    Stopped {
-        worker_id: String,
-        at: i64,
-    },
-}
-
-fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
-    let mut remaining = total;
-    while remaining > Duration::from_millis(0) {
-        if stop.load(Ordering::Relaxed) {
-            return false;
-        }
-        let step = remaining.min(Duration::from_millis(200));
-        thread::sleep(step);
-        remaining = remaining.saturating_sub(step);
-    }
-    !stop.load(Ordering::Relaxed)
-}
 
 #[cfg(test)]
 mod tests {
