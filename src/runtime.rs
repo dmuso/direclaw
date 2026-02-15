@@ -2,7 +2,7 @@
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 pub mod channel_worker;
 pub mod heartbeat_worker;
@@ -16,6 +16,7 @@ pub mod worker_registry;
 
 pub(crate) use crate::shared::fs_atomic::atomic_write_file;
 pub use crate::shared::fs_atomic::canonicalize_existing;
+pub(crate) use crate::shared::time::now_secs;
 pub use logging::append_runtime_log;
 pub use ownership_lock::{
     cleanup_stale_supervisor, clear_start_lock, is_process_alive, reserve_start_lock, signal_stop,
@@ -134,13 +135,6 @@ fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
         remaining = remaining.saturating_sub(step);
     }
     !stop.load(Ordering::Relaxed)
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
