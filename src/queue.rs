@@ -1,5 +1,6 @@
 pub mod file_tags;
 pub mod lifecycle;
+pub mod logging;
 pub mod message;
 pub mod outbound;
 pub mod paths;
