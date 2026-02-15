@@ -45,3 +45,24 @@ fn lib_root_does_not_export_legacy_commands_module() {
         "legacy compatibility module still exists at src/commands.rs"
     );
 }
+
+#[test]
+fn lib_root_does_not_export_legacy_tui_module() {
+    let lib_rs = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+    let source = fs::read_to_string(&lib_rs).expect("read src/lib.rs");
+
+    assert!(
+        !source.contains("pub mod tui;"),
+        "src/lib.rs still exports legacy tui compatibility module; setup should be consumed through src/setup/*"
+    );
+
+    let legacy_tui_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tui");
+    assert!(
+        !legacy_tui_dir.join("mod.rs").exists(),
+        "legacy compatibility module still exists at src/tui/mod.rs"
+    );
+    assert!(
+        !legacy_tui_dir.join("setup.rs").exists(),
+        "legacy compatibility module still exists at src/tui/setup.rs"
+    );
+}
