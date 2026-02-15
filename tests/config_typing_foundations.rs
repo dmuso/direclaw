@@ -130,6 +130,15 @@ fn app_command_dispatch_module_exposes_invocation_planner() {
 }
 
 #[test]
+fn app_cli_module_exposes_cli_verb_and_help_surface() {
+    let verb = direclaw::app::cli::parse_cli_verb("start");
+    assert_eq!(verb, direclaw::app::cli::CliVerb::Start);
+
+    let lines = direclaw::app::cli::cli_help_lines();
+    assert!(lines.iter().any(|line| line.contains("start")));
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [

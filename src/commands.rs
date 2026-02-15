@@ -33,6 +33,10 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub use crate::app::cli::cli_help_lines;
+pub use crate::app::cli::parse_cli_verb;
+pub use crate::app::cli::selector_help_lines;
+pub use crate::app::cli::CliVerb;
 pub use crate::app::command_catalog::function_ids;
 pub use crate::app::command_catalog::FunctionArgDef;
 pub use crate::app::command_catalog::FunctionArgTypeDef;
@@ -41,14 +45,6 @@ pub use crate::app::command_catalog::V1_FUNCTIONS;
 pub use crate::app::command_dispatch::plan_function_invocation;
 pub use crate::app::command_dispatch::FunctionExecutionPlan;
 pub use crate::app::command_dispatch::InternalFunction;
-
-pub fn selector_help_lines() -> Vec<String> {
-    let mut defs: Vec<_> = V1_FUNCTIONS.iter().collect();
-    defs.sort_by(|a, b| a.function_id.cmp(b.function_id));
-    defs.into_iter()
-        .map(|def| format!("  {0:36} {1}", def.function_id, def.description))
-        .collect()
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionExecutionContext<'a> {
@@ -305,90 +301,6 @@ fn remap_missing_run_error(run_id: &str, err: OrchestratorError) -> Orchestrator
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CliVerb {
-    Setup,
-    Start,
-    Stop,
-    Restart,
-    Status,
-    Logs,
-    Send,
-    Update,
-    Doctor,
-    Attach,
-    Channels,
-    Provider,
-    Model,
-    Agent,
-    Orchestrator,
-    OrchestratorAgent,
-    Workflow,
-    ChannelProfile,
-    Auth,
-    Supervisor,
-    Unknown,
-}
-
-pub fn parse_cli_verb(input: &str) -> CliVerb {
-    match input {
-        "setup" => CliVerb::Setup,
-        "start" => CliVerb::Start,
-        "stop" => CliVerb::Stop,
-        "restart" => CliVerb::Restart,
-        "status" => CliVerb::Status,
-        "logs" => CliVerb::Logs,
-        "send" => CliVerb::Send,
-        "update" => CliVerb::Update,
-        "doctor" => CliVerb::Doctor,
-        "attach" => CliVerb::Attach,
-        "channels" => CliVerb::Channels,
-        "provider" => CliVerb::Provider,
-        "model" => CliVerb::Model,
-        "agent" => CliVerb::Agent,
-        "orchestrator" => CliVerb::Orchestrator,
-        "orchestrator-agent" => CliVerb::OrchestratorAgent,
-        "workflow" => CliVerb::Workflow,
-        "channel-profile" => CliVerb::ChannelProfile,
-        "auth" => CliVerb::Auth,
-        "__supervisor" => CliVerb::Supervisor,
-        _ => CliVerb::Unknown,
-    }
-}
-
-pub fn cli_help_lines() -> Vec<String> {
-    vec![
-        "Commands:".to_string(),
-        "  setup                                Initialize state/config/runtime directories"
-            .to_string(),
-        "  start                                Start the DireClaw supervisor and workers"
-            .to_string(),
-        "  stop                                 Stop the active supervisor".to_string(),
-        "  restart                              Restart the supervisor and workers".to_string(),
-        "  status                               Show runtime ownership/health status".to_string(),
-        "  logs                                 Print runtime and worker logs".to_string(),
-        "  attach                               Attach to the active runtime session".to_string(),
-        "  doctor                               Run local environment and config checks"
-            .to_string(),
-        "  update check|apply                   Check for updates (apply is intentionally blocked)"
-            .to_string(),
-        "  send <profile> <message>             Queue a message for a channel profile".to_string(),
-        "  channels reset                       Reset channel sync state".to_string(),
-        "  channels slack sync                  Pull Slack messages into the queue".to_string(),
-        "  auth sync                            Sync provider auth from configured sources"
-            .to_string(),
-        "  orchestrator ...                     Manage orchestrators and routing defaults"
-            .to_string(),
-        "  orchestrator-agent ...               Manage agents under an orchestrator".to_string(),
-        "  agent ...                            Alias for `orchestrator-agent ...`".to_string(),
-        "  workflow ...                         Manage workflows and workflow runs".to_string(),
-        "  channel-profile ...                  Manage channel-to-orchestrator bindings"
-            .to_string(),
-        "  provider ...                         Set/show default provider preference".to_string(),
-        "  model ...                            Set/show default model preference".to_string(),
-    ]
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct RuntimePreferences {
     pub(crate) provider: Option<String>,
@@ -397,7 +309,7 @@ pub(crate) struct RuntimePreferences {
 
 pub fn run_cli(args: Vec<String>) -> Result<String, String> {
     if args.is_empty() {
-        return Ok(help_text());
+        return Ok(crate::app::cli::help_text());
     }
 
     match parse_cli_verb(args[0].as_str()) {
@@ -423,14 +335,6 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
         CliVerb::Supervisor => cmd_supervisor(&args[1..]),
         CliVerb::Unknown => Err(format!("unknown command `{}`", args[0])),
     }
-}
-
-fn help_text() -> String {
-    let mut lines = cli_help_lines();
-    lines.push(String::new());
-    lines.push("Selector-callable operations:".to_string());
-    lines.extend(selector_help_lines());
-    lines.join("\n")
 }
 
 #[derive(Debug, Clone, Default)]
