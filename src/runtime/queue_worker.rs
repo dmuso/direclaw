@@ -3,7 +3,11 @@ use super::{
     WorkerEvent, QUEUE_MAX_POLL_MS, QUEUE_MIN_POLL_MS,
 };
 use crate::config::Settings;
-use crate::orchestrator::{self, FunctionRegistry, RoutedSelectorAction, WorkflowRunStore};
+use crate::orchestration::function_registry::FunctionRegistry;
+use crate::orchestration::routing::process_queued_message_with_runner_binaries;
+use crate::orchestration::run_store::WorkflowRunStore;
+use crate::orchestration::selector::run_selector_attempt_with_provider;
+use crate::orchestration::transitions::RoutedSelectorAction;
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
 use std::collections::BTreeMap;
@@ -278,7 +282,7 @@ fn process_claimed_message(
     let run_store = WorkflowRunStore::new(state_root);
     let functions = FunctionRegistry::v1_defaults(run_store, settings);
 
-    let action = orchestrator::process_queued_message_with_runner_binaries(
+    let action = process_queued_message_with_runner_binaries(
         state_root,
         settings,
         &claimed.payload,
@@ -287,7 +291,7 @@ fn process_claimed_message(
         &functions,
         Some(binaries.clone()),
         |attempt, request, orchestrator_cfg| {
-            orchestrator::run_selector_attempt_with_provider(
+            run_selector_attempt_with_provider(
                 state_root,
                 settings,
                 request,
