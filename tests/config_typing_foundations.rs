@@ -120,6 +120,16 @@ fn app_command_catalog_module_exposes_v1_functions() {
 }
 
 #[test]
+fn app_command_dispatch_module_exposes_invocation_planner() {
+    let _planner: fn(
+        &str,
+        &serde_json::Map<String, serde_json::Value>,
+    )
+        -> Result<direclaw::app::command_dispatch::FunctionExecutionPlan, String> =
+        direclaw::app::command_dispatch::plan_function_invocation;
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
