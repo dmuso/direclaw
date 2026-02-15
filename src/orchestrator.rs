@@ -4,6 +4,10 @@ use crate::config::{
 };
 #[cfg(test)]
 use crate::config::{OutputKey, PathTemplate, WorkflowStepPromptType, WorkflowStepType};
+use crate::orchestration::diagnostics::{
+    append_security_log, persist_provider_invocation_log, persist_selector_invocation_log,
+    provider_error_log,
+};
 pub use crate::orchestration::output_contract::{
     evaluate_step_result, interpolate_output_template, parse_review_decision,
     parse_workflow_result_envelope, resolve_step_output_paths, StepEvaluation,
@@ -33,18 +37,17 @@ pub use crate::orchestration::workspace_access::{
     verify_orchestrator_workspace_access, WorkspaceAccessContext,
 };
 use crate::provider::{
-    consume_reset_flag, run_provider, write_file_backed_prompt, InvocationLog, ProviderError,
-    ProviderKind, ProviderRequest, RunnerBinaries,
+    consume_reset_flag, run_provider, write_file_backed_prompt, ProviderError, ProviderKind,
+    ProviderRequest, RunnerBinaries,
 };
 use crate::queue::IncomingMessage;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 #[cfg(test)]
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrchestratorError {
@@ -130,17 +133,6 @@ fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
         path: path.display().to_string(),
         source,
     }
-}
-
-fn append_security_log(state_root: &Path, line: &str) {
-    let path = state_root.join("logs/security.log");
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
-        return;
-    };
-    let _ = file.write_all(format!("{line}\n").as_bytes());
 }
 
 fn elapsed_now(base_now: i64, started_at: Instant) -> i64 {
@@ -849,149 +841,6 @@ fn resolve_runner_binaries() -> RunnerBinaries {
         openai: std::env::var("DIRECLAW_PROVIDER_BIN_OPENAI")
             .unwrap_or_else(|_| "codex".to_string()),
     }
-}
-
-fn provider_error_log(error: &ProviderError) -> Option<&InvocationLog> {
-    match error {
-        ProviderError::MissingBinary { log, .. } => Some(log),
-        ProviderError::NonZeroExit { log, .. } => Some(log),
-        ProviderError::Timeout { log, .. } => Some(log),
-        ProviderError::ParseFailure { log, .. } => log.as_deref(),
-        ProviderError::UnknownProvider(_)
-        | ProviderError::UnsupportedAnthropicModel(_)
-        | ProviderError::Io { .. } => None,
-    }
-}
-
-fn persist_provider_invocation_log(path_root: &Path, log: &InvocationLog) -> std::io::Result<()> {
-    let path = path_root.join("provider_invocation.json");
-    let payload = Value::Object(Map::from_iter([
-        ("agentId".to_string(), Value::String(log.agent_id.clone())),
-        (
-            "provider".to_string(),
-            Value::String(log.provider.to_string()),
-        ),
-        ("model".to_string(), Value::String(log.model.clone())),
-        (
-            "commandForm".to_string(),
-            Value::String(log.command_form.clone()),
-        ),
-        (
-            "workingDirectory".to_string(),
-            Value::String(log.working_directory.display().to_string()),
-        ),
-        (
-            "promptFile".to_string(),
-            Value::String(log.prompt_file.display().to_string()),
-        ),
-        (
-            "contextFiles".to_string(),
-            Value::Array(
-                log.context_files
-                    .iter()
-                    .map(|path| Value::String(path.display().to_string()))
-                    .collect(),
-            ),
-        ),
-        (
-            "exitCode".to_string(),
-            match log.exit_code {
-                Some(value) => Value::from(value),
-                None => Value::Null,
-            },
-        ),
-        ("timedOut".to_string(), Value::Bool(log.timed_out)),
-    ]));
-    let body = serde_json::to_vec_pretty(&payload).map_err(std::io::Error::other)?;
-    fs::write(path, body)
-}
-
-fn persist_selector_invocation_log(
-    state_root: &Path,
-    selector_id: &str,
-    attempt: u32,
-    log: Option<&InvocationLog>,
-    error: Option<&str>,
-) {
-    let path = state_root
-        .join("orchestrator/select/logs")
-        .join(format!("{selector_id}_attempt_{attempt}.invocation.json"));
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    let mut payload = Map::new();
-    payload.insert(
-        "selectorId".to_string(),
-        Value::String(selector_id.to_string()),
-    );
-    payload.insert("attempt".to_string(), Value::from(attempt));
-    payload.insert("timestamp".to_string(), Value::from(now_secs()));
-    payload.insert(
-        "status".to_string(),
-        Value::String(
-            if error.is_some() {
-                "failed"
-            } else {
-                "succeeded"
-            }
-            .to_string(),
-        ),
-    );
-    if let Some(error) = error {
-        payload.insert("error".to_string(), Value::String(error.to_string()));
-    }
-
-    if let Some(log) = log {
-        payload.insert("agentId".to_string(), Value::String(log.agent_id.clone()));
-        payload.insert(
-            "provider".to_string(),
-            Value::String(log.provider.to_string()),
-        );
-        payload.insert("model".to_string(), Value::String(log.model.clone()));
-        payload.insert(
-            "commandForm".to_string(),
-            Value::String(log.command_form.clone()),
-        );
-        payload.insert(
-            "workingDirectory".to_string(),
-            Value::String(log.working_directory.display().to_string()),
-        );
-        payload.insert(
-            "promptFile".to_string(),
-            Value::String(log.prompt_file.display().to_string()),
-        );
-        payload.insert(
-            "contextFiles".to_string(),
-            Value::Array(
-                log.context_files
-                    .iter()
-                    .map(|path| Value::String(path.display().to_string()))
-                    .collect(),
-            ),
-        );
-        payload.insert(
-            "exitCode".to_string(),
-            match log.exit_code {
-                Some(value) => Value::from(value),
-                None => Value::Null,
-            },
-        );
-        payload.insert("timedOut".to_string(), Value::Bool(log.timed_out));
-    }
-
-    let body = match serde_json::to_vec_pretty(&Value::Object(payload)) {
-        Ok(body) => body,
-        Err(_) => return,
-    };
-    let _ = fs::write(path, body);
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 fn is_retryable_step_error(error: &OrchestratorError) -> bool {
