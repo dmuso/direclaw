@@ -1,10 +1,13 @@
 use direclaw::runtime::state_paths::{bootstrap_state_root, StatePaths};
 use direclaw::runtime::supervisor::{
     cleanup_stale_supervisor, clear_start_lock, load_supervisor_state, reserve_start_lock,
-    save_supervisor_state, supervisor_ownership_state, OwnershipState, SupervisorState,
+    run_supervisor, save_supervisor_state, supervisor_ownership_state, OwnershipState,
+    SupervisorState,
 };
+use direclaw::{config::Settings, runtime::RuntimeError};
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use tempfile::tempdir;
 
 #[test]
@@ -38,4 +41,9 @@ fn runtime_supervisor_module_exposes_supervisor_state_and_lock_apis() {
 
     reserve_start_lock(&paths).expect("reserve");
     clear_start_lock(&paths);
+}
+
+#[test]
+fn runtime_supervisor_module_exposes_supervisor_loop_entrypoint() {
+    let _: fn(&Path, Settings) -> Result<(), RuntimeError> = run_supervisor;
 }

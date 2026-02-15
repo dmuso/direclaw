@@ -1,11 +1,7 @@
-use crate::config::Settings;
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,9 +21,9 @@ pub use state_paths::{
 };
 pub use supervisor::{
     cleanup_stale_supervisor, clear_start_lock, is_process_alive, load_supervisor_state,
-    reserve_start_lock, save_supervisor_state, signal_stop, spawn_supervisor_process,
-    stop_active_supervisor, supervisor_ownership_state, write_supervisor_lock_pid, OwnershipState,
-    StopResult, SupervisorState, WorkerHealth,
+    reserve_start_lock, run_supervisor, save_supervisor_state, signal_stop,
+    spawn_supervisor_process, stop_active_supervisor, supervisor_ownership_state,
+    write_supervisor_lock_pid, OwnershipState, StopResult, SupervisorState, WorkerHealth,
 };
 pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
 
@@ -126,190 +122,6 @@ pub fn canonicalize_existing(path: &Path) -> Result<PathBuf, std::io::Error> {
     fs::canonicalize(path)
 }
 
-pub fn run_supervisor(state_root: &Path, settings: Settings) -> Result<(), RuntimeError> {
-    let paths = StatePaths::new(state_root);
-    bootstrap_state_root(&paths)?;
-
-    let stop_path = paths.stop_signal_path();
-    if stop_path.exists() {
-        let _ = fs::remove_file(&stop_path);
-    }
-
-    let specs = channel_worker::build_worker_specs(&settings);
-    let mut state = SupervisorState {
-        running: true,
-        pid: Some(std::process::id()),
-        started_at: Some(now_secs()),
-        stopped_at: None,
-        workers: BTreeMap::new(),
-        last_error: None,
-    };
-
-    for spec in &specs {
-        state
-            .workers
-            .insert(spec.id.clone(), WorkerHealth::default());
-    }
-    save_supervisor_state(&paths, &state)?;
-    append_runtime_log(
-        &paths,
-        "info",
-        "supervisor.started",
-        &format!("pid={} workers={}", std::process::id(), specs.len()),
-    );
-
-    let fail_worker = std::env::var("DIRECLAW_FAIL_WORKER").ok();
-    let slow_shutdown_worker = std::env::var("DIRECLAW_SLOW_SHUTDOWN_WORKER").ok();
-    let stop = Arc::new(AtomicBool::new(false));
-    let (events_tx, events_rx) = mpsc::channel::<WorkerEvent>();
-    let mut handles = Vec::new();
-    let mut active = BTreeSet::new();
-
-    for spec in specs {
-        active.insert(spec.id.clone());
-        let tx = events_tx.clone();
-        let stop_flag = stop.clone();
-        let root = paths.root.clone();
-        let settings_clone = settings.clone();
-        let should_fail = fail_worker
-            .as_ref()
-            .map(|id| id == &spec.id)
-            .unwrap_or(false);
-        let slow_shutdown = slow_shutdown_worker
-            .as_ref()
-            .map(|id| id == &spec.id)
-            .unwrap_or(false);
-
-        handles.push(thread::spawn(move || {
-            channel_worker::run_worker(
-                spec,
-                channel_worker::WorkerRunContext {
-                    state_root: root,
-                    settings: settings_clone,
-                    stop: stop_flag,
-                    events: tx,
-                    should_fail,
-                    slow_shutdown,
-                    queue_max_concurrency: QUEUE_MAX_CONCURRENCY,
-                },
-            )
-        }));
-    }
-    drop(events_tx);
-
-    while !stop.load(Ordering::Relaxed) {
-        if paths.stop_signal_path().exists() {
-            stop.store(true, Ordering::Relaxed);
-            append_runtime_log(
-                &paths,
-                "info",
-                "supervisor.stop.signal",
-                "stop file detected",
-            );
-        }
-
-        match events_rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(event) => apply_worker_event(&paths, &mut state, &mut active, event),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !active.is_empty() && std::time::Instant::now() < deadline {
-        match events_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => apply_worker_event(&paths, &mut state, &mut active, event),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    if !active.is_empty() {
-        let message = format!(
-            "shutdown timeout waiting for workers: {}",
-            active.iter().cloned().collect::<Vec<_>>().join(",")
-        );
-        state.last_error = Some(message.clone());
-        for worker_id in &active {
-            if let Some(worker) = state.workers.get_mut(worker_id) {
-                worker.state = WorkerState::Error;
-                worker.last_error = Some("shutdown timeout".to_string());
-            }
-        }
-        append_runtime_log(&paths, "warn", "supervisor.shutdown.timeout", &message);
-    }
-
-    for handle in handles {
-        let _ = handle.join();
-    }
-
-    state.running = false;
-    state.pid = None;
-    state.stopped_at = Some(now_secs());
-    save_supervisor_state(&paths, &state)?;
-
-    clear_start_lock(&paths);
-    let _ = fs::remove_file(paths.stop_signal_path());
-    append_runtime_log(
-        &paths,
-        "info",
-        "supervisor.stopped",
-        "runtime stopped cleanly",
-    );
-    Ok(())
-}
-
-fn apply_worker_event(
-    paths: &StatePaths,
-    state: &mut SupervisorState,
-    active: &mut BTreeSet<String>,
-    event: WorkerEvent,
-) {
-    match event {
-        WorkerEvent::Started { worker_id, at } => {
-            let entry = state.workers.entry(worker_id.clone()).or_default();
-            entry.state = WorkerState::Running;
-            entry.last_heartbeat = Some(at);
-            append_runtime_log(paths, "info", "worker.started", &worker_id);
-        }
-        WorkerEvent::Heartbeat { worker_id, at } => {
-            let entry = state.workers.entry(worker_id).or_default();
-            if entry.state != WorkerState::Error {
-                entry.state = WorkerState::Running;
-            }
-            entry.last_heartbeat = Some(at);
-        }
-        WorkerEvent::Error {
-            worker_id,
-            at,
-            message,
-            fatal,
-        } => {
-            let entry = state.workers.entry(worker_id.clone()).or_default();
-            entry.state = WorkerState::Error;
-            entry.last_heartbeat = Some(at);
-            entry.last_error = Some(message.clone());
-            append_runtime_log(
-                paths,
-                if fatal { "error" } else { "warn" },
-                "worker.error",
-                &format!("{}: {}", worker_id, message),
-            );
-        }
-        WorkerEvent::Stopped { worker_id, at } => {
-            let entry = state.workers.entry(worker_id.clone()).or_default();
-            if entry.state != WorkerState::Error {
-                entry.state = WorkerState::Stopped;
-            }
-            entry.last_heartbeat = Some(at);
-            active.remove(&worker_id);
-            append_runtime_log(paths, "info", "worker.stopped", &worker_id);
-        }
-    }
-
-    let _ = save_supervisor_state(paths, state);
-}
-
 fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
     let mut remaining = total;
     while remaining > Duration::from_millis(0) {
@@ -372,10 +184,15 @@ fn sync_parent_dir(_parent: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Settings;
     use crate::provider::RunnerBinaries;
     use crate::queue::{IncomingMessage, QueuePaths};
+    use std::collections::BTreeMap;
     use std::sync::mpsc::RecvTimeoutError;
+    use std::sync::{mpsc, Arc, Mutex};
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn polling_defaults_are_one_second() {
@@ -410,6 +227,7 @@ mod tests {
 
     #[test]
     fn default_state_root_path_uses_home_direclaw() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let dir = tempdir().expect("temp dir");
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", dir.path());
