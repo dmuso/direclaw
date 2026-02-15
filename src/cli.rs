@@ -1,3 +1,4 @@
+use crate::commands;
 use crate::config::{
     default_global_config_path, load_orchestrator_config, normalize_workflow_input_key,
     AgentConfig, AuthSyncSource, ChannelKind, ChannelProfile, ConfigError, ConfigProviderKind,
@@ -68,30 +69,40 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
 }
 
 fn help_text() -> String {
-    [
-        "Commands:",
-        "  setup                                Initialize state/config/runtime directories",
-        "  start                                Start the DireClaw supervisor and workers",
-        "  stop                                 Stop the active supervisor",
-        "  restart                              Restart the supervisor and workers",
-        "  status                               Show runtime ownership/health status",
-        "  logs                                 Print runtime and worker logs",
-        "  attach                               Attach to the active runtime session",
-        "  doctor                               Run local environment and config checks",
-        "  update check|apply                   Check for updates (apply is intentionally blocked)",
-        "  send <profile> <message>             Queue a message for a channel profile",
-        "  channels reset                       Reset channel sync state",
-        "  channels slack sync                  Pull Slack messages into the queue",
-        "  auth sync                            Sync provider auth from configured sources",
-        "  orchestrator ...                     Manage orchestrators and routing defaults",
-        "  orchestrator-agent ...               Manage agents under an orchestrator",
-        "  agent ...                            Alias for `orchestrator-agent ...`",
-        "  workflow ...                         Manage workflows and workflow runs",
-        "  channel-profile ...                  Manage channel-to-orchestrator bindings",
-        "  provider ...                         Set/show default provider preference",
-        "  model ...                            Set/show default model preference",
-    ]
-    .join("\n")
+    let mut lines = vec![
+        "Commands:".to_string(),
+        "  setup                                Initialize state/config/runtime directories"
+            .to_string(),
+        "  start                                Start the DireClaw supervisor and workers"
+            .to_string(),
+        "  stop                                 Stop the active supervisor".to_string(),
+        "  restart                              Restart the supervisor and workers".to_string(),
+        "  status                               Show runtime ownership/health status".to_string(),
+        "  logs                                 Print runtime and worker logs".to_string(),
+        "  attach                               Attach to the active runtime session".to_string(),
+        "  doctor                               Run local environment and config checks"
+            .to_string(),
+        "  update check|apply                   Check for updates (apply is intentionally blocked)"
+            .to_string(),
+        "  send <profile> <message>             Queue a message for a channel profile".to_string(),
+        "  channels reset                       Reset channel sync state".to_string(),
+        "  channels slack sync                  Pull Slack messages into the queue".to_string(),
+        "  auth sync                            Sync provider auth from configured sources"
+            .to_string(),
+        "  orchestrator ...                     Manage orchestrators and routing defaults"
+            .to_string(),
+        "  orchestrator-agent ...               Manage agents under an orchestrator".to_string(),
+        "  agent ...                            Alias for `orchestrator-agent ...`".to_string(),
+        "  workflow ...                         Manage workflows and workflow runs".to_string(),
+        "  channel-profile ...                  Manage channel-to-orchestrator bindings"
+            .to_string(),
+        "  provider ...                         Set/show default provider preference".to_string(),
+        "  model ...                            Set/show default model preference".to_string(),
+        "".to_string(),
+        "Selector-callable operations:".to_string(),
+    ];
+    lines.extend(commands::selector_help_lines());
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, Default)]

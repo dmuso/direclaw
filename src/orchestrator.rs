@@ -1,4 +1,5 @@
 use crate::cli;
+use crate::commands::{self, function_ids, FunctionArgTypeDef};
 use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, OutputContractKey,
     Settings, WorkflowConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
@@ -186,6 +187,17 @@ impl std::fmt::Display for FunctionArgType {
             Self::Boolean => write!(f, "boolean"),
             Self::Integer => write!(f, "integer"),
             Self::Object => write!(f, "object"),
+        }
+    }
+}
+
+impl From<FunctionArgTypeDef> for FunctionArgType {
+    fn from(value: FunctionArgTypeDef) -> Self {
+        match value {
+            FunctionArgTypeDef::String => Self::String,
+            FunctionArgTypeDef::Boolean => Self::Boolean,
+            FunctionArgTypeDef::Integer => Self::Integer,
+            FunctionArgTypeDef::Object => Self::Object,
         }
     }
 }
@@ -2784,523 +2796,34 @@ impl Default for FunctionRegistry {
 
 impl FunctionRegistry {
     fn v1_catalog() -> BTreeMap<String, FunctionSchema> {
-        let mut catalog = BTreeMap::new();
-        let mut register = |function_id: &str,
-                            description: &str,
-                            args: Vec<(&str, FunctionArgType, bool, &str)>,
-                            read_only: bool| {
-            catalog.insert(
-                function_id.to_string(),
-                FunctionSchema {
-                    function_id: function_id.to_string(),
-                    description: description.to_string(),
-                    args: args
-                        .into_iter()
-                        .map(|(name, arg_type, required, arg_desc)| {
-                            (
-                                name.to_string(),
-                                FunctionArgSchema {
-                                    arg_type,
-                                    required,
-                                    description: arg_desc.to_string(),
-                                },
-                            )
-                        })
-                        .collect(),
-                    read_only,
-                },
-            );
-        };
-
-        register("daemon.start", "Start runtime workers", Vec::new(), false);
-        register("daemon.stop", "Stop runtime workers", Vec::new(), false);
-        register(
-            "daemon.restart",
-            "Restart runtime workers",
-            Vec::new(),
-            false,
-        );
-        register(
-            "daemon.status",
-            "Read runtime status and worker health",
-            Vec::new(),
-            true,
-        );
-        register("daemon.logs", "Read recent runtime logs", Vec::new(), true);
-        register(
-            "daemon.setup",
-            "Create default config and state root",
-            Vec::new(),
-            false,
-        );
-        register(
-            "daemon.send",
-            "Send message to channel profile",
-            vec![
+        commands::V1_FUNCTIONS
+            .iter()
+            .map(|def| {
+                let args = def
+                    .args
+                    .iter()
+                    .map(|arg| {
+                        (
+                            arg.name.to_string(),
+                            FunctionArgSchema {
+                                arg_type: arg.arg_type.into(),
+                                required: arg.required,
+                                description: arg.description.to_string(),
+                            },
+                        )
+                    })
+                    .collect();
                 (
-                    "channelProfileId",
-                    FunctionArgType::String,
-                    true,
-                    "Target channel profile id",
-                ),
-                ("message", FunctionArgType::String, true, "Message content"),
-            ],
-            false,
-        );
-        register(
-            "channels.reset",
-            "Reset channel state directories",
-            Vec::new(),
-            false,
-        );
-        register(
-            "channels.slack_sync",
-            "Run one Slack sync pass",
-            Vec::new(),
-            false,
-        );
-        register(
-            "provider.show",
-            "Show current provider/model preferences",
-            Vec::new(),
-            true,
-        );
-        register(
-            "provider.set",
-            "Set provider preference and optional model",
-            vec![
-                (
-                    "provider",
-                    FunctionArgType::String,
-                    true,
-                    "Provider id: anthropic or openai",
-                ),
-                (
-                    "model",
-                    FunctionArgType::String,
-                    false,
-                    "Optional model identifier",
-                ),
-            ],
-            false,
-        );
-        register(
-            "model.show",
-            "Show current model preference",
-            Vec::new(),
-            true,
-        );
-        register(
-            "model.set",
-            "Set model preference",
-            vec![("model", FunctionArgType::String, true, "Model identifier")],
-            false,
-        );
-        register(
-            "agent.list",
-            "List orchestrator agent ids",
-            vec![(
-                "orchestratorId",
-                FunctionArgType::String,
-                true,
-                "Target orchestrator id",
-            )],
-            true,
-        );
-        register(
-            "agent.add",
-            "Add orchestrator-local agent",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("agentId", FunctionArgType::String, true, "Agent id"),
-            ],
-            false,
-        );
-        register(
-            "agent.show",
-            "Show orchestrator-local agent",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("agentId", FunctionArgType::String, true, "Agent id"),
-            ],
-            true,
-        );
-        register(
-            "agent.remove",
-            "Remove orchestrator-local agent",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("agentId", FunctionArgType::String, true, "Agent id"),
-            ],
-            false,
-        );
-        register(
-            "agent.reset",
-            "Reset orchestrator-local agent defaults",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("agentId", FunctionArgType::String, true, "Agent id"),
-            ],
-            false,
-        );
-        register(
-            "orchestrator.list",
-            "List orchestrator ids",
-            Vec::new(),
-            true,
-        );
-        register(
-            "orchestrator.add",
-            "Add orchestrator and bootstrap config",
-            vec![(
-                "orchestratorId",
-                FunctionArgType::String,
-                true,
-                "Orchestrator id",
-            )],
-            false,
-        );
-        register(
-            "orchestrator.show",
-            "Show one orchestrator configuration summary",
-            vec![(
-                "orchestratorId",
-                FunctionArgType::String,
-                true,
-                "Target orchestrator id",
-            )],
-            true,
-        );
-        register(
-            "orchestrator.remove",
-            "Remove orchestrator from settings",
-            vec![(
-                "orchestratorId",
-                FunctionArgType::String,
-                true,
-                "Target orchestrator id",
-            )],
-            false,
-        );
-        register(
-            "orchestrator.set_private_workspace",
-            "Set orchestrator private workspace path",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                (
-                    "path",
-                    FunctionArgType::String,
-                    true,
-                    "Absolute private workspace path",
-                ),
-            ],
-            false,
-        );
-        register(
-            "orchestrator.grant_shared_access",
-            "Grant shared workspace key to orchestrator",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                (
-                    "sharedKey",
-                    FunctionArgType::String,
-                    true,
-                    "Shared workspace key",
-                ),
-            ],
-            false,
-        );
-        register(
-            "orchestrator.revoke_shared_access",
-            "Revoke shared workspace key from orchestrator",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                (
-                    "sharedKey",
-                    FunctionArgType::String,
-                    true,
-                    "Shared workspace key",
-                ),
-            ],
-            false,
-        );
-        register(
-            "orchestrator.set_selector_agent",
-            "Set orchestrator selector agent id",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                (
-                    "agentId",
-                    FunctionArgType::String,
-                    true,
-                    "Selector agent id",
-                ),
-            ],
-            false,
-        );
-        register(
-            "orchestrator.set_default_workflow",
-            "Set orchestrator default workflow id",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("workflowId", FunctionArgType::String, true, "Workflow id"),
-            ],
-            false,
-        );
-        register(
-            "orchestrator.set_selection_max_retries",
-            "Set selector retry limit",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("count", FunctionArgType::Integer, true, "Retry count >= 1"),
-            ],
-            false,
-        );
-        register(
-            "workflow.list",
-            "List workflows for an orchestrator",
-            vec![(
-                "orchestratorId",
-                FunctionArgType::String,
-                true,
-                "Target orchestrator id",
-            )],
-            true,
-        );
-        register(
-            "workflow.show",
-            "Show one workflow definition",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                (
-                    "workflowId",
-                    FunctionArgType::String,
-                    true,
-                    "Workflow id in orchestrator scope",
-                ),
-            ],
-            true,
-        );
-        register(
-            "workflow.add",
-            "Add workflow to orchestrator config",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("workflowId", FunctionArgType::String, true, "Workflow id"),
-            ],
-            false,
-        );
-        register(
-            "workflow.remove",
-            "Remove workflow from orchestrator config",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("workflowId", FunctionArgType::String, true, "Workflow id"),
-            ],
-            false,
-        );
-        register(
-            "workflow.run",
-            "Start a workflow run",
-            vec![
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Target orchestrator id",
-                ),
-                ("workflowId", FunctionArgType::String, true, "Workflow id"),
-                (
-                    "inputs",
-                    FunctionArgType::Object,
-                    false,
-                    "Optional key/value workflow inputs",
-                ),
-            ],
-            false,
-        );
-        register(
-            "workflow.status",
-            "Read workflow run status summary",
-            vec![("runId", FunctionArgType::String, true, "Workflow run id")],
-            true,
-        );
-        register(
-            "workflow.progress",
-            "Read full workflow progress payload",
-            vec![("runId", FunctionArgType::String, true, "Workflow run id")],
-            true,
-        );
-        register(
-            "workflow.cancel",
-            "Cancel a workflow run",
-            vec![("runId", FunctionArgType::String, true, "Workflow run id")],
-            false,
-        );
-        register(
-            "channel_profile.list",
-            "List configured channel profile ids",
-            Vec::new(),
-            true,
-        );
-        register(
-            "channel_profile.add",
-            "Add channel profile mapping",
-            vec![
-                (
-                    "channelProfileId",
-                    FunctionArgType::String,
-                    true,
-                    "Channel profile id",
-                ),
-                (
-                    "channel",
-                    FunctionArgType::String,
-                    true,
-                    "Channel backend id",
-                ),
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Mapped orchestrator id",
-                ),
-                (
-                    "slackAppUserId",
-                    FunctionArgType::String,
-                    false,
-                    "Slack bot user id",
-                ),
-                (
-                    "requireMentionInChannels",
-                    FunctionArgType::Boolean,
-                    false,
-                    "Slack mention requirement in channels",
-                ),
-            ],
-            false,
-        );
-        register(
-            "channel_profile.show",
-            "Show one channel profile mapping",
-            vec![(
-                "channelProfileId",
-                FunctionArgType::String,
-                true,
-                "Channel profile id",
-            )],
-            true,
-        );
-        register(
-            "channel_profile.remove",
-            "Remove channel profile mapping",
-            vec![(
-                "channelProfileId",
-                FunctionArgType::String,
-                true,
-                "Channel profile id",
-            )],
-            false,
-        );
-        register(
-            "channel_profile.set_orchestrator",
-            "Update channel profile orchestrator mapping",
-            vec![
-                (
-                    "channelProfileId",
-                    FunctionArgType::String,
-                    true,
-                    "Channel profile id",
-                ),
-                (
-                    "orchestratorId",
-                    FunctionArgType::String,
-                    true,
-                    "Mapped orchestrator id",
-                ),
-            ],
-            false,
-        );
-        register("update.check", "Check for updates", Vec::new(), true);
-        register(
-            "update.apply",
-            "Apply update (unsupported in this build)",
-            Vec::new(),
-            false,
-        );
-        register(
-            "daemon.attach",
-            "Attach to supervisor or return workflow summary",
-            Vec::new(),
-            true,
-        );
-
-        catalog
+                    def.function_id.to_string(),
+                    FunctionSchema {
+                        function_id: def.function_id.to_string(),
+                        description: def.description.to_string(),
+                        args,
+                        read_only: def.read_only,
+                    },
+                )
+            })
+            .collect()
     }
 
     fn invoke_cli(&self, args: Vec<String>) -> Result<Value, OrchestratorError> {
@@ -3442,25 +2965,27 @@ impl FunctionRegistry {
         self.validate_args(call, schema)?;
 
         match call.function_id.as_str() {
-            "daemon.start" => self.invoke_cli(vec!["start".to_string()]),
-            "daemon.stop" => self.invoke_cli(vec!["stop".to_string()]),
-            "daemon.restart" => self.invoke_cli(vec!["restart".to_string()]),
-            "daemon.status" => self.invoke_cli(vec!["status".to_string()]),
-            "daemon.logs" => self.invoke_cli(vec!["logs".to_string()]),
-            "daemon.setup" => self.invoke_cli(vec!["setup".to_string()]),
-            "daemon.send" => {
+            function_ids::DAEMON_START => self.invoke_cli(vec!["start".to_string()]),
+            function_ids::DAEMON_STOP => self.invoke_cli(vec!["stop".to_string()]),
+            function_ids::DAEMON_RESTART => self.invoke_cli(vec!["restart".to_string()]),
+            function_ids::DAEMON_STATUS => self.invoke_cli(vec!["status".to_string()]),
+            function_ids::DAEMON_LOGS => self.invoke_cli(vec!["logs".to_string()]),
+            function_ids::DAEMON_SETUP => self.invoke_cli(vec!["setup".to_string()]),
+            function_ids::DAEMON_SEND => {
                 let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
                 let message = parse_required_string_arg(&call.args, "message")?;
                 self.invoke_cli(vec!["send".to_string(), profile_id, message])
             }
-            "channels.reset" => self.invoke_cli(vec!["channels".to_string(), "reset".to_string()]),
-            "channels.slack_sync" => self.invoke_cli(vec![
+            function_ids::CHANNELS_RESET => {
+                self.invoke_cli(vec!["channels".to_string(), "reset".to_string()])
+            }
+            function_ids::CHANNELS_SLACK_SYNC => self.invoke_cli(vec![
                 "channels".to_string(),
                 "slack".to_string(),
                 "sync".to_string(),
             ]),
-            "provider.show" => self.invoke_cli(vec!["provider".to_string()]),
-            "provider.set" => {
+            function_ids::PROVIDER_SHOW => self.invoke_cli(vec!["provider".to_string()]),
+            function_ids::PROVIDER_SET => {
                 let provider = parse_required_string_arg(&call.args, "provider")?;
                 let mut args = vec!["provider".to_string(), provider];
                 if let Some(model) = parse_optional_string_arg(&call.args, "model")? {
@@ -3469,12 +2994,12 @@ impl FunctionRegistry {
                 }
                 self.invoke_cli(args)
             }
-            "model.show" => self.invoke_cli(vec!["model".to_string()]),
-            "model.set" => {
+            function_ids::MODEL_SHOW => self.invoke_cli(vec!["model".to_string()]),
+            function_ids::MODEL_SET => {
                 let model = parse_required_string_arg(&call.args, "model")?;
                 self.invoke_cli(vec!["model".to_string(), model])
             }
-            "agent.list" => {
+            function_ids::AGENT_LIST => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 self.invoke_cli(vec![
                     "agent".to_string(),
@@ -3482,7 +3007,7 @@ impl FunctionRegistry {
                     orchestrator_id,
                 ])
             }
-            "agent.add" => {
+            function_ids::AGENT_ADD => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let agent_id = parse_required_string_arg(&call.args, "agentId")?;
                 self.invoke_cli(vec![
@@ -3492,7 +3017,7 @@ impl FunctionRegistry {
                     agent_id,
                 ])
             }
-            "agent.show" => {
+            function_ids::AGENT_SHOW => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let agent_id = parse_required_string_arg(&call.args, "agentId")?;
                 self.invoke_cli(vec![
@@ -3502,7 +3027,7 @@ impl FunctionRegistry {
                     agent_id,
                 ])
             }
-            "agent.remove" => {
+            function_ids::AGENT_REMOVE => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let agent_id = parse_required_string_arg(&call.args, "agentId")?;
                 self.invoke_cli(vec![
@@ -3512,7 +3037,7 @@ impl FunctionRegistry {
                     agent_id,
                 ])
             }
-            "agent.reset" => {
+            function_ids::AGENT_RESET => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let agent_id = parse_required_string_arg(&call.args, "agentId")?;
                 self.invoke_cli(vec![
@@ -3522,7 +3047,7 @@ impl FunctionRegistry {
                     agent_id,
                 ])
             }
-            "orchestrator.add" => {
+            function_ids::ORCHESTRATOR_ADD => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 self.invoke_cli(vec![
                     "orchestrator".to_string(),
@@ -3530,7 +3055,7 @@ impl FunctionRegistry {
                     orchestrator_id,
                 ])
             }
-            "workflow.list" => {
+            function_ids::WORKFLOW_LIST => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
@@ -3552,7 +3077,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            "workflow.show" => {
+            function_ids::WORKFLOW_SHOW => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
                 let settings = self.settings.as_ref().ok_or_else(|| {
@@ -3580,7 +3105,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            "workflow.add" => {
+            function_ids::WORKFLOW_ADD => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
                 self.invoke_cli(vec![
@@ -3590,7 +3115,7 @@ impl FunctionRegistry {
                     workflow_id,
                 ])
             }
-            "workflow.remove" => {
+            function_ids::WORKFLOW_REMOVE => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
                 self.invoke_cli(vec![
@@ -3600,7 +3125,7 @@ impl FunctionRegistry {
                     workflow_id,
                 ])
             }
-            "workflow.run" => {
+            function_ids::WORKFLOW_RUN => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
                 let mut args = vec![
@@ -3621,7 +3146,7 @@ impl FunctionRegistry {
                 }
                 self.invoke_cli(args)
             }
-            "workflow.status" => {
+            function_ids::WORKFLOW_STATUS => {
                 let run_id = parse_run_id_arg(&call.args)?;
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
@@ -3640,7 +3165,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            "workflow.progress" => {
+            function_ids::WORKFLOW_PROGRESS => {
                 let run_id = parse_run_id_arg(&call.args)?;
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
@@ -3659,7 +3184,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            "workflow.cancel" => {
+            function_ids::WORKFLOW_CANCEL => {
                 let run_id = parse_run_id_arg(&call.args)?;
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
@@ -3685,7 +3210,7 @@ impl FunctionRegistry {
                     ("state".to_string(), Value::String(run.state.to_string())),
                 ])))
             }
-            "orchestrator.list" => {
+            function_ids::ORCHESTRATOR_LIST => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "orchestrator.list requires settings context".to_string(),
@@ -3703,7 +3228,7 @@ impl FunctionRegistry {
                     ),
                 )])))
             }
-            "orchestrator.show" => {
+            function_ids::ORCHESTRATOR_SHOW => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
@@ -3738,7 +3263,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            "orchestrator.remove" => {
+            function_ids::ORCHESTRATOR_REMOVE => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 self.invoke_cli(vec![
                     "orchestrator".to_string(),
@@ -3746,7 +3271,7 @@ impl FunctionRegistry {
                     orchestrator_id,
                 ])
             }
-            "orchestrator.set_private_workspace" => {
+            function_ids::ORCHESTRATOR_SET_PRIVATE_WORKSPACE => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let path = parse_required_string_arg(&call.args, "path")?;
                 self.invoke_cli(vec![
@@ -3756,7 +3281,7 @@ impl FunctionRegistry {
                     path,
                 ])
             }
-            "orchestrator.grant_shared_access" => {
+            function_ids::ORCHESTRATOR_GRANT_SHARED_ACCESS => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let shared_key = parse_required_string_arg(&call.args, "sharedKey")?;
                 self.invoke_cli(vec![
@@ -3766,7 +3291,7 @@ impl FunctionRegistry {
                     shared_key,
                 ])
             }
-            "orchestrator.revoke_shared_access" => {
+            function_ids::ORCHESTRATOR_REVOKE_SHARED_ACCESS => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let shared_key = parse_required_string_arg(&call.args, "sharedKey")?;
                 self.invoke_cli(vec![
@@ -3776,7 +3301,7 @@ impl FunctionRegistry {
                     shared_key,
                 ])
             }
-            "orchestrator.set_selector_agent" => {
+            function_ids::ORCHESTRATOR_SET_SELECTOR_AGENT => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let agent_id = parse_required_string_arg(&call.args, "agentId")?;
                 self.invoke_cli(vec![
@@ -3786,7 +3311,7 @@ impl FunctionRegistry {
                     agent_id,
                 ])
             }
-            "orchestrator.set_default_workflow" => {
+            function_ids::ORCHESTRATOR_SET_DEFAULT_WORKFLOW => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
                 self.invoke_cli(vec![
@@ -3796,7 +3321,7 @@ impl FunctionRegistry {
                     workflow_id,
                 ])
             }
-            "orchestrator.set_selection_max_retries" => {
+            function_ids::ORCHESTRATOR_SET_SELECTION_MAX_RETRIES => {
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 let count = parse_required_u32_arg(&call.args, "count")?;
                 self.invoke_cli(vec![
@@ -3806,7 +3331,7 @@ impl FunctionRegistry {
                     count.to_string(),
                 ])
             }
-            "channel_profile.list" => {
+            function_ids::CHANNEL_PROFILE_LIST => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "channel_profile.list requires settings context".to_string(),
@@ -3824,7 +3349,7 @@ impl FunctionRegistry {
                     ),
                 )])))
             }
-            "channel_profile.show" => {
+            function_ids::CHANNEL_PROFILE_SHOW => {
                 let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
@@ -3863,7 +3388,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            "channel_profile.add" => {
+            function_ids::CHANNEL_PROFILE_ADD => {
                 let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
                 let channel = parse_required_string_arg(&call.args, "channel")?;
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
@@ -3886,7 +3411,7 @@ impl FunctionRegistry {
                 }
                 self.invoke_cli(args)
             }
-            "channel_profile.remove" => {
+            function_ids::CHANNEL_PROFILE_REMOVE => {
                 let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
                 self.invoke_cli(vec![
                     "channel-profile".to_string(),
@@ -3894,7 +3419,7 @@ impl FunctionRegistry {
                     profile_id,
                 ])
             }
-            "channel_profile.set_orchestrator" => {
+            function_ids::CHANNEL_PROFILE_SET_ORCHESTRATOR => {
                 let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
                 let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
                 self.invoke_cli(vec![
@@ -3904,9 +3429,13 @@ impl FunctionRegistry {
                     orchestrator_id,
                 ])
             }
-            "update.check" => self.invoke_cli(vec!["update".to_string(), "check".to_string()]),
-            "update.apply" => self.invoke_cli(vec!["update".to_string(), "apply".to_string()]),
-            "daemon.attach" => self.invoke_cli(vec!["attach".to_string()]),
+            function_ids::UPDATE_CHECK => {
+                self.invoke_cli(vec!["update".to_string(), "check".to_string()])
+            }
+            function_ids::UPDATE_APPLY => {
+                self.invoke_cli(vec!["update".to_string(), "apply".to_string()])
+            }
+            function_ids::DAEMON_ATTACH => self.invoke_cli(vec!["attach".to_string()]),
             _ => Err(OrchestratorError::SelectorValidation(format!(
                 "function `{}` is allowed but has no implementation",
                 call.function_id
