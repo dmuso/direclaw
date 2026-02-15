@@ -1,5 +1,5 @@
-use crate::commands;
 use crate::config::Settings;
+use crate::function_bridge::{execute_function_invocation, FunctionExecutionContext, V1_FUNCTIONS};
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::run_store::WorkflowRunStore;
 use crate::orchestration::selector::{FunctionArgSchema, FunctionSchema};
@@ -28,7 +28,7 @@ impl Default for FunctionRegistry {
 
 impl FunctionRegistry {
     fn v1_catalog() -> BTreeMap<String, FunctionSchema> {
-        commands::V1_FUNCTIONS
+        V1_FUNCTIONS
             .iter()
             .map(|def| {
                 let args = def
@@ -187,10 +187,10 @@ impl FunctionRegistry {
         })?;
         self.validate_args(call, schema)?;
 
-        commands::execute_function_invocation(
+        execute_function_invocation(
             &call.function_id,
             &call.args,
-            commands::FunctionExecutionContext {
+            FunctionExecutionContext {
                 run_store: self.run_store.as_ref(),
                 settings: self.settings.as_ref(),
             },
