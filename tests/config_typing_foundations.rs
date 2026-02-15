@@ -51,6 +51,13 @@ fn project_root() -> PathBuf {
 }
 
 #[test]
+fn typed_fields_module_exposes_workflow_key_normalizer() {
+    let normalized = direclaw::config::typed_fields::normalize_workflow_input_key("  ticket_id  ")
+        .expect("normalize key");
+    assert_eq!(normalized, "ticket_id");
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [

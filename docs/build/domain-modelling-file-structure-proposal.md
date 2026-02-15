@@ -205,4 +205,4 @@ tests/
 This is a running log of refactor changes made to iteratively reach the desired structures. Record the date and description of work
 
 - 2026-02-15 11:35 - Domain modelling doc created
--
+- 2026-02-15 12:22 - Split config typed primitives into `src/config/typed_fields.rs` and re-exported from `config`; added integration coverage for `direclaw::config::typed_fields::*` access path.
