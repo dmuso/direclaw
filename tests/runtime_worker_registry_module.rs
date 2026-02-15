@@ -1,4 +1,7 @@
-use direclaw::runtime::worker_registry::{WorkerEvent, WorkerKind, WorkerRegistry, WorkerState};
+use direclaw::runtime::worker_registry::{
+    apply_worker_event, WorkerEvent, WorkerKind, WorkerRegistry, WorkerState,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn worker_registry_module_tracks_lifecycle() {
@@ -41,4 +44,35 @@ fn worker_registry_module_exposes_worker_event_type() {
         }
         _ => panic!("unexpected event variant"),
     }
+}
+
+#[test]
+fn worker_registry_module_applies_worker_events_to_health_state() {
+    let mut workers = BTreeMap::new();
+    let mut active = BTreeSet::from(["queue_processor".to_string()]);
+
+    let started = apply_worker_event(
+        &mut workers,
+        &mut active,
+        WorkerEvent::Started {
+            worker_id: "queue_processor".to_string(),
+            at: 42,
+        },
+    );
+    assert_eq!(started.expect("log").event, "worker.started");
+
+    let worker = workers.get("queue_processor").expect("worker health");
+    assert_eq!(worker.state, WorkerState::Running);
+    assert_eq!(worker.last_heartbeat, Some(42));
+
+    let stopped = apply_worker_event(
+        &mut workers,
+        &mut active,
+        WorkerEvent::Stopped {
+            worker_id: "queue_processor".to_string(),
+            at: 43,
+        },
+    );
+    assert_eq!(stopped.expect("log").event, "worker.stopped");
+    assert!(active.is_empty());
 }

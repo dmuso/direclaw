@@ -2,6 +2,7 @@ use super::{
     append_runtime_log, atomic_write_file, bootstrap_state_root, channel_worker, now_secs,
     ownership_lock, queue_worker, RuntimeError, StatePaths, WorkerEvent, WorkerState,
 };
+use crate::runtime::worker_registry::apply_worker_event;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -12,22 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkerHealth {
-    pub state: WorkerState,
-    pub last_heartbeat: Option<i64>,
-    pub last_error: Option<String>,
-}
-
-impl Default for WorkerHealth {
-    fn default() -> Self {
-        Self {
-            state: WorkerState::Stopped,
-            last_heartbeat: None,
-            last_error: None,
-        }
-    }
-}
+pub use super::worker_registry::WorkerHealth;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SupervisorState {
@@ -131,7 +117,7 @@ pub fn run_supervisor(
         }
 
         match events_rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(event) => apply_worker_event(&paths, &mut state, &mut active, event),
+            Ok(event) => handle_worker_event(&paths, &mut state, &mut active, event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -140,7 +126,7 @@ pub fn run_supervisor(
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while !active.is_empty() && std::time::Instant::now() < deadline {
         match events_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(event) => apply_worker_event(&paths, &mut state, &mut active, event),
+            Ok(event) => handle_worker_event(&paths, &mut state, &mut active, event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -217,52 +203,14 @@ pub fn save_supervisor_state(
     })
 }
 
-fn apply_worker_event(
+fn handle_worker_event(
     paths: &StatePaths,
     state: &mut SupervisorState,
     active: &mut BTreeSet<String>,
     event: WorkerEvent,
 ) {
-    match event {
-        WorkerEvent::Started { worker_id, at } => {
-            let entry = state.workers.entry(worker_id.clone()).or_default();
-            entry.state = WorkerState::Running;
-            entry.last_heartbeat = Some(at);
-            append_runtime_log(paths, "info", "worker.started", &worker_id);
-        }
-        WorkerEvent::Heartbeat { worker_id, at } => {
-            let entry = state.workers.entry(worker_id).or_default();
-            if entry.state != WorkerState::Error {
-                entry.state = WorkerState::Running;
-            }
-            entry.last_heartbeat = Some(at);
-        }
-        WorkerEvent::Error {
-            worker_id,
-            at,
-            message,
-            fatal,
-        } => {
-            let entry = state.workers.entry(worker_id.clone()).or_default();
-            entry.state = WorkerState::Error;
-            entry.last_heartbeat = Some(at);
-            entry.last_error = Some(message.clone());
-            append_runtime_log(
-                paths,
-                if fatal { "error" } else { "warn" },
-                "worker.error",
-                &format!("{}: {}", worker_id, message),
-            );
-        }
-        WorkerEvent::Stopped { worker_id, at } => {
-            let entry = state.workers.entry(worker_id.clone()).or_default();
-            if entry.state != WorkerState::Error {
-                entry.state = WorkerState::Stopped;
-            }
-            entry.last_heartbeat = Some(at);
-            active.remove(&worker_id);
-            append_runtime_log(paths, "info", "worker.stopped", &worker_id);
-        }
+    if let Some(log) = apply_worker_event(&mut state.workers, active, event) {
+        append_runtime_log(paths, log.level, log.event, &log.message);
     }
 
     let _ = save_supervisor_state(paths, state);
