@@ -1,9 +1,10 @@
-use direclaw::config::WorkflowConfig;
+use direclaw::config::{OrchestratorConfig, WorkflowConfig};
 use direclaw::orchestration::run_store::{RunState, WorkflowRunRecord, WorkflowRunStore};
 use direclaw::orchestration::workflow_engine::{
-    is_retryable_step_error, resolve_next_step_pointer, ExecutionSafetyLimits,
+    is_retryable_step_error, resolve_next_step_pointer, ExecutionSafetyLimits, WorkflowEngine,
 };
 use direclaw::orchestrator::OrchestratorError;
+use direclaw::provider::RunnerBinaries;
 use serde_json::Map;
 use tempfile::tempdir;
 
@@ -51,6 +52,37 @@ fn sample_run(run_id: &str) -> WorkflowRunRecord {
     }
 }
 
+fn sample_orchestrator() -> OrchestratorConfig {
+    serde_yaml::from_str(
+        r#"
+id: eng
+selector_agent: selector
+default_workflow: fix_issue
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  selector:
+    provider: openai
+    model: gpt-4.1
+  worker:
+    provider: openai
+    model: gpt-4.1
+workflows:
+  - id: fix_issue
+    version: 1
+    steps:
+      - id: plan
+        type: agent_task
+        agent: worker
+        prompt: plan
+        outputs: [plan]
+        output_files:
+          plan: out/plan.md
+"#,
+    )
+    .expect("orchestrator")
+}
+
 #[test]
 fn workflow_engine_module_exposes_execution_safety_defaults() {
     let limits = ExecutionSafetyLimits::default();
@@ -84,4 +116,17 @@ fn workflow_engine_module_exposes_step_pointer_resolution_and_retryability() {
         path: "/tmp".to_string(),
     };
     assert!(!is_retryable_step_error(&non_retryable));
+}
+
+#[test]
+fn workflow_engine_module_exposes_engine_type_and_builder() {
+    let dir = tempdir().expect("tempdir");
+    let store = WorkflowRunStore::new(dir.path());
+    let orchestrator = sample_orchestrator();
+    let binaries = RunnerBinaries {
+        anthropic: "claude".to_string(),
+        openai: "codex".to_string(),
+    };
+
+    let _engine = WorkflowEngine::new(store, orchestrator).with_runner_binaries(binaries);
 }
