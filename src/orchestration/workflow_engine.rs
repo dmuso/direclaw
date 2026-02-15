@@ -1,5 +1,5 @@
 use crate::config::{OrchestratorConfig, WorkflowConfig, WorkflowStepConfig};
-use crate::orchestration::run_store::WorkflowRunRecord;
+use crate::orchestration::run_store::{WorkflowRunRecord, WorkflowRunStore};
 use crate::orchestrator::OrchestratorError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,12 @@ impl Default for ExecutionSafetyLimits {
             max_retries: 2,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextStepPointer {
+    pub step_id: String,
+    pub attempt: u32,
 }
 
 pub fn resolve_execution_safety_limits(
@@ -58,6 +64,49 @@ pub fn resolve_execution_safety_limits(
     }
 }
 
+pub fn resolve_next_step_pointer(
+    run_store: &WorkflowRunStore,
+    run: &WorkflowRunRecord,
+    workflow: &WorkflowConfig,
+) -> Result<Option<NextStepPointer>, OrchestratorError> {
+    let Some(current_step) = run.current_step_id.as_ref() else {
+        return Ok(workflow.steps.first().map(|step| NextStepPointer {
+            step_id: step.id.clone(),
+            attempt: 1,
+        }));
+    };
+
+    let Some(current_attempt) = run.current_attempt else {
+        return Ok(Some(NextStepPointer {
+            step_id: current_step.clone(),
+            attempt: 1,
+        }));
+    };
+
+    let persisted = run_store.load_step_attempt(&run.run_id, current_step, current_attempt);
+    match persisted {
+        Ok(attempt_record) => {
+            if let Some(next) = attempt_record.next_step_id {
+                Ok(Some(NextStepPointer {
+                    step_id: next,
+                    attempt: 1,
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+        Err(OrchestratorError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(Some(NextStepPointer {
+                step_id: current_step.clone(),
+                attempt: current_attempt,
+            }))
+        }
+        Err(other) => Err(other),
+    }
+}
+
 pub fn enforce_execution_safety(
     run: &WorkflowRunRecord,
     limits: ExecutionSafetyLimits,
@@ -91,4 +140,14 @@ pub fn enforce_execution_safety(
     }
 
     Ok(())
+}
+
+pub fn is_retryable_step_error(error: &OrchestratorError) -> bool {
+    matches!(
+        error,
+        OrchestratorError::StepExecution { .. }
+            | OrchestratorError::WorkflowEnvelope(_)
+            | OrchestratorError::InvalidReviewDecision(_)
+            | OrchestratorError::OutputContractValidation { .. }
+    )
 }

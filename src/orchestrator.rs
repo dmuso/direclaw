@@ -29,7 +29,8 @@ pub use crate::orchestration::selector::{
 };
 pub use crate::orchestration::selector_artifacts::SelectorArtifactStore;
 pub use crate::orchestration::workflow_engine::{
-    enforce_execution_safety, resolve_execution_safety_limits, ExecutionSafetyLimits,
+    enforce_execution_safety, is_retryable_step_error, resolve_execution_safety_limits,
+    resolve_next_step_pointer, ExecutionSafetyLimits, NextStepPointer,
 };
 pub use crate::orchestration::workspace_access::{
     enforce_workspace_access, resolve_agent_workspace_root, resolve_workspace_access_context,
@@ -271,12 +272,6 @@ pub struct WorkflowEngine {
     workspace_access_context: Option<WorkspaceAccessContext>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NextStepPointer {
-    step_id: String,
-    attempt: u32,
-}
-
 impl WorkflowEngine {
     pub fn new(run_store: WorkflowRunStore, orchestrator: OrchestratorConfig) -> Self {
         Self {
@@ -374,7 +369,7 @@ impl WorkflowEngine {
         now: i64,
     ) -> Result<(), OrchestratorError> {
         let workflow = self.workflow_for_run(run)?;
-        let Some(pointer) = self.resolve_next_step_pointer(run, workflow)? else {
+        let Some(pointer) = resolve_next_step_pointer(&self.run_store, run, workflow)? else {
             run.current_step_id = None;
             run.current_attempt = None;
             return self.run_store.transition_state(
@@ -574,51 +569,6 @@ impl WorkflowEngine {
                     run.workflow_id
                 ))
             })
-    }
-
-    fn resolve_next_step_pointer(
-        &self,
-        run: &WorkflowRunRecord,
-        workflow: &WorkflowConfig,
-    ) -> Result<Option<NextStepPointer>, OrchestratorError> {
-        let Some(current_step) = run.current_step_id.as_ref() else {
-            return Ok(workflow.steps.first().map(|step| NextStepPointer {
-                step_id: step.id.clone(),
-                attempt: 1,
-            }));
-        };
-
-        let Some(current_attempt) = run.current_attempt else {
-            return Ok(Some(NextStepPointer {
-                step_id: current_step.clone(),
-                attempt: 1,
-            }));
-        };
-
-        let persisted =
-            self.run_store
-                .load_step_attempt(&run.run_id, current_step, current_attempt);
-        match persisted {
-            Ok(attempt_record) => {
-                if let Some(next) = attempt_record.next_step_id {
-                    Ok(Some(NextStepPointer {
-                        step_id: next,
-                        attempt: 1,
-                    }))
-                } else {
-                    Ok(None)
-                }
-            }
-            Err(OrchestratorError::Io { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
-                Ok(Some(NextStepPointer {
-                    step_id: current_step.clone(),
-                    attempt: current_attempt,
-                }))
-            }
-            Err(other) => Err(other),
-        }
     }
 
     fn execute_step_attempt(
@@ -840,16 +790,6 @@ fn resolve_runner_binaries() -> RunnerBinaries {
         openai: std::env::var("DIRECLAW_PROVIDER_BIN_OPENAI")
             .unwrap_or_else(|_| "codex".to_string()),
     }
-}
-
-fn is_retryable_step_error(error: &OrchestratorError) -> bool {
-    matches!(
-        error,
-        OrchestratorError::StepExecution { .. }
-            | OrchestratorError::WorkflowEnvelope(_)
-            | OrchestratorError::InvalidReviewDecision(_)
-            | OrchestratorError::OutputContractValidation { .. }
-    )
 }
 
 fn load_latest_step_outputs(
