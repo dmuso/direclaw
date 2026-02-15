@@ -3,13 +3,11 @@ use crate::orchestrator::{self, FunctionRegistry, RoutedSelectorAction, Workflow
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
 use crate::slack;
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -17,10 +15,17 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod state_paths;
+pub mod supervisor;
 pub mod worker_registry;
 
 pub use state_paths::{
     bootstrap_state_root, default_state_root_path, StatePaths, DEFAULT_STATE_ROOT_DIR,
+};
+pub use supervisor::{
+    cleanup_stale_supervisor, clear_start_lock, is_process_alive, load_supervisor_state,
+    reserve_start_lock, save_supervisor_state, signal_stop, spawn_supervisor_process,
+    stop_active_supervisor, supervisor_ownership_state, write_supervisor_lock_pid, OwnershipState,
+    StopResult, SupervisorState, WorkerHealth,
 };
 pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
 
@@ -93,46 +98,6 @@ pub enum RuntimeError {
     StopFailedAlive { pid: u32 },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkerHealth {
-    pub state: WorkerState,
-    pub last_heartbeat: Option<i64>,
-    pub last_error: Option<String>,
-}
-
-impl Default for WorkerHealth {
-    fn default() -> Self {
-        Self {
-            state: WorkerState::Stopped,
-            last_heartbeat: None,
-            last_error: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct SupervisorState {
-    pub running: bool,
-    pub pid: Option<u32>,
-    pub started_at: Option<i64>,
-    pub stopped_at: Option<i64>,
-    pub workers: BTreeMap<String, WorkerHealth>,
-    pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OwnershipState {
-    NotRunning,
-    Running { pid: u32 },
-    Stale,
-}
-
-#[derive(Debug, Clone)]
-pub struct StopResult {
-    pub pid: u32,
-    pub forced: bool,
-}
-
 #[derive(Debug, Clone)]
 enum WorkerRuntime {
     QueueProcessor,
@@ -174,42 +139,6 @@ pub fn canonicalize_existing(path: &Path) -> Result<PathBuf, std::io::Error> {
     fs::canonicalize(path)
 }
 
-pub fn load_supervisor_state(paths: &StatePaths) -> Result<SupervisorState, RuntimeError> {
-    let path = paths.supervisor_state_path();
-    if !path.exists() {
-        return Ok(SupervisorState::default());
-    }
-    let raw = fs::read_to_string(&path).map_err(|source| RuntimeError::ReadState {
-        path: path.display().to_string(),
-        source,
-    })?;
-    serde_json::from_str(&raw).map_err(|source| RuntimeError::ParseState {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
-pub fn save_supervisor_state(
-    paths: &StatePaths,
-    state: &SupervisorState,
-) -> Result<(), RuntimeError> {
-    let path = paths.supervisor_state_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| RuntimeError::CreateDir {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    let encoded = serde_json::to_vec_pretty(state).map_err(|source| RuntimeError::ParseState {
-        path: path.display().to_string(),
-        source,
-    })?;
-    atomic_write_file(&path, &encoded).map_err(|source| RuntimeError::WriteState {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
 pub fn append_runtime_log(paths: &StatePaths, level: &str, event: &str, message: &str) {
     let path = paths.runtime_log_path();
     if let Some(parent) = path.parent() {
@@ -234,161 +163,6 @@ pub fn append_runtime_log(paths: &StatePaths, level: &str, event: &str, message:
         .append(true)
         .open(path)
         .and_then(|mut file| file.write_all(format!("{line}\n").as_bytes()));
-}
-
-pub fn supervisor_ownership_state(paths: &StatePaths) -> Result<OwnershipState, RuntimeError> {
-    let state = load_supervisor_state(paths)?;
-    if let Some(pid) = state.pid {
-        if state.running && is_process_alive(pid) {
-            return Ok(OwnershipState::Running { pid });
-        }
-    }
-
-    if let Some(pid) = read_lock_pid(paths)? {
-        if is_process_alive(pid) {
-            return Ok(OwnershipState::Running { pid });
-        }
-        return Ok(OwnershipState::Stale);
-    }
-
-    if state.running || state.pid.is_some() {
-        return Ok(OwnershipState::Stale);
-    }
-
-    Ok(OwnershipState::NotRunning)
-}
-
-pub fn cleanup_stale_supervisor(paths: &StatePaths) -> Result<(), RuntimeError> {
-    let lock = paths.supervisor_lock_path();
-    if lock.exists() {
-        let _ = fs::remove_file(&lock);
-    }
-    let stop = paths.stop_signal_path();
-    if stop.exists() {
-        let _ = fs::remove_file(&stop);
-    }
-    let mut state = load_supervisor_state(paths)?;
-    state.running = false;
-    state.pid = None;
-    state.stopped_at = Some(now_secs());
-    save_supervisor_state(paths, &state)
-}
-
-pub fn reserve_start_lock(paths: &StatePaths) -> Result<(), RuntimeError> {
-    let path = paths.supervisor_lock_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| RuntimeError::CreateDir {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(std::process::id().to_string().as_bytes()))
-        .map_err(|source| RuntimeError::WriteLock {
-            path: path.display().to_string(),
-            source,
-        })
-}
-
-pub fn write_supervisor_lock_pid(paths: &StatePaths, pid: u32) -> Result<(), RuntimeError> {
-    let path = paths.supervisor_lock_path();
-    atomic_write_file(&path, pid.to_string().as_bytes()).map_err(|source| RuntimeError::WriteLock {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
-pub fn clear_start_lock(paths: &StatePaths) {
-    let _ = fs::remove_file(paths.supervisor_lock_path());
-}
-
-pub fn spawn_supervisor_process(state_root: &Path) -> Result<u32, RuntimeError> {
-    let exe = std::env::current_exe().map_err(|e| RuntimeError::Spawn(e.to_string()))?;
-    let child = std::process::Command::new(exe)
-        .arg("__supervisor")
-        .arg("--state-root")
-        .arg(state_root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| RuntimeError::Spawn(e.to_string()))?;
-    Ok(child.id())
-}
-
-pub fn signal_stop(paths: &StatePaths) -> Result<(), RuntimeError> {
-    let path = paths.stop_signal_path();
-    fs::write(&path, b"stop").map_err(|source| RuntimeError::WriteState {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
-pub fn stop_active_supervisor(
-    paths: &StatePaths,
-    timeout: Duration,
-) -> Result<StopResult, RuntimeError> {
-    let pid = match supervisor_ownership_state(paths)? {
-        OwnershipState::Running { pid } => pid,
-        OwnershipState::Stale => {
-            cleanup_stale_supervisor(paths)?;
-            return Err(RuntimeError::NotRunning);
-        }
-        OwnershipState::NotRunning => return Err(RuntimeError::NotRunning),
-    };
-
-    signal_stop(paths)?;
-    append_runtime_log(
-        paths,
-        "info",
-        "supervisor.stop.requested",
-        &format!("pid={pid}"),
-    );
-
-    let start = std::time::Instant::now();
-    while is_process_alive(pid) && start.elapsed() < timeout {
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    let mut forced = false;
-    if is_process_alive(pid) {
-        send_signal(pid, "-TERM");
-        let sigterm_start = std::time::Instant::now();
-        while is_process_alive(pid) && sigterm_start.elapsed() < Duration::from_secs(2) {
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    if is_process_alive(pid) {
-        forced = true;
-        append_runtime_log(
-            paths,
-            "warn",
-            "supervisor.stop.force_kill",
-            &format!("pid={pid}"),
-        );
-        send_signal(pid, "-KILL");
-        let sigkill_start = std::time::Instant::now();
-        while is_process_alive(pid) && sigkill_start.elapsed() < Duration::from_secs(2) {
-            thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    if is_process_alive(pid) {
-        append_runtime_log(
-            paths,
-            "error",
-            "supervisor.stop.failed",
-            &format!("pid={pid} remained alive after TERM/KILL"),
-        );
-        return Err(RuntimeError::StopFailedAlive { pid });
-    }
-
-    cleanup_stale_supervisor(paths)?;
-    Ok(StopResult { pid, forced })
 }
 
 pub fn run_supervisor(state_root: &Path, settings: Settings) -> Result<(), RuntimeError> {
@@ -1127,59 +901,6 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn read_lock_pid(paths: &StatePaths) -> Result<Option<u32>, RuntimeError> {
-    let path = paths.supervisor_lock_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path).map_err(|source| RuntimeError::ReadLock {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let parsed = raw.trim().parse::<u32>().ok();
-    Ok(parsed)
-}
-
-pub fn is_process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
-
-    #[cfg(not(unix))]
-    {
-        false
-    }
-}
-
-fn send_signal(pid: u32, signal: &str) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("kill")
-            .arg(signal)
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, signal);
-    }
 }
 
 fn atomic_write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
