@@ -1,5 +1,6 @@
 pub mod output_contract;
 pub mod prompt_render;
+pub mod routing;
 pub mod run_store;
 pub mod selector;
 pub mod selector_artifacts;
