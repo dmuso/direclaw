@@ -1,8 +1,49 @@
-use super::{ChannelKind, ConfigError, OrchestratorId};
+use super::{ConfigError, OrchestratorId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    Local,
+    Slack,
+    Discord,
+    Telegram,
+    Whatsapp,
+}
+
+impl ChannelKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Slack => "slack",
+            Self::Discord => "discord",
+            Self::Telegram => "telegram",
+            Self::Whatsapp => "whatsapp",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "local" => Ok(Self::Local),
+            "slack" => Ok(Self::Slack),
+            "discord" => Ok(Self::Discord),
+            "telegram" => Ok(Self::Telegram),
+            "whatsapp" => Ok(Self::Whatsapp),
+            _ => {
+                Err("channel must be one of: local, slack, discord, telegram, whatsapp".to_string())
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ChannelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Settings {

@@ -77,6 +77,12 @@ fn config_settings_module_exposes_validation_options() {
 }
 
 #[test]
+fn config_settings_module_exposes_channel_kind_parser() {
+    let channel = direclaw::config::settings::ChannelKind::parse("slack").expect("parse channel");
+    assert_eq!(channel, direclaw::config::settings::ChannelKind::Slack);
+}
+
+#[test]
 fn config_orchestrator_file_module_exposes_provider_kind_parser() {
     let provider = direclaw::config::orchestrator_file::ConfigProviderKind::parse("openai")
         .expect("parse provider");

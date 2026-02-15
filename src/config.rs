@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-
 pub mod load;
 pub mod orchestrator_file;
 pub mod paths;
@@ -18,8 +16,8 @@ pub use paths::{
     GLOBAL_SETTINGS_FILE_NAME, GLOBAL_STATE_DIR,
 };
 pub use settings::{
-    AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelProfile, Monitoring, Settings,
-    SettingsOrchestrator, ValidationOptions,
+    AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelKind, ChannelProfile, Monitoring,
+    Settings, SettingsOrchestrator, ValidationOptions,
 };
 pub(crate) use setup_draft::{OrchestrationLimitField, SetupDraft};
 pub use typed_fields::{
@@ -51,47 +49,6 @@ pub enum ConfigError {
     MissingOrchestrator { orchestrator_id: String },
     #[error("failed to resolve home directory for global config path")]
     HomeDirectoryUnavailable,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelKind {
-    Local,
-    Slack,
-    Discord,
-    Telegram,
-    Whatsapp,
-}
-
-impl ChannelKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Slack => "slack",
-            Self::Discord => "discord",
-            Self::Telegram => "telegram",
-            Self::Whatsapp => "whatsapp",
-        }
-    }
-
-    pub fn parse(raw: &str) -> Result<Self, String> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "local" => Ok(Self::Local),
-            "slack" => Ok(Self::Slack),
-            "discord" => Ok(Self::Discord),
-            "telegram" => Ok(Self::Telegram),
-            "whatsapp" => Ok(Self::Whatsapp),
-            _ => {
-                Err("channel must be one of: local, slack, discord, telegram, whatsapp".to_string())
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for ChannelKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
 }
 
 #[cfg(test)]
