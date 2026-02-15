@@ -1,6 +1,5 @@
 use super::{
-    append_runtime_log, now_secs, recover_processing_queue_entries, sleep_with_stop, StatePaths,
-    WorkerEvent,
+    append_runtime_log, now_secs, recover_processing_queue_entries, StatePaths, WorkerEvent,
 };
 use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
@@ -352,6 +351,19 @@ fn resolve_runner_binaries() -> RunnerBinaries {
         openai: std::env::var("DIRECLAW_PROVIDER_BIN_OPENAI")
             .unwrap_or_else(|_| "codex".to_string()),
     }
+}
+
+fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
+    let mut remaining = total;
+    while remaining > Duration::from_millis(0) {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let step = remaining.min(Duration::from_millis(200));
+        thread::sleep(step);
+        remaining = remaining.saturating_sub(step);
+    }
+    !stop.load(Ordering::Relaxed)
 }
 
 fn action_to_outbound(action: &RoutedSelectorAction) -> (String, String) {

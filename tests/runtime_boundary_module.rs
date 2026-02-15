@@ -40,3 +40,14 @@ fn runtime_sources_do_not_depend_on_slack_compat_module() {
         );
     }
 }
+
+#[test]
+fn runtime_mod_no_longer_hosts_worker_loop_sleep_helper() {
+    let runtime_mod = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/mod.rs");
+    let source = fs::read_to_string(&runtime_mod).expect("read runtime mod");
+
+    assert!(
+        !source.contains("fn sleep_with_stop"),
+        "src/runtime/mod.rs still owns worker-loop sleep logic; keep loop helpers with runtime/channel_worker"
+    );
+}

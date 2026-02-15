@@ -1,8 +1,10 @@
 #[cfg(test)]
 use std::fs;
+#[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::thread;
+#[cfg(test)]
 use std::time::Duration;
 
 pub mod channel_worker;
@@ -57,19 +59,6 @@ pub(crate) enum WorkerEvent {
         worker_id: String,
         at: i64,
     },
-}
-
-pub(crate) fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
-    let mut remaining = total;
-    while remaining > Duration::from_millis(0) {
-        if stop.load(Ordering::Relaxed) {
-            return false;
-        }
-        let step = remaining.min(Duration::from_millis(200));
-        std::thread::sleep(step);
-        remaining = remaining.saturating_sub(step);
-    }
-    !stop.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

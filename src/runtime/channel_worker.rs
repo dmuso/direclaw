@@ -1,4 +1,4 @@
-use super::{heartbeat_worker, now_secs, queue_worker, sleep_with_stop, WorkerEvent};
+use super::{heartbeat_worker, now_secs, queue_worker, WorkerEvent};
 use crate::channels::slack;
 use crate::config::Settings;
 use std::path::{Path, PathBuf};
@@ -195,4 +195,17 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
         worker_id: spec.id,
         at: now_secs(),
     });
+}
+
+fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
+    let mut remaining = total;
+    while remaining > Duration::from_millis(0) {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let step = remaining.min(Duration::from_millis(200));
+        thread::sleep(step);
+        remaining = remaining.saturating_sub(step);
+    }
+    !stop.load(Ordering::Relaxed)
 }
