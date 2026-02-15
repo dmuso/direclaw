@@ -14,6 +14,7 @@ pub mod state_paths;
 pub mod supervisor;
 pub mod worker_registry;
 
+pub use crate::shared::errors::RuntimeError;
 pub(crate) use crate::shared::fs_atomic::atomic_write_file;
 pub use crate::shared::fs_atomic::canonicalize_existing;
 pub(crate) use crate::shared::time::now_secs;
@@ -37,56 +38,6 @@ pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
 const QUEUE_MAX_CONCURRENCY: usize = 4;
 const QUEUE_MIN_POLL_MS: u64 = 100;
 const QUEUE_MAX_POLL_MS: u64 = 1000;
-
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error("failed to create runtime path {path}: {source}")]
-    CreateDir {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to resolve home directory for runtime state root")]
-    HomeDirectoryUnavailable,
-    #[error("failed to read runtime state {path}: {source}")]
-    ReadState {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to parse runtime state {path}: {source}")]
-    ParseState {
-        path: String,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("failed to write runtime state {path}: {source}")]
-    WriteState {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("supervisor is already running with pid {pid}")]
-    AlreadyRunning { pid: u32 },
-    #[error("no running supervisor instance")]
-    NotRunning,
-    #[error("failed to read lock file {path}: {source}")]
-    ReadLock {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to write lock file {path}: {source}")]
-    WriteLock {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to spawn supervisor process: {0}")]
-    Spawn(String),
-    #[error("failed to stop supervisor process {pid}; process is still alive")]
-    StopFailedAlive { pid: u32 },
-}
 
 #[derive(Debug, Clone)]
 pub(crate) enum WorkerEvent {
