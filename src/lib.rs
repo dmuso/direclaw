@@ -3,6 +3,7 @@ pub mod channels;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod orchestration;
 pub mod orchestrator;
 pub mod provider;
 pub mod queue;
