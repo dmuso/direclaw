@@ -6,9 +6,9 @@ use crate::config::{
     normalize_workflow_input_key, WorkflowConfig, WorkflowInputs, WorkflowStepConfig,
     WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
-use crate::orchestrator::{
-    verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
-};
+use crate::orchestration::run_store::{RunState, WorkflowRunStore};
+use crate::orchestration::workflow_engine::WorkflowEngine;
+use crate::orchestration::workspace_access::verify_orchestrator_workspace_access;
 use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_scaffold,
 };
