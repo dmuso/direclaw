@@ -1,4 +1,5 @@
 use crate::config::{OrchestratorConfig, WorkflowConfig, WorkflowStepConfig};
+use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::output_contract::output_validation_errors_for;
 use crate::orchestration::run_store::{
     RunState, StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore,
@@ -6,7 +7,6 @@ use crate::orchestration::run_store::{
 pub use crate::orchestration::step_execution::resolve_runner_binaries;
 use crate::orchestration::step_execution::{execute_step_attempt, StepExecutionContext};
 use crate::orchestration::workspace_access::WorkspaceAccessContext;
-use crate::orchestrator::OrchestratorError;
 use crate::provider::RunnerBinaries;
 use serde_json::Map;
 use std::collections::BTreeMap;

@@ -1,8 +1,8 @@
 use crate::config::{
     OutputContractKey, WorkflowConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
 };
+use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::workspace_access::normalize_absolute_path;
-use crate::orchestrator::OrchestratorError;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;

@@ -78,7 +78,10 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn private_workspace_override_wins() {
@@ -339,6 +342,7 @@ workflows:
 
     #[test]
     fn default_global_config_path_targets_home_direclaw_config_yaml() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempdir().expect("temp dir");
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", temp.path());
@@ -355,6 +359,7 @@ workflows:
 
     #[test]
     fn load_global_settings_reads_direclaw_config_yaml() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let temp = tempdir().expect("temp dir");
         let workspace = temp.path().join("workspace");
         fs::create_dir_all(&workspace).expect("create workspace");

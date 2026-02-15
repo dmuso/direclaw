@@ -4,6 +4,7 @@ use crate::config::{
 use crate::orchestration::diagnostics::{
     append_security_log, persist_provider_invocation_log, provider_error_log,
 };
+use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::output_contract::{
     evaluate_step_result, materialize_output_files, resolve_step_output_paths, StepEvaluation,
 };
@@ -12,7 +13,6 @@ use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunRecord, Work
 use crate::orchestration::workspace_access::{
     enforce_workspace_access, resolve_agent_workspace_root, WorkspaceAccessContext,
 };
-use crate::orchestrator::OrchestratorError;
 use crate::provider::{
     consume_reset_flag, run_provider, write_file_backed_prompt, PromptArtifacts, ProviderError,
     ProviderKind, ProviderRequest, RunnerBinaries,

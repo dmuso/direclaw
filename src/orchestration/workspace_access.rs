@@ -1,5 +1,5 @@
 use crate::config::{AgentConfig, OrchestratorConfig, Settings};
-use crate::orchestrator::OrchestratorError;
+use crate::orchestration::error::OrchestratorError;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};

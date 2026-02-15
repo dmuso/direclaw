@@ -1,5 +1,6 @@
 use crate::config::OrchestratorConfig;
 use crate::orchestration::diagnostics::append_security_log;
+use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
 use crate::orchestration::output_contract::resolve_step_output_paths;
 use crate::orchestration::routing::{resolve_status_run_id, StatusResolutionInput};
@@ -11,7 +12,6 @@ use crate::orchestration::selector::{
 };
 use crate::orchestration::workflow_engine::WorkflowEngine;
 use crate::orchestration::workspace_access::WorkspaceAccessContext;
-use crate::orchestrator::OrchestratorError;
 use crate::provider::RunnerBinaries;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;

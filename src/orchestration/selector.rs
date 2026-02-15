@@ -1,8 +1,8 @@
 use crate::app::command_catalog::FunctionArgTypeDef;
 use crate::config::{OrchestratorConfig, Settings};
 use crate::orchestration::diagnostics::{persist_selector_invocation_log, provider_error_log};
+use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::workspace_access::resolve_agent_workspace_root;
-use crate::orchestrator::OrchestratorError;
 use crate::provider::{
     run_provider, write_file_backed_prompt, ProviderKind, ProviderRequest, RunnerBinaries,
 };

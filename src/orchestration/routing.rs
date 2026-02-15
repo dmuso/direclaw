@@ -1,5 +1,6 @@
 use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
 use crate::orchestration::diagnostics::append_security_log;
+use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
 use crate::orchestration::run_store::WorkflowRunStore;
 use crate::orchestration::selector::{
@@ -12,7 +13,6 @@ use crate::orchestration::transitions::{
 };
 use crate::orchestration::workflow_engine::{resolve_runner_binaries, WorkflowEngine};
 use crate::orchestration::workspace_access::verify_orchestrator_workspace_access;
-use crate::orchestrator::OrchestratorError;
 use crate::provider::RunnerBinaries;
 use crate::queue::IncomingMessage;
 use std::collections::BTreeMap;
