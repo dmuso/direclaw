@@ -77,6 +77,16 @@ fn config_settings_module_exposes_validation_options() {
 }
 
 #[test]
+fn config_orchestrator_file_module_exposes_provider_kind_parser() {
+    let provider = direclaw::config::orchestrator_file::ConfigProviderKind::parse("openai")
+        .expect("parse provider");
+    assert_eq!(
+        provider,
+        direclaw::config::orchestrator_file::ConfigProviderKind::OpenAi
+    );
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
