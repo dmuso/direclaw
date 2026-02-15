@@ -1,3 +1,5 @@
+![DireClaw](direclaw.png)
+
 # DireClaw
 
 DireClaw is an OpenClaw and TinyClaw inspired AI agent platform to get things done.
