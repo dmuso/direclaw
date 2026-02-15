@@ -6,6 +6,9 @@ pkgs.mkShell {
     cargo
     rustfmt
     clippy
+
+    cloc
+    scc
   ];
 
   shellHook = ''
