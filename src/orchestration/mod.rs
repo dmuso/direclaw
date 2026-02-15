@@ -1,3 +1,4 @@
+pub mod output_contract;
 pub mod prompt_render;
 pub mod run_store;
 pub mod selector;
