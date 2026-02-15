@@ -68,11 +68,11 @@ pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
         interval: Duration::from_secs(1),
     });
 
-    if settings.monitoring.heartbeat_interval.unwrap_or(0) > 0 {
+    if let Some(interval) = heartbeat_worker::configured_heartbeat_interval(settings) {
         specs.push(WorkerSpec {
             id: "heartbeat".to_string(),
             runtime: WorkerRuntime::Heartbeat,
-            interval: Duration::from_secs(settings.monitoring.heartbeat_interval.unwrap_or(3600)),
+            interval,
         });
     }
 
