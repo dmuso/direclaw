@@ -1,8 +1,7 @@
 use crate::config::{ChannelProfile, Settings};
 use crate::queue::QueuePaths;
-use api::{SlackApiClient, SlackMessage};
+use api::SlackApiClient;
 use auth::{configured_slack_allowlist, load_env_config, slack_profiles};
-use cursor_store::{load_cursor_state, save_cursor_state};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -12,6 +11,7 @@ pub mod api;
 pub mod auth;
 pub mod cursor_store;
 pub mod egress;
+pub mod ingest;
 
 pub use auth::{profile_credential_health, validate_startup_credentials};
 
@@ -119,126 +119,6 @@ fn sanitize_component(raw: &str) -> String {
         .collect()
 }
 
-fn should_accept_channel_message(
-    profile: &ChannelProfile,
-    allowlist: &BTreeSet<String>,
-    conversation_id: &str,
-    message: &SlackMessage,
-) -> bool {
-    let text = message.text.as_deref().unwrap_or("");
-    let in_thread = message
-        .thread_ts
-        .as_ref()
-        .map(|thread| thread != &message.ts)
-        .unwrap_or(false);
-    let allowlisted = allowlist.contains(conversation_id);
-    let mentioned = profile
-        .slack_app_user_id
-        .as_ref()
-        .map(|id| text.contains(&format!("<@{id}>")))
-        .unwrap_or(false);
-    let _mentions_required = profile.require_mention_in_channels.unwrap_or(false);
-    in_thread || allowlisted || mentioned
-}
-
-fn enqueue_incoming(
-    queue_paths: &QueuePaths,
-    profile_id: &str,
-    conversation_id: &str,
-    message: &SlackMessage,
-) -> Result<bool, SlackError> {
-    let sender_id = message
-        .user
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-        .cloned()
-        .unwrap_or_else(|| "unknown".to_string());
-    let ts = message.ts.clone();
-    let message_id = format!(
-        "slack-{}-{}-{}",
-        sanitize_component(profile_id),
-        sanitize_component(conversation_id),
-        sanitize_component(&ts)
-    );
-    let path = queue_paths.incoming.join(format!("{message_id}.json"));
-    if path.exists() {
-        return Ok(false);
-    }
-    let thread_ts = message.thread_ts.clone().unwrap_or_else(|| ts.clone());
-
-    let payload = crate::queue::IncomingMessage {
-        channel: "slack".to_string(),
-        channel_profile_id: Some(profile_id.to_string()),
-        sender: sender_id.clone(),
-        sender_id,
-        message: message.text.clone().unwrap_or_default(),
-        timestamp: now_secs(),
-        message_id,
-        conversation_id: Some(format!("{conversation_id}:{thread_ts}")),
-        files: Vec::new(),
-        workflow_run_id: None,
-        workflow_step_id: None,
-    };
-    let body = serde_json::to_vec_pretty(&payload).map_err(|e| json_error(&path, e))?;
-    fs::write(&path, body).map_err(|e| io_error(&path, e))?;
-    Ok(true)
-}
-
-fn process_inbound_for_profile(
-    state_root: &Path,
-    queue_paths: &QueuePaths,
-    profile_id: &str,
-    runtime: &SlackProfileRuntime,
-) -> Result<usize, SlackError> {
-    let mut cursor_state = load_cursor_state(state_root, profile_id)?;
-    let mut enqueued = 0usize;
-
-    for conversation in runtime.api.list_conversations()? {
-        let oldest = cursor_state
-            .conversations
-            .get(&conversation.id)
-            .map(String::as_str);
-        let mut latest_ts = oldest.unwrap_or("0").to_string();
-        let messages = runtime.api.conversation_history(&conversation.id, oldest)?;
-        for message in messages {
-            if message.ts.trim().is_empty() {
-                continue;
-            }
-            if message.user.is_none() {
-                continue;
-            }
-            if message.bot_id.is_some() || message.subtype.is_some() {
-                continue;
-            }
-
-            if !conversation.is_im
-                && !should_accept_channel_message(
-                    &runtime.profile,
-                    &runtime.allowlist,
-                    &conversation.id,
-                    &message,
-                )
-            {
-                continue;
-            }
-
-            if enqueue_incoming(queue_paths, profile_id, &conversation.id, &message)? {
-                enqueued += 1;
-            }
-
-            if message.ts > latest_ts {
-                latest_ts = message.ts;
-            }
-        }
-        cursor_state
-            .conversations
-            .insert(conversation.id.clone(), latest_ts);
-    }
-
-    save_cursor_state(state_root, profile_id, &cursor_state)?;
-    Ok(enqueued)
-}
-
 fn slack_channel_enabled(settings: &Settings) -> bool {
     settings
         .channels
@@ -301,7 +181,7 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
 
     for (profile_id, runtime) in &runtimes {
         report.inbound_enqueued +=
-            process_inbound_for_profile(state_root, &queue_paths, profile_id, runtime)?;
+            ingest::process_inbound_for_profile(state_root, &queue_paths, profile_id, runtime)?;
     }
     report.outbound_messages_sent = egress::process_outbound(&queue_paths, &runtimes)?;
     Ok(report)
