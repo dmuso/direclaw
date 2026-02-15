@@ -5,7 +5,7 @@ use crate::queue::{self, OutgoingMessage, QueuePaths};
 use crate::slack;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,10 +17,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub mod state_paths;
+pub mod worker_registry;
 
 pub use state_paths::{
     bootstrap_state_root, default_state_root_path, StatePaths, DEFAULT_STATE_ROOT_DIR,
 };
+pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
 
 const QUEUE_MAX_CONCURRENCY: usize = 4;
 const QUEUE_MIN_POLL_MS: u64 = 100;
@@ -89,59 +91,6 @@ pub enum RuntimeError {
     Spawn(String),
     #[error("failed to stop supervisor process {pid}; process is still alive")]
     StopFailedAlive { pid: u32 },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum WorkerKind {
-    QueueProcessor,
-    Orchestrator,
-    ChannelAdapter(String),
-    Heartbeat,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerState {
-    Stopped,
-    Running,
-    Error,
-}
-
-#[derive(Debug, Default)]
-pub struct WorkerRegistry {
-    workers: HashMap<WorkerKind, WorkerState>,
-}
-
-impl WorkerRegistry {
-    pub fn register(&mut self, worker: WorkerKind) {
-        self.workers.entry(worker).or_insert(WorkerState::Stopped);
-    }
-
-    pub fn start(&mut self, worker: &WorkerKind) {
-        if let Some(state) = self.workers.get_mut(worker) {
-            *state = WorkerState::Running;
-        }
-    }
-
-    pub fn stop(&mut self, worker: &WorkerKind) {
-        if let Some(state) = self.workers.get_mut(worker) {
-            *state = WorkerState::Stopped;
-        }
-    }
-
-    pub fn fail(&mut self, worker: &WorkerKind) {
-        if let Some(state) = self.workers.get_mut(worker) {
-            *state = WorkerState::Error;
-        }
-    }
-
-    pub fn state(&self, worker: &WorkerKind) -> Option<WorkerState> {
-        self.workers.get(worker).copied()
-    }
-
-    pub fn all(&self) -> &HashMap<WorkerKind, WorkerState> {
-        &self.workers
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
