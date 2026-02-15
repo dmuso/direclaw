@@ -8,6 +8,7 @@ pub mod orchestrator;
 pub mod provider;
 pub mod queue;
 pub mod runtime;
+pub mod setup;
 pub mod shared;
 pub mod slack;
 pub mod templates;
