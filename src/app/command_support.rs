@@ -1,6 +1,10 @@
 use crate::config::{
-    default_global_config_path, load_orchestrator_config, ConfigError, OrchestratorConfig,
-    Settings, ValidationOptions,
+    default_global_config_path, load_orchestrator_config,
+    remove_orchestrator_config as config_remove_orchestrator_config,
+    save_orchestrator_config as config_save_orchestrator_config,
+    save_orchestrator_registry as config_save_orchestrator_registry,
+    save_settings as config_save_settings, ConfigError, OrchestratorConfig, Settings,
+    ValidationOptions,
 };
 use crate::runtime::{bootstrap_state_root, default_state_root_path, StatePaths};
 use crate::workflow::{initial_orchestrator_config, WorkflowTemplate};
@@ -82,21 +86,7 @@ pub fn load_settings() -> Result<Settings, String> {
 }
 
 pub fn save_settings(settings: &Settings) -> Result<PathBuf, String> {
-    settings
-        .validate(ValidationOptions {
-            require_shared_paths_exist: false,
-        })
-        .map_err(map_config_err)?;
-
-    let path = default_global_config_path().map_err(map_config_err)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let body =
-        serde_yaml::to_string(settings).map_err(|e| format!("failed to encode settings: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(path)
+    config_save_settings(settings).map_err(map_config_err)
 }
 
 pub fn save_orchestrator_config(
@@ -104,45 +94,21 @@ pub fn save_orchestrator_config(
     orchestrator_id: &str,
     orchestrator: &OrchestratorConfig,
 ) -> Result<PathBuf, String> {
-    orchestrator
-        .validate(settings, orchestrator_id)
-        .map_err(map_config_err)?;
-    let private_workspace = settings
-        .resolve_private_workspace(orchestrator_id)
-        .map_err(map_config_err)?;
-    fs::create_dir_all(&private_workspace)
-        .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
-    let path = private_workspace.join("orchestrator.yaml");
-    let body = serde_yaml::to_string(orchestrator)
-        .map_err(|e| format!("failed to encode orchestrator: {e}"))?;
-    fs::write(&path, body).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-    Ok(path)
+    config_save_orchestrator_config(settings, orchestrator_id, orchestrator).map_err(map_config_err)
 }
 
 pub fn save_orchestrator_registry(
     settings: &Settings,
     registry: &BTreeMap<String, OrchestratorConfig>,
 ) -> Result<PathBuf, String> {
-    let mut saved = None;
-    for (orchestrator_id, orchestrator) in registry {
-        let path = save_orchestrator_config(settings, orchestrator_id, orchestrator)?;
-        saved = Some(path);
-    }
-    saved.ok_or_else(|| "no orchestrator configs to save".to_string())
+    config_save_orchestrator_registry(settings, registry).map_err(map_config_err)
 }
 
 pub fn remove_orchestrator_config(
     settings: &Settings,
     orchestrator_id: &str,
 ) -> Result<(), String> {
-    let private_workspace = settings
-        .resolve_private_workspace(orchestrator_id)
-        .map_err(map_config_err)?;
-    let path = private_workspace.join("orchestrator.yaml");
-    if !path.exists() {
-        return Ok(());
-    }
-    fs::remove_file(&path).map_err(|e| format!("failed to remove {}: {e}", path.display()))
+    config_remove_orchestrator_config(settings, orchestrator_id).map_err(map_config_err)
 }
 
 pub fn load_orchestrator_or_err(

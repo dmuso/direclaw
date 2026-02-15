@@ -1,6 +1,7 @@
 pub mod load;
 pub mod orchestrator_file;
 pub mod paths;
+pub mod save;
 pub mod settings;
 pub(crate) mod setup_draft;
 pub mod typed_fields;
@@ -14,6 +15,9 @@ pub use orchestrator_file::{
 pub use paths::{
     default_global_config_path, default_orchestrators_config_path, GLOBAL_ORCHESTRATORS_FILE_NAME,
     GLOBAL_SETTINGS_FILE_NAME, GLOBAL_STATE_DIR,
+};
+pub use save::{
+    remove_orchestrator_config, save_orchestrator_config, save_orchestrator_registry, save_settings,
 };
 pub use settings::{
     AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelKind, ChannelProfile, Monitoring,
@@ -34,6 +38,24 @@ pub enum ConfigError {
         path: String,
         #[source]
         source: std::io::Error,
+    },
+    #[error("failed to create directory {path}: {source}")]
+    CreateDir {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write file {path}: {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to encode yaml for {path}: {source}")]
+    Encode {
+        path: String,
+        #[source]
+        source: serde_yaml::Error,
     },
     #[error("invalid yaml in {path}: {source}")]
     Parse {
