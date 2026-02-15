@@ -87,6 +87,17 @@ fn config_orchestrator_file_module_exposes_provider_kind_parser() {
 }
 
 #[test]
+fn config_load_module_exposes_loader_functions() {
+    let _settings_loader: fn() -> Result<Settings, direclaw::config::ConfigError> =
+        direclaw::config::load::load_global_settings;
+    let _orchestrator_loader: fn(
+        &Settings,
+        &str,
+    ) -> Result<OrchestratorConfig, direclaw::config::ConfigError> =
+        direclaw::config::load::load_orchestrator_config;
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [

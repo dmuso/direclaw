@@ -1,19 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+pub mod load;
 pub mod orchestrator_file;
 pub mod paths;
 pub mod settings;
 pub(crate) mod setup_draft;
 pub mod typed_fields;
+pub use load::{load_global_settings, load_orchestrator_config};
 pub use orchestrator_file::{
-    agent_editable_fields, load_orchestrator_config, AgentConfig, AgentEditableField,
-    ConfigProviderKind, OrchestratorConfig, StepLimitsConfig, WorkflowConfig, WorkflowLimitsConfig,
-    WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
-    WorkflowStepWorkspaceMode,
+    agent_editable_fields, AgentConfig, AgentEditableField, ConfigProviderKind, OrchestratorConfig,
+    StepLimitsConfig, WorkflowConfig, WorkflowLimitsConfig, WorkflowOrchestrationConfig,
+    WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
 pub use paths::{
-    default_global_config_path, default_orchestrators_config_path, load_global_settings,
-    GLOBAL_ORCHESTRATORS_FILE_NAME, GLOBAL_SETTINGS_FILE_NAME, GLOBAL_STATE_DIR,
+    default_global_config_path, default_orchestrators_config_path, GLOBAL_ORCHESTRATORS_FILE_NAME,
+    GLOBAL_SETTINGS_FILE_NAME, GLOBAL_STATE_DIR,
 };
 pub use settings::{
     AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelProfile, Monitoring, Settings,

@@ -1,4 +1,4 @@
-use crate::config::{ConfigError, Settings, ValidationOptions};
+use crate::config::ConfigError;
 use std::path::PathBuf;
 
 pub const GLOBAL_STATE_DIR: &str = ".direclaw";
@@ -17,11 +17,4 @@ pub fn default_orchestrators_config_path() -> Result<PathBuf, ConfigError> {
     Ok(PathBuf::from(home)
         .join(GLOBAL_STATE_DIR)
         .join(GLOBAL_ORCHESTRATORS_FILE_NAME))
-}
-
-pub fn load_global_settings() -> Result<Settings, ConfigError> {
-    let path = default_global_config_path()?;
-    let settings = Settings::from_path(&path)?;
-    settings.validate(ValidationOptions::default())?;
-    Ok(settings)
 }
