@@ -6,3 +6,4 @@ pub mod doctor;
 pub mod orchestrators;
 pub mod provider;
 pub mod update;
+pub mod workflows;
