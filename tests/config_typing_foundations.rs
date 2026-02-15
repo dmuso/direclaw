@@ -155,6 +155,22 @@ fn app_doctor_and_attach_command_handler_modules_expose_commands() {
 }
 
 #[test]
+fn app_daemon_command_handler_module_exposes_commands() {
+    let _start_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::daemon::cmd_start;
+    let _stop_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::daemon::cmd_stop;
+    let _restart_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::daemon::cmd_restart;
+    let _status_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::daemon::cmd_status;
+    let _logs_cmd: fn() -> Result<String, String> =
+        direclaw::app::command_handlers::daemon::cmd_logs;
+    let _supervisor_cmd: fn(&[String]) -> Result<String, String> =
+        direclaw::app::command_handlers::daemon::cmd_supervisor;
+}
+
+#[test]
 fn app_channel_profile_command_handler_module_exposes_command() {
     let _channel_profile_cmd: fn(&[String]) -> Result<String, String> =
         direclaw::app::command_handlers::channel_profiles::cmd_channel_profile;
