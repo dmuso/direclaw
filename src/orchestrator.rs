@@ -8,6 +8,7 @@ use crate::orchestration::diagnostics::{
     append_security_log, persist_provider_invocation_log, persist_selector_invocation_log,
     provider_error_log,
 };
+pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
 pub use crate::orchestration::output_contract::{
     evaluate_step_result, interpolate_output_template, parse_review_decision,
     parse_workflow_result_envelope, resolve_step_output_paths, StepEvaluation,
@@ -16,9 +17,7 @@ use crate::orchestration::output_contract::{
     materialize_output_files, output_validation_errors_for,
 };
 pub use crate::orchestration::prompt_render::{render_step_prompt, StepPromptRender};
-pub use crate::orchestration::routing::{
-    resolve_status_run_id, FunctionCall, FunctionRegistry, StatusResolutionInput,
-};
+pub use crate::orchestration::routing::{resolve_status_run_id, StatusResolutionInput};
 pub use crate::orchestration::run_store::{
     ProgressSnapshot, RunState, SelectorStartedRunMetadata, StepAttemptRecord, WorkflowRunRecord,
     WorkflowRunStore,
