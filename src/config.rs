@@ -4,8 +4,13 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod paths;
 pub(crate) mod setup_draft;
 pub mod typed_fields;
+pub use paths::{
+    default_global_config_path, default_orchestrators_config_path, load_global_settings,
+    GLOBAL_ORCHESTRATORS_FILE_NAME, GLOBAL_SETTINGS_FILE_NAME, GLOBAL_STATE_DIR,
+};
 pub(crate) use setup_draft::{OrchestrationLimitField, SetupDraft};
 pub use typed_fields::{
     normalize_workflow_input_key, parse_output_contract_key, AgentId, OrchestratorId,
@@ -36,10 +41,6 @@ pub enum ConfigError {
     #[error("failed to resolve home directory for global config path")]
     HomeDirectoryUnavailable,
 }
-
-pub const GLOBAL_STATE_DIR: &str = ".direclaw";
-pub const GLOBAL_SETTINGS_FILE_NAME: &str = "config.yaml";
-pub const GLOBAL_ORCHESTRATORS_FILE_NAME: &str = "config-orchestrators.yaml";
 
 fn deserialize_optional_output_files<'de, D>(
     deserializer: D,
@@ -814,27 +815,6 @@ pub fn load_orchestrator_config(
     let config = OrchestratorConfig::from_path(&workspaces_path)?;
     config.validate(settings, orchestrator_id)?;
     Ok(config)
-}
-
-pub fn default_global_config_path() -> Result<PathBuf, ConfigError> {
-    let home = std::env::var_os("HOME").ok_or(ConfigError::HomeDirectoryUnavailable)?;
-    Ok(PathBuf::from(home)
-        .join(GLOBAL_STATE_DIR)
-        .join(GLOBAL_SETTINGS_FILE_NAME))
-}
-
-pub fn default_orchestrators_config_path() -> Result<PathBuf, ConfigError> {
-    let home = std::env::var_os("HOME").ok_or(ConfigError::HomeDirectoryUnavailable)?;
-    Ok(PathBuf::from(home)
-        .join(GLOBAL_STATE_DIR)
-        .join(GLOBAL_ORCHESTRATORS_FILE_NAME))
-}
-
-pub fn load_global_settings() -> Result<Settings, ConfigError> {
-    let path = default_global_config_path()?;
-    let settings = Settings::from_path(&path)?;
-    settings.validate(ValidationOptions::default())?;
-    Ok(settings)
 }
 
 #[cfg(test)]

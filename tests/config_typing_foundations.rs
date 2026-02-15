@@ -58,6 +58,19 @@ fn typed_fields_module_exposes_workflow_key_normalizer() {
 }
 
 #[test]
+fn config_paths_module_exposes_default_path_helpers() {
+    assert_eq!(direclaw::config::paths::GLOBAL_STATE_DIR, ".direclaw");
+    assert_eq!(
+        direclaw::config::paths::GLOBAL_SETTINGS_FILE_NAME,
+        "config.yaml"
+    );
+    assert_eq!(
+        direclaw::config::paths::GLOBAL_ORCHESTRATORS_FILE_NAME,
+        "config-orchestrators.yaml"
+    );
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
