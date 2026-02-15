@@ -204,6 +204,35 @@ pub fn setup_action_from_key(
     }
 }
 
+pub fn parse_scripted_setup_keys(raw: &str) -> Result<Vec<crossterm::event::KeyEvent>, String> {
+    let mut keys = Vec::new();
+    for token in raw.split(',') {
+        let normalized = token.trim().to_ascii_lowercase();
+        if normalized.is_empty() {
+            continue;
+        }
+        let key = match normalized.as_str() {
+            "up" => crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            "down" => crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            "enter" => crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            "esc" => crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            "ctrl-c" => crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            "a" => crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            "d" => crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            "e" => crossterm::event::KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+            "t" => crossterm::event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            "s" => crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            other => {
+                return Err(format!(
+                    "invalid DIRECLAW_SETUP_SCRIPT_KEYS token `{other}`; valid tokens: up,down,enter,esc,ctrl-c,a,d,e,t,s"
+                ));
+            }
+        };
+        keys.push(key);
+    }
+    Ok(keys)
+}
+
 pub fn setup_transition(
     state: &mut NavState,
     action: SetupAction,

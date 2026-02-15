@@ -4,8 +4,8 @@ use crate::config::{
     OrchestrationLimitField, OutputKey, WorkflowStepConfig, WorkflowStepWorkspaceMode,
 };
 use crate::setup::navigation::{
-    setup_action_from_key, setup_screen_item_count, setup_transition, NavState, SetupAction,
-    SetupNavEffect, SetupScreen,
+    parse_scripted_setup_keys, setup_action_from_key, setup_screen_item_count, setup_transition,
+    NavState, SetupAction, SetupNavEffect, SetupScreen,
 };
 use crate::setup::persistence::{load_setup_bootstrap, persist_setup_state};
 use crate::setup::screens::{
@@ -74,32 +74,7 @@ fn load_scripted_setup_keys() -> Result<Option<Vec<crossterm::event::KeyEvent>>,
     let Ok(raw) = std::env::var("DIRECLAW_SETUP_SCRIPT_KEYS") else {
         return Ok(None);
     };
-    let mut keys = Vec::new();
-    for token in raw.split(',') {
-        let normalized = token.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            continue;
-        }
-        let key = match normalized.as_str() {
-            "up" => crossterm::event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-            "down" => crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            "enter" => crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            "esc" => crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-            "ctrl-c" => crossterm::event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            "a" => crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-            "d" => crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
-            "e" => crossterm::event::KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-            "t" => crossterm::event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
-            "s" => crossterm::event::KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
-            other => {
-                return Err(format!(
-                    "invalid DIRECLAW_SETUP_SCRIPT_KEYS token `{other}`; valid tokens: up,down,enter,esc,ctrl-c,a,d,e,t,s"
-                ));
-            }
-        };
-        keys.push(key);
-    }
-    Ok(Some(keys))
+    parse_scripted_setup_keys(&raw).map(Some)
 }
 
 fn run_setup_tui(bootstrap: &mut SetupState, config_exists: bool) -> Result<SetupExit, String> {
