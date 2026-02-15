@@ -1,11 +1,10 @@
 use crate::config::Settings;
-use crate::slack;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -102,14 +101,6 @@ pub enum RuntimeError {
 }
 
 #[derive(Debug, Clone)]
-enum WorkerRuntime {
-    QueueProcessor,
-    OrchestratorDispatcher,
-    Slack,
-    Heartbeat,
-}
-
-#[derive(Debug)]
 pub(crate) enum WorkerEvent {
     Started {
         worker_id: String,
@@ -131,13 +122,6 @@ pub(crate) enum WorkerEvent {
     },
 }
 
-#[derive(Debug, Clone)]
-struct WorkerSpec {
-    id: String,
-    runtime: WorkerRuntime,
-    interval: Duration,
-}
-
 pub fn canonicalize_existing(path: &Path) -> Result<PathBuf, std::io::Error> {
     fs::canonicalize(path)
 }
@@ -151,7 +135,7 @@ pub fn run_supervisor(state_root: &Path, settings: Settings) -> Result<(), Runti
         let _ = fs::remove_file(&stop_path);
     }
 
-    let specs = build_worker_specs(&settings);
+    let specs = channel_worker::build_worker_specs(&settings);
     let mut state = SupervisorState {
         running: true,
         pid: Some(std::process::id()),
@@ -197,14 +181,17 @@ pub fn run_supervisor(state_root: &Path, settings: Settings) -> Result<(), Runti
             .unwrap_or(false);
 
         handles.push(thread::spawn(move || {
-            run_worker(
+            channel_worker::run_worker(
                 spec,
-                root,
-                settings_clone,
-                stop_flag,
-                tx,
-                should_fail,
-                slow_shutdown,
+                channel_worker::WorkerRunContext {
+                    state_root: root,
+                    settings: settings_clone,
+                    stop: stop_flag,
+                    events: tx,
+                    should_fail,
+                    slow_shutdown,
+                    queue_max_concurrency: QUEUE_MAX_CONCURRENCY,
+                },
             )
         }));
     }
@@ -321,146 +308,6 @@ fn apply_worker_event(
     }
 
     let _ = save_supervisor_state(paths, state);
-}
-
-fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
-    let mut specs = Vec::new();
-    specs.push(WorkerSpec {
-        id: "queue_processor".to_string(),
-        runtime: WorkerRuntime::QueueProcessor,
-        interval: Duration::from_millis(250),
-    });
-    specs.push(WorkerSpec {
-        id: "orchestrator_dispatcher".to_string(),
-        runtime: WorkerRuntime::OrchestratorDispatcher,
-        interval: Duration::from_secs(1),
-    });
-
-    if settings.monitoring.heartbeat_interval.unwrap_or(0) > 0 {
-        specs.push(WorkerSpec {
-            id: "heartbeat".to_string(),
-            runtime: WorkerRuntime::Heartbeat,
-            interval: Duration::from_secs(settings.monitoring.heartbeat_interval.unwrap_or(3600)),
-        });
-    }
-
-    for (channel, config) in &settings.channels {
-        if !config.enabled {
-            continue;
-        }
-        if channel == "slack" {
-            specs.push(WorkerSpec {
-                id: format!("channel:{channel}"),
-                runtime: WorkerRuntime::Slack,
-                interval: Duration::from_secs(2),
-            });
-        }
-    }
-
-    specs
-}
-
-fn run_worker(
-    spec: WorkerSpec,
-    state_root: PathBuf,
-    settings: Settings,
-    stop: Arc<AtomicBool>,
-    events: Sender<WorkerEvent>,
-    should_fail: bool,
-    slow_shutdown: bool,
-) {
-    let _ = events.send(WorkerEvent::Started {
-        worker_id: spec.id.clone(),
-        at: now_secs(),
-    });
-
-    if matches!(spec.runtime, WorkerRuntime::Slack) {
-        if let Err(err) = slack::validate_startup_credentials(&settings) {
-            let _ = events.send(WorkerEvent::Error {
-                worker_id: spec.id.clone(),
-                at: now_secs(),
-                message: err.to_string(),
-                fatal: true,
-            });
-            let _ = events.send(WorkerEvent::Stopped {
-                worker_id: spec.id,
-                at: now_secs(),
-            });
-            return;
-        }
-    }
-
-    if should_fail {
-        let _ = events.send(WorkerEvent::Error {
-            worker_id: spec.id.clone(),
-            at: now_secs(),
-            message: "fault injection requested".to_string(),
-            fatal: true,
-        });
-        let _ = events.send(WorkerEvent::Stopped {
-            worker_id: spec.id,
-            at: now_secs(),
-        });
-        return;
-    }
-
-    if matches!(spec.runtime, WorkerRuntime::QueueProcessor) {
-        queue_worker::run_queue_processor_loop(
-            spec.id,
-            state_root,
-            settings,
-            stop,
-            events,
-            slow_shutdown,
-            QUEUE_MAX_CONCURRENCY,
-        );
-        return;
-    }
-
-    loop {
-        if stop.load(Ordering::Relaxed) {
-            if slow_shutdown {
-                thread::sleep(Duration::from_secs(6));
-            }
-            break;
-        }
-
-        let tick = match spec.runtime {
-            WorkerRuntime::QueueProcessor => Ok(()),
-            WorkerRuntime::OrchestratorDispatcher => Ok(()),
-            WorkerRuntime::Slack => channel_worker::tick_slack_worker(&state_root, &settings),
-            WorkerRuntime::Heartbeat => Ok(()),
-        };
-
-        match tick {
-            Ok(()) => {
-                let _ = events.send(WorkerEvent::Heartbeat {
-                    worker_id: spec.id.clone(),
-                    at: now_secs(),
-                });
-            }
-            Err(message) => {
-                let _ = events.send(WorkerEvent::Error {
-                    worker_id: spec.id.clone(),
-                    at: now_secs(),
-                    message,
-                    fatal: false,
-                });
-            }
-        }
-
-        if !sleep_with_stop(&stop, spec.interval) {
-            if slow_shutdown {
-                thread::sleep(Duration::from_secs(6));
-            }
-            break;
-        }
-    }
-
-    let _ = events.send(WorkerEvent::Stopped {
-        worker_id: spec.id,
-        at: now_secs(),
-    });
 }
 
 fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
@@ -647,6 +494,39 @@ mod tests {
 
         clear_start_lock(&paths);
         reserve_start_lock(&paths).expect("reserve after clear");
+    }
+
+    #[test]
+    fn channel_worker_builds_specs_for_enabled_slack_and_heartbeat() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp
+shared_workspaces: {}
+orchestrators: {}
+channel_profiles: {}
+monitoring:
+  heartbeat_interval: 30
+channels:
+  slack:
+    enabled: true
+"#,
+        )
+        .expect("parse settings");
+
+        let specs = channel_worker::build_worker_specs(&settings);
+        let ids = specs
+            .iter()
+            .map(|spec| spec.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                "queue_processor",
+                "orchestrator_dispatcher",
+                "heartbeat",
+                "channel:slack"
+            ]
+        );
     }
 
     fn sample_incoming(message_id: &str) -> IncomingMessage {
