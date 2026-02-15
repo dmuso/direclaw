@@ -15,6 +15,12 @@ This project is in beta stage. We do not support backwards compatibility or migr
 - Environment: Nix shell (`shell.nix`)
 - Core tooling: `cargo`, `rustfmt`, `clippy`
 
+## Development Instructions
+- Use TDD when making changes, write a failing test first, then implement the code.
+- Run tests and linting after every change.
+- You're in Rust, you have access to a comprehensive type system, use types over strings.
+- Keep file sizes reasonable, as files grow, consider a refactor to break up files into modules.
+
 ## Required Dev Environment
 Use Nix shell before running any build/test/lint command.
 
@@ -60,6 +66,10 @@ cargo --version
 > "Return exactly one [workflow_result] JSON envelope."
     
 This is invalid because it refers to a "return" concept that then infers stdout output. `claude` and `codex` will output to stdout, but it will contain all of it's thinking and processing, not the desired structured output.
+
+> "Write outputs to files only. Do not rely on stdout for structured outputs."
+
+This is better, but still invalid. "Write outputs to files only." is ambiguous. What outputs? If the agent is instructed to generate code, is that the output this prompt is referring to? The structured output you desire should be clearly instructed and written in a way that cannot be misinterpreted.
 
 #### Valid
 

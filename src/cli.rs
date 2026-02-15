@@ -43,64 +43,35 @@ pub fn run(args: Vec<String>) -> Result<String, String> {
         return Ok(help_text());
     }
 
-    match args[0].as_str() {
-        "setup" => crate::tui::setup::cmd_setup(),
-        "start" => cmd_start(),
-        "stop" => cmd_stop(),
-        "restart" => cmd_restart(),
-        "status" => cmd_status(),
-        "logs" => cmd_logs(),
-        "send" => cmd_send(&args[1..]),
-        "update" => cmd_update(&args[1..]),
-        "doctor" => cmd_doctor(),
-        "attach" => cmd_attach(),
-        "channels" => cmd_channels(&args[1..]),
-        "provider" => cmd_provider(&args[1..]),
-        "model" => cmd_model(&args[1..]),
-        "agent" => cmd_orchestrator_agent(&args[1..]),
-        "orchestrator" => cmd_orchestrator(&args[1..]),
-        "orchestrator-agent" => cmd_orchestrator_agent(&args[1..]),
-        "workflow" => cmd_workflow(&args[1..]),
-        "channel-profile" => cmd_channel_profile(&args[1..]),
-        "auth" => cmd_auth(&args[1..]),
-        "__supervisor" => cmd_supervisor(&args[1..]),
-        other => Err(format!("unknown command `{other}`")),
+    match commands::parse_cli_verb(args[0].as_str()) {
+        commands::CliVerb::Setup => crate::tui::setup::cmd_setup(),
+        commands::CliVerb::Start => cmd_start(),
+        commands::CliVerb::Stop => cmd_stop(),
+        commands::CliVerb::Restart => cmd_restart(),
+        commands::CliVerb::Status => cmd_status(),
+        commands::CliVerb::Logs => cmd_logs(),
+        commands::CliVerb::Send => cmd_send(&args[1..]),
+        commands::CliVerb::Update => cmd_update(&args[1..]),
+        commands::CliVerb::Doctor => cmd_doctor(),
+        commands::CliVerb::Attach => cmd_attach(),
+        commands::CliVerb::Channels => cmd_channels(&args[1..]),
+        commands::CliVerb::Provider => cmd_provider(&args[1..]),
+        commands::CliVerb::Model => cmd_model(&args[1..]),
+        commands::CliVerb::Agent => cmd_orchestrator_agent(&args[1..]),
+        commands::CliVerb::Orchestrator => cmd_orchestrator(&args[1..]),
+        commands::CliVerb::OrchestratorAgent => cmd_orchestrator_agent(&args[1..]),
+        commands::CliVerb::Workflow => cmd_workflow(&args[1..]),
+        commands::CliVerb::ChannelProfile => cmd_channel_profile(&args[1..]),
+        commands::CliVerb::Auth => cmd_auth(&args[1..]),
+        commands::CliVerb::Supervisor => cmd_supervisor(&args[1..]),
+        commands::CliVerb::Unknown => Err(format!("unknown command `{}`", args[0])),
     }
 }
 
 fn help_text() -> String {
-    let mut lines = vec![
-        "Commands:".to_string(),
-        "  setup                                Initialize state/config/runtime directories"
-            .to_string(),
-        "  start                                Start the DireClaw supervisor and workers"
-            .to_string(),
-        "  stop                                 Stop the active supervisor".to_string(),
-        "  restart                              Restart the supervisor and workers".to_string(),
-        "  status                               Show runtime ownership/health status".to_string(),
-        "  logs                                 Print runtime and worker logs".to_string(),
-        "  attach                               Attach to the active runtime session".to_string(),
-        "  doctor                               Run local environment and config checks"
-            .to_string(),
-        "  update check|apply                   Check for updates (apply is intentionally blocked)"
-            .to_string(),
-        "  send <profile> <message>             Queue a message for a channel profile".to_string(),
-        "  channels reset                       Reset channel sync state".to_string(),
-        "  channels slack sync                  Pull Slack messages into the queue".to_string(),
-        "  auth sync                            Sync provider auth from configured sources"
-            .to_string(),
-        "  orchestrator ...                     Manage orchestrators and routing defaults"
-            .to_string(),
-        "  orchestrator-agent ...               Manage agents under an orchestrator".to_string(),
-        "  agent ...                            Alias for `orchestrator-agent ...`".to_string(),
-        "  workflow ...                         Manage workflows and workflow runs".to_string(),
-        "  channel-profile ...                  Manage channel-to-orchestrator bindings"
-            .to_string(),
-        "  provider ...                         Set/show default provider preference".to_string(),
-        "  model ...                            Set/show default model preference".to_string(),
-        "".to_string(),
-        "Selector-callable operations:".to_string(),
-    ];
+    let mut lines = commands::cli_help_lines();
+    lines.push(String::new());
+    lines.push("Selector-callable operations:".to_string());
     lines.extend(commands::selector_help_lines());
     lines.join("\n")
 }

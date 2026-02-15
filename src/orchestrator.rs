@@ -1,5 +1,5 @@
 use crate::cli;
-use crate::commands::{self, function_ids, FunctionArgTypeDef};
+use crate::commands::{self, FunctionArgTypeDef};
 use crate::config::{
     load_orchestrator_config, AgentConfig, ConfigError, OrchestratorConfig, OutputContractKey,
     Settings, WorkflowConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
@@ -2964,99 +2964,22 @@ impl FunctionRegistry {
         })?;
         self.validate_args(call, schema)?;
 
-        match call.function_id.as_str() {
-            function_ids::DAEMON_START => self.invoke_cli(vec!["start".to_string()]),
-            function_ids::DAEMON_STOP => self.invoke_cli(vec!["stop".to_string()]),
-            function_ids::DAEMON_RESTART => self.invoke_cli(vec!["restart".to_string()]),
-            function_ids::DAEMON_STATUS => self.invoke_cli(vec!["status".to_string()]),
-            function_ids::DAEMON_LOGS => self.invoke_cli(vec!["logs".to_string()]),
-            function_ids::DAEMON_SETUP => self.invoke_cli(vec!["setup".to_string()]),
-            function_ids::DAEMON_SEND => {
-                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
-                let message = parse_required_string_arg(&call.args, "message")?;
-                self.invoke_cli(vec!["send".to_string(), profile_id, message])
+        match commands::plan_function_invocation(&call.function_id, &call.args)
+            .map_err(OrchestratorError::SelectorValidation)?
+        {
+            commands::FunctionExecutionPlan::CliArgs(args) => self.invoke_cli(args),
+            commands::FunctionExecutionPlan::Internal(internal) => {
+                self.invoke_internal_command(internal)
             }
-            function_ids::CHANNELS_RESET => {
-                self.invoke_cli(vec!["channels".to_string(), "reset".to_string()])
-            }
-            function_ids::CHANNELS_SLACK_SYNC => self.invoke_cli(vec![
-                "channels".to_string(),
-                "slack".to_string(),
-                "sync".to_string(),
-            ]),
-            function_ids::PROVIDER_SHOW => self.invoke_cli(vec!["provider".to_string()]),
-            function_ids::PROVIDER_SET => {
-                let provider = parse_required_string_arg(&call.args, "provider")?;
-                let mut args = vec!["provider".to_string(), provider];
-                if let Some(model) = parse_optional_string_arg(&call.args, "model")? {
-                    args.push("--model".to_string());
-                    args.push(model);
-                }
-                self.invoke_cli(args)
-            }
-            function_ids::MODEL_SHOW => self.invoke_cli(vec!["model".to_string()]),
-            function_ids::MODEL_SET => {
-                let model = parse_required_string_arg(&call.args, "model")?;
-                self.invoke_cli(vec!["model".to_string(), model])
-            }
-            function_ids::AGENT_LIST => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                self.invoke_cli(vec![
-                    "agent".to_string(),
-                    "list".to_string(),
-                    orchestrator_id,
-                ])
-            }
-            function_ids::AGENT_ADD => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
-                self.invoke_cli(vec![
-                    "agent".to_string(),
-                    "add".to_string(),
-                    orchestrator_id,
-                    agent_id,
-                ])
-            }
-            function_ids::AGENT_SHOW => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
-                self.invoke_cli(vec![
-                    "agent".to_string(),
-                    "show".to_string(),
-                    orchestrator_id,
-                    agent_id,
-                ])
-            }
-            function_ids::AGENT_REMOVE => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
-                self.invoke_cli(vec![
-                    "agent".to_string(),
-                    "remove".to_string(),
-                    orchestrator_id,
-                    agent_id,
-                ])
-            }
-            function_ids::AGENT_RESET => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
-                self.invoke_cli(vec![
-                    "agent".to_string(),
-                    "reset".to_string(),
-                    orchestrator_id,
-                    agent_id,
-                ])
-            }
-            function_ids::ORCHESTRATOR_ADD => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "add".to_string(),
-                    orchestrator_id,
-                ])
-            }
-            function_ids::WORKFLOW_LIST => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+        }
+    }
+
+    fn invoke_internal_command(
+        &self,
+        command: commands::InternalFunction,
+    ) -> Result<Value, OrchestratorError> {
+        match command {
+            commands::InternalFunction::WorkflowList { orchestrator_id } => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "workflow.list requires settings context".to_string(),
@@ -3077,9 +3000,10 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            function_ids::WORKFLOW_SHOW => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
+            commands::InternalFunction::WorkflowShow {
+                orchestrator_id,
+                workflow_id,
+            } => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "workflow.show requires settings context".to_string(),
@@ -3105,49 +3029,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            function_ids::WORKFLOW_ADD => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
-                self.invoke_cli(vec![
-                    "workflow".to_string(),
-                    "add".to_string(),
-                    orchestrator_id,
-                    workflow_id,
-                ])
-            }
-            function_ids::WORKFLOW_REMOVE => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
-                self.invoke_cli(vec![
-                    "workflow".to_string(),
-                    "remove".to_string(),
-                    orchestrator_id,
-                    workflow_id,
-                ])
-            }
-            function_ids::WORKFLOW_RUN => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
-                let mut args = vec![
-                    "workflow".to_string(),
-                    "run".to_string(),
-                    orchestrator_id,
-                    workflow_id,
-                ];
-                if let Some(inputs) = parse_optional_object_arg(&call.args, "inputs") {
-                    for (key, value) in inputs {
-                        let encoded = value
-                            .as_str()
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| value.to_string());
-                        args.push("--input".to_string());
-                        args.push(format!("{key}={encoded}"));
-                    }
-                }
-                self.invoke_cli(args)
-            }
-            function_ids::WORKFLOW_STATUS => {
-                let run_id = parse_run_id_arg(&call.args)?;
+            commands::InternalFunction::WorkflowStatus { run_id } => {
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "workflow.status requires workflow run store".to_string(),
@@ -3165,8 +3047,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            function_ids::WORKFLOW_PROGRESS => {
-                let run_id = parse_run_id_arg(&call.args)?;
+            commands::InternalFunction::WorkflowProgress { run_id } => {
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "workflow.progress requires workflow run store".to_string(),
@@ -3184,8 +3065,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            function_ids::WORKFLOW_CANCEL => {
-                let run_id = parse_run_id_arg(&call.args)?;
+            commands::InternalFunction::WorkflowCancel { run_id } => {
                 let run_store = self.run_store.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "workflow.cancel requires workflow run store".to_string(),
@@ -3210,7 +3090,7 @@ impl FunctionRegistry {
                     ("state".to_string(), Value::String(run.state.to_string())),
                 ])))
             }
-            function_ids::ORCHESTRATOR_LIST => {
+            commands::InternalFunction::OrchestratorList => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "orchestrator.list requires settings context".to_string(),
@@ -3228,8 +3108,7 @@ impl FunctionRegistry {
                     ),
                 )])))
             }
-            function_ids::ORCHESTRATOR_SHOW => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
+            commands::InternalFunction::OrchestratorShow { orchestrator_id } => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "orchestrator.show requires settings context".to_string(),
@@ -3263,75 +3142,7 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            function_ids::ORCHESTRATOR_REMOVE => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "remove".to_string(),
-                    orchestrator_id,
-                ])
-            }
-            function_ids::ORCHESTRATOR_SET_PRIVATE_WORKSPACE => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let path = parse_required_string_arg(&call.args, "path")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "set-private-workspace".to_string(),
-                    orchestrator_id,
-                    path,
-                ])
-            }
-            function_ids::ORCHESTRATOR_GRANT_SHARED_ACCESS => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let shared_key = parse_required_string_arg(&call.args, "sharedKey")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "grant-shared-access".to_string(),
-                    orchestrator_id,
-                    shared_key,
-                ])
-            }
-            function_ids::ORCHESTRATOR_REVOKE_SHARED_ACCESS => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let shared_key = parse_required_string_arg(&call.args, "sharedKey")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "revoke-shared-access".to_string(),
-                    orchestrator_id,
-                    shared_key,
-                ])
-            }
-            function_ids::ORCHESTRATOR_SET_SELECTOR_AGENT => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let agent_id = parse_required_string_arg(&call.args, "agentId")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "set-selector-agent".to_string(),
-                    orchestrator_id,
-                    agent_id,
-                ])
-            }
-            function_ids::ORCHESTRATOR_SET_DEFAULT_WORKFLOW => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let workflow_id = parse_required_string_arg(&call.args, "workflowId")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "set-default-workflow".to_string(),
-                    orchestrator_id,
-                    workflow_id,
-                ])
-            }
-            function_ids::ORCHESTRATOR_SET_SELECTION_MAX_RETRIES => {
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let count = parse_required_u32_arg(&call.args, "count")?;
-                self.invoke_cli(vec![
-                    "orchestrator".to_string(),
-                    "set-selection-max-retries".to_string(),
-                    orchestrator_id,
-                    count.to_string(),
-                ])
-            }
-            function_ids::CHANNEL_PROFILE_LIST => {
+            commands::InternalFunction::ChannelProfileList => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "channel_profile.list requires settings context".to_string(),
@@ -3349,20 +3160,25 @@ impl FunctionRegistry {
                     ),
                 )])))
             }
-            function_ids::CHANNEL_PROFILE_SHOW => {
-                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
+            commands::InternalFunction::ChannelProfileShow { channel_profile_id } => {
                 let settings = self.settings.as_ref().ok_or_else(|| {
                     OrchestratorError::SelectorValidation(
                         "channel_profile.show requires settings context".to_string(),
                     )
                 })?;
-                let profile = settings.channel_profiles.get(&profile_id).ok_or_else(|| {
-                    OrchestratorError::SelectorValidation(format!(
-                        "unknown channel profile `{profile_id}`"
-                    ))
-                })?;
+                let profile = settings
+                    .channel_profiles
+                    .get(&channel_profile_id)
+                    .ok_or_else(|| {
+                        OrchestratorError::SelectorValidation(format!(
+                            "unknown channel profile `{channel_profile_id}`"
+                        ))
+                    })?;
                 Ok(Value::Object(Map::from_iter([
-                    ("channelProfileId".to_string(), Value::String(profile_id)),
+                    (
+                        "channelProfileId".to_string(),
+                        Value::String(channel_profile_id),
+                    ),
                     (
                         "channel".to_string(),
                         Value::String(profile.channel.to_string()),
@@ -3388,126 +3204,9 @@ impl FunctionRegistry {
                     ),
                 ])))
             }
-            function_ids::CHANNEL_PROFILE_ADD => {
-                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
-                let channel = parse_required_string_arg(&call.args, "channel")?;
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                let mut args = vec![
-                    "channel-profile".to_string(),
-                    "add".to_string(),
-                    profile_id,
-                    channel,
-                    orchestrator_id,
-                ];
-                if let Some(user_id) = parse_optional_string_arg(&call.args, "slackAppUserId")? {
-                    args.push("--slack-app-user-id".to_string());
-                    args.push(user_id);
-                }
-                if let Some(require_mention) =
-                    parse_optional_bool_arg(&call.args, "requireMentionInChannels")?
-                {
-                    args.push("--require-mention-in-channels".to_string());
-                    args.push(require_mention.to_string());
-                }
-                self.invoke_cli(args)
-            }
-            function_ids::CHANNEL_PROFILE_REMOVE => {
-                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
-                self.invoke_cli(vec![
-                    "channel-profile".to_string(),
-                    "remove".to_string(),
-                    profile_id,
-                ])
-            }
-            function_ids::CHANNEL_PROFILE_SET_ORCHESTRATOR => {
-                let profile_id = parse_required_string_arg(&call.args, "channelProfileId")?;
-                let orchestrator_id = parse_required_string_arg(&call.args, "orchestratorId")?;
-                self.invoke_cli(vec![
-                    "channel-profile".to_string(),
-                    "set-orchestrator".to_string(),
-                    profile_id,
-                    orchestrator_id,
-                ])
-            }
-            function_ids::UPDATE_CHECK => {
-                self.invoke_cli(vec!["update".to_string(), "check".to_string()])
-            }
-            function_ids::UPDATE_APPLY => {
-                self.invoke_cli(vec!["update".to_string(), "apply".to_string()])
-            }
-            function_ids::DAEMON_ATTACH => self.invoke_cli(vec!["attach".to_string()]),
-            _ => Err(OrchestratorError::SelectorValidation(format!(
-                "function `{}` is allowed but has no implementation",
-                call.function_id
-            ))),
         }
     }
 }
-
-fn parse_run_id_arg(args: &Map<String, Value>) -> Result<String, OrchestratorError> {
-    parse_required_string_arg(args, "runId")
-}
-
-fn parse_required_string_arg(
-    args: &Map<String, Value>,
-    arg: &str,
-) -> Result<String, OrchestratorError> {
-    args.get(arg)
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string())
-        .ok_or_else(|| OrchestratorError::MissingFunctionArg {
-            arg: arg.to_string(),
-        })
-}
-
-fn parse_optional_string_arg(
-    args: &Map<String, Value>,
-    arg: &str,
-) -> Result<Option<String>, OrchestratorError> {
-    match args.get(arg) {
-        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
-        Some(Value::String(_)) => Err(OrchestratorError::MissingFunctionArg {
-            arg: arg.to_string(),
-        }),
-        Some(_) => Err(OrchestratorError::SelectorValidation(format!(
-            "argument `{arg}` must be a non-empty string"
-        ))),
-        None => Ok(None),
-    }
-}
-
-fn parse_optional_bool_arg(
-    args: &Map<String, Value>,
-    arg: &str,
-) -> Result<Option<bool>, OrchestratorError> {
-    match args.get(arg) {
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        Some(_) => Err(OrchestratorError::SelectorValidation(format!(
-            "argument `{arg}` must be boolean"
-        ))),
-        None => Ok(None),
-    }
-}
-
-fn parse_required_u32_arg(args: &Map<String, Value>, arg: &str) -> Result<u32, OrchestratorError> {
-    let value = args.get(arg).and_then(Value::as_u64).ok_or_else(|| {
-        OrchestratorError::MissingFunctionArg {
-            arg: arg.to_string(),
-        }
-    })?;
-    u32::try_from(value).map_err(|_| {
-        OrchestratorError::SelectorValidation(format!("argument `{arg}` is out of range for u32"))
-    })
-}
-
-fn parse_optional_object_arg<'a>(
-    args: &'a Map<String, Value>,
-    arg: &str,
-) -> Option<&'a Map<String, Value>> {
-    args.get(arg).and_then(Value::as_object)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusResolutionInput {
     pub explicit_run_id: Option<String>,
