@@ -1,7 +1,9 @@
 use direclaw::orchestration::routing::{
-    resolve_status_run_id, FunctionRegistry, StatusResolutionInput,
+    process_queued_message, resolve_status_run_id, FunctionRegistry, StatusResolutionInput,
 };
+use direclaw::queue::IncomingMessage;
 use std::collections::BTreeMap;
+use tempfile::tempdir;
 
 #[test]
 fn routing_module_exposes_status_resolution_and_function_catalog() {
@@ -26,4 +28,46 @@ fn routing_module_exposes_status_resolution_and_function_catalog() {
     .available_function_ids();
     assert!(ids.iter().any(|id| id == "workflow.status"));
     assert!(ids.iter().any(|id| id == "orchestrator.list"));
+}
+
+#[test]
+fn routing_module_process_queued_message_exposes_entrypoint() {
+    let settings = serde_yaml::from_str(
+        r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators: {}
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+    )
+    .expect("settings");
+
+    let inbound = IncomingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: None,
+        sender: "dana".to_string(),
+        sender_id: "U42".to_string(),
+        message: "status".to_string(),
+        timestamp: 1,
+        message_id: "m1".to_string(),
+        conversation_id: Some("c1".to_string()),
+        files: vec![],
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+
+    let state = tempdir().expect("tempdir");
+    let err = process_queued_message(
+        state.path(),
+        &settings,
+        &inbound,
+        1,
+        &BTreeMap::new(),
+        &FunctionRegistry::new(Vec::new()),
+        |_attempt, _request, _orchestrator| None,
+    )
+    .expect_err("missing channel profile should fail");
+    assert!(err.to_string().contains("missing `channelProfileId`"));
 }
