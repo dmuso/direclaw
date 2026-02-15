@@ -5,7 +5,9 @@ use crate::app::command_support::{
 use crate::config::{default_global_config_path, OrchestratorConfig, SettingsOrchestrator};
 use crate::runtime::StatePaths;
 use crate::setup::state::{infer_workflow_template, SetupState};
-use crate::workflow::{initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate};
+use crate::templates::orchestrator_templates::{
+    initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate,
+};
 use std::collections::BTreeMap;
 use std::fs;
 

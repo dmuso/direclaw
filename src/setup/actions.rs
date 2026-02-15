@@ -18,7 +18,7 @@ use crate::setup::state::{
     provider_options, setup_workflow_template_index, workflow_template_from_index,
     workflow_template_options, SetupState,
 };
-use crate::workflow::WorkflowTemplate as SetupWorkflowTemplate;
+use crate::templates::orchestrator_templates::WorkflowTemplate as SetupWorkflowTemplate;
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -2447,7 +2447,7 @@ mod tests {
     use super::*;
     use crate::config::SettingsOrchestrator;
     use crate::setup::navigation::SetupNavError;
-    use crate::workflow::initial_orchestrator_config;
+    use crate::templates::orchestrator_templates::initial_orchestrator_config;
     use crossterm::event::KeyEvent;
 
     fn key_event(code: KeyCode) -> KeyEvent {

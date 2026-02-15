@@ -7,7 +7,7 @@ use crate::config::{
     ValidationOptions,
 };
 use crate::runtime::{bootstrap_state_root, default_state_root_path, StatePaths};
-use crate::workflow::{initial_orchestrator_config, WorkflowTemplate};
+use crate::templates::orchestrator_templates::{initial_orchestrator_config, WorkflowTemplate};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;

@@ -1,5 +1,5 @@
 use crate::config::{ConfigProviderKind, OrchestratorConfig, SetupDraft};
-use crate::workflow::WorkflowTemplate as SetupWorkflowTemplate;
+use crate::templates::orchestrator_templates::WorkflowTemplate as SetupWorkflowTemplate;
 
 pub(crate) type SetupState = SetupDraft;
 

@@ -9,7 +9,7 @@ use crate::config::{
 use crate::orchestrator::{
     verify_orchestrator_workspace_access, RunState, WorkflowEngine, WorkflowRunStore,
 };
-use crate::workflow::{
+use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_scaffold,
 };
 use serde_json::{Map, Value};

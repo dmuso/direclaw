@@ -5,9 +5,11 @@ use crate::config::{
     WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
     WorkflowStepWorkspaceMode,
 };
-use crate::workflow::{
-    default_step_output_contract, default_step_output_files, default_step_scaffold,
+use crate::templates::orchestrator_templates::{
     initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate,
+};
+use crate::templates::workflow_step_defaults::{
+    default_step_output_contract, default_step_output_files, default_step_scaffold,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
