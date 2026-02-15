@@ -112,6 +112,14 @@ fn config_validate_module_exposes_validation_entry_points() {
 }
 
 #[test]
+fn app_command_catalog_module_exposes_v1_functions() {
+    let has_start = direclaw::app::command_catalog::V1_FUNCTIONS
+        .iter()
+        .any(|def| def.function_id == direclaw::app::command_catalog::function_ids::DAEMON_START);
+    assert!(has_start);
+}
+
+#[test]
 fn spec_example_settings_and_orchestrators_load_with_typed_fields() {
     let mut settings_by_orchestrator = BTreeMap::new();
     for settings_file in [
