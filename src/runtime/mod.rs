@@ -37,29 +37,7 @@ pub use state_paths::{
 pub use supervisor::{
     load_supervisor_state, run_supervisor, save_supervisor_state, SupervisorState, WorkerHealth,
 };
-pub use worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
-
-#[derive(Debug, Clone)]
-pub(crate) enum WorkerEvent {
-    Started {
-        worker_id: String,
-        at: i64,
-    },
-    Heartbeat {
-        worker_id: String,
-        at: i64,
-    },
-    Error {
-        worker_id: String,
-        at: i64,
-        message: String,
-        fatal: bool,
-    },
-    Stopped {
-        worker_id: String,
-        at: i64,
-    },
-}
+pub use worker_registry::{WorkerEvent, WorkerKind, WorkerRegistry, WorkerState};
 
 #[cfg(test)]
 mod tests {

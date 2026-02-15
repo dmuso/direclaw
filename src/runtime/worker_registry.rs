@@ -1,6 +1,28 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
+pub enum WorkerEvent {
+    Started {
+        worker_id: String,
+        at: i64,
+    },
+    Heartbeat {
+        worker_id: String,
+        at: i64,
+    },
+    Error {
+        worker_id: String,
+        at: i64,
+        message: String,
+        fatal: bool,
+    },
+    Stopped {
+        worker_id: String,
+        at: i64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WorkerKind {
     QueueProcessor,

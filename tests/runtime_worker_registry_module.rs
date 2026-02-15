@@ -1,4 +1,4 @@
-use direclaw::runtime::worker_registry::{WorkerKind, WorkerRegistry, WorkerState};
+use direclaw::runtime::worker_registry::{WorkerEvent, WorkerKind, WorkerRegistry, WorkerState};
 
 #[test]
 fn worker_registry_module_tracks_lifecycle() {
@@ -26,4 +26,19 @@ fn worker_registry_module_tracks_lifecycle() {
 
     registry.stop(&slack);
     assert_eq!(registry.state(&slack), Some(WorkerState::Stopped));
+}
+
+#[test]
+fn worker_registry_module_exposes_worker_event_type() {
+    let event = WorkerEvent::Started {
+        worker_id: "queue_processor".to_string(),
+        at: 42,
+    };
+    match event {
+        WorkerEvent::Started { worker_id, at } => {
+            assert_eq!(worker_id, "queue_processor");
+            assert_eq!(at, 42);
+        }
+        _ => panic!("unexpected event variant"),
+    }
 }
