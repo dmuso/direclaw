@@ -1,11 +1,11 @@
 use crate::app::command_handlers::auth::{render_auth_sync_result, sync_auth_sources};
 use crate::app::command_support::{ensure_runtime_root, load_settings};
+use crate::channels::slack;
 use crate::runtime::{
     append_runtime_log, cleanup_stale_supervisor, load_supervisor_state, reserve_start_lock,
     run_supervisor, save_supervisor_state, spawn_supervisor_process, stop_active_supervisor,
     supervisor_ownership_state, OwnershipState, SupervisorState, WorkerHealth, WorkerState,
 };
-use crate::slack;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;

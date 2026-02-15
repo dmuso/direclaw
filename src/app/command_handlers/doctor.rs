@@ -1,8 +1,8 @@
 use crate::app::command_support::{load_settings, map_config_err};
+use crate::channels::slack;
 use crate::config::{
     default_global_config_path, load_orchestrator_config, OrchestratorConfig, Settings,
 };
-use crate::slack;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;

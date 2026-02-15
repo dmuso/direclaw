@@ -1,6 +1,6 @@
 use crate::app::command_support::{ensure_runtime_root, load_settings, now_nanos, now_secs};
+use crate::channels::slack;
 use crate::queue::IncomingMessage;
-use crate::slack;
 use std::fs;
 
 pub fn cmd_send(args: &[String]) -> Result<String, String> {

@@ -1,9 +1,9 @@
+use direclaw::channels::slack::{sync_once, SlackError};
 use direclaw::config::{
     AuthSyncConfig, ChannelConfig, ChannelKind, ChannelProfile, Monitoring, Settings,
     SettingsOrchestrator,
 };
 use direclaw::queue::{OutgoingMessage, QueuePaths};
-use direclaw::slack::{sync_once, SlackError};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
