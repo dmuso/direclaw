@@ -231,3 +231,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 14:41 - Extracted queue path/filename helpers to `src/queue/paths.rs`, re-exported paths APIs from `queue` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 14:44 - Extracted queue message types to `src/queue/message.rs`, re-exported message APIs from `queue` for compatibility, and added integration coverage for the new module path.
 - 2026-02-15 14:46 - Extracted outbound message shaping/types/constants to `src/queue/outbound.rs`, kept compatibility exports via `queue` and `queue::file_tags`, and added integration coverage for the new module path.
+- 2026-02-15 14:50 - Extracted provider model mapping and invocation planning to `src/provider/model_map.rs` and `src/provider/invocation.rs`, re-exported APIs from `provider` for compatibility, and added integration coverage for the new module paths.

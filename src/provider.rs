@@ -8,6 +8,12 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub mod invocation;
+pub mod model_map;
+
+pub use invocation::build_invocation;
+pub use model_map::resolve_anthropic_model;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("unknown provider `{0}`")]
@@ -135,62 +141,10 @@ impl Default for RunnerBinaries {
     }
 }
 
-fn io_error(path: &Path, source: std::io::Error) -> ProviderError {
+pub(crate) fn io_error(path: &Path, source: std::io::Error) -> ProviderError {
     ProviderError::Io {
         path: path.display().to_string(),
         source,
-    }
-}
-
-pub fn resolve_anthropic_model(model: &str) -> Result<String, ProviderError> {
-    match model.trim() {
-        "sonnet" => Ok("claude-sonnet-4-5".to_string()),
-        "opus" => Ok("claude-opus-4-6".to_string()),
-        "claude-sonnet-4-5" => Ok("claude-sonnet-4-5".to_string()),
-        "claude-opus-4-6" => Ok("claude-opus-4-6".to_string()),
-        other => Err(ProviderError::UnsupportedAnthropicModel(other.to_string())),
-    }
-}
-
-pub fn build_invocation(
-    request: &ProviderRequest,
-    binaries: &RunnerBinaries,
-) -> Result<InvocationSpec, ProviderError> {
-    match request.provider {
-        ProviderKind::Anthropic => {
-            let model = resolve_anthropic_model(&request.model)?;
-            let mut args = vec!["--dangerously-skip-permissions".to_string()];
-            args.push("--model".to_string());
-            args.push(model.clone());
-            if !request.reset_requested && !request.fresh_on_failure {
-                args.push("-c".to_string());
-            }
-            args.push("-p".to_string());
-            args.push(request.message.clone());
-            Ok(InvocationSpec {
-                binary: binaries.anthropic.clone(),
-                args,
-                resolved_model: model,
-            })
-        }
-        ProviderKind::OpenAi => {
-            let mut args = vec!["exec".to_string()];
-            if !request.reset_requested && !request.fresh_on_failure {
-                args.push("resume".to_string());
-                args.push("--last".to_string());
-            }
-            args.push("--model".to_string());
-            args.push(request.model.clone());
-            args.push("--skip-git-repo-check".to_string());
-            args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-            args.push("--json".to_string());
-            args.push(request.message.clone());
-            Ok(InvocationSpec {
-                binary: binaries.openai.clone(),
-                args,
-                resolved_model: request.model.clone(),
-            })
-        }
     }
 }
 
