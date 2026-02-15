@@ -207,3 +207,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 11:35 - Domain modelling doc created
 - 2026-02-15 12:22 - Split config typed primitives into `src/config/typed_fields.rs` and re-exported from `config`; added integration coverage for `direclaw::config::typed_fields::*` access path.
 - 2026-02-15 13:21 - Extracted config path/loading helpers into `src/config/paths.rs` (`GLOBAL_*`, `default_*_config_path`, `load_global_settings`) and re-exported from `config`; added integration coverage for `direclaw::config::paths::*` access path.
+- 2026-02-15 13:24 - Extracted settings-domain types and validation from `src/config.rs` into `src/config/settings.rs` (`Settings*`, channel/auth config structs, `ValidationOptions`, and `Settings` impl); re-exported from `config` and added integration coverage for `direclaw::config::settings::*` access path.
