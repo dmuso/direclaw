@@ -2,6 +2,7 @@ pub mod agents;
 pub mod attach;
 pub mod auth;
 pub mod channel_profiles;
+pub mod channels;
 pub mod daemon;
 pub mod doctor;
 pub mod orchestrators;

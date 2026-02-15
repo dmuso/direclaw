@@ -223,3 +223,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 - 2026-02-15 14:15 - Moved orchestrator handling to `src/app/command_handlers/orchestrators.rs` and added integration coverage.
 - 2026-02-15 14:52 - Moved workflow handling to `src/app/command_handlers/workflows.rs` and added integration coverage.
 - 2026-02-15 14:22 - Moved orchestrator-agent handling to `src/app/command_handlers/agents.rs` and added integration coverage.
+- 2026-02-15 14:26 - Moved `send` and `channels` command handling to `src/app/command_handlers/channels.rs`, updated command wiring, and added integration coverage.
