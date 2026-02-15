@@ -1,7 +1,7 @@
 use crate::app::command_support::{ensure_runtime_root, map_config_err};
 use crate::config::{
     agent_editable_fields, default_global_config_path, AgentEditableField, ConfigProviderKind,
-    OrchestrationLimitField, OutputKey, WorkflowStepConfig, WorkflowStepWorkspaceMode,
+    OrchestrationLimitField, OutputKey,
 };
 use crate::setup::navigation::{
     parse_scripted_setup_keys, setup_action_from_key, setup_screen_item_count, setup_transition,
@@ -10,7 +10,8 @@ use crate::setup::navigation::{
 use crate::setup::persistence::{load_setup_bootstrap, persist_setup_state};
 use crate::setup::screens::{
     centered_rect, draw_field_screen, draw_list_screen, draw_setup_ui, field_row,
-    project_setup_menu_view_model, tail_for_display, SetupFieldRow, SETUP_MENU_ITEMS,
+    project_setup_menu_view_model, tail_for_display, workflow_step_menu_rows, SetupFieldRow,
+    SETUP_MENU_ITEMS,
 };
 use crate::setup::state::{
     default_model_for_provider, infer_workflow_template, model_options_for_provider,
@@ -1320,62 +1321,6 @@ fn run_workflow_detail_tui(
             _ => {}
         }
     }
-}
-
-fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
-    let workspace_mode = match step.workspace_mode {
-        WorkflowStepWorkspaceMode::OrchestratorWorkspace => "orchestrator_workspace",
-        WorkflowStepWorkspaceMode::RunWorkspace => "run_workspace",
-        WorkflowStepWorkspaceMode::AgentWorkspace => "agent_workspace",
-    };
-    let outputs = if step.outputs.is_empty() {
-        "<none>".to_string()
-    } else {
-        step.outputs
-            .iter()
-            .map(|key| key.to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    let max_retries = step
-        .limits
-        .as_ref()
-        .and_then(|limits| limits.max_retries)
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "<none>".to_string());
-    vec![
-        field_row("Step ID", Some(step.id.clone())),
-        field_row("Step Type", Some(step.step_type.to_string())),
-        field_row("Agent", Some(step.agent.clone())),
-        field_row("Prompt", Some(step.prompt.clone())),
-        field_row("Workspace Mode", Some(workspace_mode.to_string())),
-        field_row(
-            "Next",
-            Some(step.next.clone().unwrap_or_else(|| "<none>".to_string())),
-        ),
-        field_row(
-            "On Approve",
-            Some(
-                step.on_approve
-                    .clone()
-                    .unwrap_or_else(|| "<none>".to_string()),
-            ),
-        ),
-        field_row(
-            "On Reject",
-            Some(
-                step.on_reject
-                    .clone()
-                    .unwrap_or_else(|| "<none>".to_string()),
-            ),
-        ),
-        field_row("Outputs", Some(outputs)),
-        field_row(
-            "Output Files",
-            Some(output_files_as_csv(&step.output_files)),
-        ),
-        field_row("Max Retries", Some(max_retries)),
-    ]
 }
 
 fn run_workflow_steps_tui(

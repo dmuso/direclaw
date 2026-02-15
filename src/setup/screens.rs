@@ -1,4 +1,6 @@
+use crate::config::{WorkflowStepConfig, WorkflowStepWorkspaceMode};
 use crate::setup::navigation::{clamp_selection, NavState, ALL_SETUP_SCREENS};
+use crate::setup::state::output_files_as_csv;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -63,6 +65,62 @@ pub fn tail_for_display(value: &str, max_chars: usize) -> String {
         return value.to_string();
     }
     chars[chars.len() - max_chars..].iter().collect()
+}
+
+pub fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> {
+    let workspace_mode = match step.workspace_mode {
+        WorkflowStepWorkspaceMode::OrchestratorWorkspace => "orchestrator_workspace",
+        WorkflowStepWorkspaceMode::RunWorkspace => "run_workspace",
+        WorkflowStepWorkspaceMode::AgentWorkspace => "agent_workspace",
+    };
+    let outputs = if step.outputs.is_empty() {
+        "<none>".to_string()
+    } else {
+        step.outputs
+            .iter()
+            .map(|key| key.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let max_retries = step
+        .limits
+        .as_ref()
+        .and_then(|limits| limits.max_retries)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    vec![
+        field_row("Step ID", Some(step.id.clone())),
+        field_row("Step Type", Some(step.step_type.to_string())),
+        field_row("Agent", Some(step.agent.clone())),
+        field_row("Prompt", Some(step.prompt.clone())),
+        field_row("Workspace Mode", Some(workspace_mode.to_string())),
+        field_row(
+            "Next",
+            Some(step.next.clone().unwrap_or_else(|| "<none>".to_string())),
+        ),
+        field_row(
+            "On Approve",
+            Some(
+                step.on_approve
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row(
+            "On Reject",
+            Some(
+                step.on_reject
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ),
+        field_row("Outputs", Some(outputs)),
+        field_row(
+            "Output Files",
+            Some(output_files_as_csv(&step.output_files)),
+        ),
+        field_row("Max Retries", Some(max_retries)),
+    ]
 }
 
 pub(crate) fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
