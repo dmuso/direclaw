@@ -1,8 +1,8 @@
 use crate::config::Settings;
-use crate::function_bridge::{execute_function_invocation, FunctionExecutionContext, V1_FUNCTIONS};
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::run_store::WorkflowRunStore;
 use crate::orchestration::selector::{FunctionArgSchema, FunctionSchema};
+use crate::{execute_function_invocation, FunctionExecutionContext, V1_FUNCTIONS};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 

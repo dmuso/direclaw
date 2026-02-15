@@ -43,3 +43,23 @@ fn orchestration_sources_do_not_depend_on_app_module() {
         );
     }
 }
+
+#[test]
+fn orchestration_sources_do_not_depend_on_function_bridge_module() {
+    let orchestration_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/orchestration");
+
+    for entry in fs::read_dir(&orchestration_dir).expect("read orchestration dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+
+        let source = fs::read_to_string(&path).expect("read source");
+        assert!(
+            !source.contains("crate::function_bridge::"),
+            "{} imports function dispatch via compatibility module; use crate root exports instead",
+            path.display()
+        );
+    }
+}
