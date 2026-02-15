@@ -5,3 +5,5 @@ pub mod run_store;
 pub mod selector;
 pub mod selector_artifacts;
 pub mod workspace_access;
+
+pub mod workflow_engine;
