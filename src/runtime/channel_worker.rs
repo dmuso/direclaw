@@ -1,6 +1,6 @@
 use super::{heartbeat_worker, now_secs, queue_worker, sleep_with_stop, WorkerEvent};
+use crate::channels::slack;
 use crate::config::Settings;
-use crate::slack;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
