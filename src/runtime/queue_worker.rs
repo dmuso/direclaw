@@ -222,7 +222,7 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
                     let _ = queue::requeue_failure(&queue_paths, &pending.value);
                 }
                 if config.slow_shutdown {
-                    thread::sleep(Duration::from_secs(6));
+                    thread::sleep(slow_shutdown_delay());
                 }
                 break;
             }
@@ -249,7 +249,7 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
             });
             if !sleep_with_stop(&stop, Duration::from_millis(backoff_ms)) {
                 if config.slow_shutdown {
-                    thread::sleep(Duration::from_secs(6));
+                    thread::sleep(slow_shutdown_delay());
                 }
                 break;
             }
@@ -364,6 +364,15 @@ fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
         remaining = remaining.saturating_sub(step);
     }
     !stop.load(Ordering::Relaxed)
+}
+
+fn slow_shutdown_delay() -> Duration {
+    let seconds = std::env::var("DIRECLAW_SLOW_SHUTDOWN_DELAY_SECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(6);
+    Duration::from_secs(seconds)
 }
 
 fn action_to_outbound(action: &RoutedSelectorAction) -> (String, String) {

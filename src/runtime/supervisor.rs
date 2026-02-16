@@ -123,7 +123,8 @@ pub fn run_supervisor(
         }
     }
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let shutdown_timeout = shutdown_wait_timeout();
+    let deadline = std::time::Instant::now() + shutdown_timeout;
     while !active.is_empty() && std::time::Instant::now() < deadline {
         match events_rx.recv_timeout(Duration::from_millis(100)) {
             Ok(event) => handle_worker_event(&paths, &mut state, &mut active, event),
@@ -165,6 +166,15 @@ pub fn run_supervisor(
         "runtime stopped cleanly",
     );
     Ok(())
+}
+
+fn shutdown_wait_timeout() -> Duration {
+    let seconds = std::env::var("DIRECLAW_SHUTDOWN_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(5);
+    Duration::from_secs(seconds)
 }
 
 pub fn load_supervisor_state(paths: &StatePaths) -> Result<SupervisorState, RuntimeError> {

@@ -847,7 +847,7 @@ fn run_timeout_uses_elapsed_runtime_across_multiple_steps() {
     let approve_slow = dir.path().join("claude-slow");
     write_script(
         &approve_slow,
-        "#!/bin/sh\nsleep 2\necho '[workflow_result]{\"result\":\"ok\"}[/workflow_result]'\n",
+        "#!/bin/sh\nsleep 1\necho '[workflow_result]{\"result\":\"ok\"}[/workflow_result]'\n",
     );
     let orchestrator: OrchestratorConfig = serde_yaml::from_str(
         r#"
@@ -867,7 +867,7 @@ workflows:
   - id: wf
     version: 1
     limits:
-      run_timeout_seconds: 3
+      run_timeout_seconds: 2
     steps:
       - id: s1
         type: agent_task
@@ -1798,7 +1798,7 @@ fn step_provider_failures_persist_invocation_logs_and_fail_run() {
     let non_zero = dir.path().join("claude-fail");
     write_script(&non_zero, "#!/bin/sh\necho boom 1>&2\nexit 7\n");
     let timeout = dir.path().join("claude-timeout");
-    write_script(&timeout, "#!/bin/sh\nsleep 2\necho late\n");
+    write_script(&timeout, "#!/bin/sh\nsleep 1\necho late\n");
     let orchestrator: OrchestratorConfig = serde_yaml::from_str(
         r#"
 id: engineering_orchestrator
@@ -1827,8 +1827,8 @@ workflows:
         limits:
           max_retries: 0
 workflow_orchestration:
-  default_step_timeout_seconds: 1
-  max_step_timeout_seconds: 1
+  default_step_timeout_seconds: 0
+  max_step_timeout_seconds: 0
 "#,
     )
     .expect("orchestrator");

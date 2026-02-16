@@ -154,7 +154,7 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
     loop {
         if stop.load(Ordering::Relaxed) {
             if slow_shutdown {
-                thread::sleep(Duration::from_secs(6));
+                thread::sleep(slow_shutdown_delay());
             }
             break;
         }
@@ -185,7 +185,7 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
 
         if !sleep_with_stop(&stop, spec.interval) {
             if slow_shutdown {
-                thread::sleep(Duration::from_secs(6));
+                thread::sleep(slow_shutdown_delay());
             }
             break;
         }
@@ -208,4 +208,13 @@ fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
         remaining = remaining.saturating_sub(step);
     }
     !stop.load(Ordering::Relaxed)
+}
+
+fn slow_shutdown_delay() -> Duration {
+    let seconds = std::env::var("DIRECLAW_SLOW_SHUTDOWN_DELAY_SECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(6);
+    Duration::from_secs(seconds)
 }

@@ -1,7 +1,5 @@
 use crate::app::cli::{help_text, parse_cli_verb, CliVerb};
-use crate::app::command_catalog::{
-    canonical_cli_tokens, function_def, FunctionArgTypeDef, FunctionDef, V1_FUNCTIONS,
-};
+use crate::app::command_catalog::{function_def, FunctionArgTypeDef, FunctionDef};
 use crate::app::command_dispatch::{
     execute_function_invocation_with_executor, FunctionExecutionContext,
 };
@@ -100,35 +98,8 @@ fn try_execute_selector_cli_alias(args: &[String]) -> Option<Result<String, Stri
 
 fn parse_catalog_cli_invocation(args: &[String]) -> Option<ParsedCatalogInvocation> {
     let head = args.first()?;
-
-    if let Some(def) = function_def(head) {
-        return Some(
-            parse_catalog_function_args(def, &args[1..]).map(|parsed| (head.clone(), parsed)),
-        );
-    }
-
-    for def in V1_FUNCTIONS {
-        let Some(tokens) = canonical_cli_tokens(def.function_id) else {
-            continue;
-        };
-        if !has_prefix(args, &tokens) {
-            continue;
-        }
-        return Some(
-            parse_catalog_function_args(def, &args[tokens.len()..])
-                .map(|parsed| (def.function_id.to_string(), parsed)),
-        );
-    }
-
-    None
-}
-
-fn has_prefix(args: &[String], prefix: &[String]) -> bool {
-    args.len() >= prefix.len()
-        && args
-            .iter()
-            .zip(prefix)
-            .all(|(actual, expected)| actual == expected)
+    let def = function_def(head)?;
+    Some(parse_catalog_function_args(def, &args[1..]).map(|parsed| (head.clone(), parsed)))
 }
 
 fn parse_catalog_function_args(

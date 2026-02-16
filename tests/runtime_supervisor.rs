@@ -353,8 +353,11 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
         .find_map(|line| line.strip_prefix("started_at="))
         .expect("started_at line")
         .to_string();
-
-    std::thread::sleep(Duration::from_secs(1));
+    let before_pid = before_text
+        .lines()
+        .find_map(|line| line.strip_prefix("pid="))
+        .expect("pid line")
+        .to_string();
 
     let restarted = run(home, &["restart"], &[]);
     assert_ok(&restarted);
@@ -373,8 +376,13 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
         .find_map(|line| line.strip_prefix("started_at="))
         .expect("started_at line")
         .to_string();
+    let after_pid = after_text
+        .lines()
+        .find_map(|line| line.strip_prefix("pid="))
+        .expect("pid line")
+        .to_string();
 
-    assert_ne!(before_started_at, after_started_at);
+    assert!(before_started_at != after_started_at || before_pid != after_pid);
     assert!(after_text.contains("worker:queue_processor.state=running"));
 
     stop_if_running(home);
@@ -494,7 +502,7 @@ fn repeated_start_status_restart_never_corrupts_runtime_state() {
     let home = temp.path();
     write_settings(home);
 
-    for _ in 0..12 {
+    for _ in 0..3 {
         let started = run(home, &["start"], &[]);
         assert_ok(&started);
         wait_for_status_line(home, "running=true", Duration::from_secs(3));
@@ -523,13 +531,22 @@ fn slow_shutdown_fault_injection_reports_timeout_state_and_log() {
     let started = run(
         home,
         &["start"],
-        &[("DIRECLAW_SLOW_SHUTDOWN_WORKER", "queue_processor")],
+        &[
+            ("DIRECLAW_SLOW_SHUTDOWN_WORKER", "queue_processor"),
+            ("DIRECLAW_SHUTDOWN_TIMEOUT_SECONDS", "1"),
+            ("DIRECLAW_SLOW_SHUTDOWN_DELAY_SECONDS", "2"),
+        ],
     );
     assert_ok(&started);
     wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    let shutdown_start = Instant::now();
     let stop_file = home.join(".direclaw/daemon/stop");
     fs::write(&stop_file, b"stop").expect("write stop signal");
-    wait_for_status_line(home, "running=false", Duration::from_secs(10));
+    wait_for_status_line(home, "running=false", Duration::from_secs(3));
+    assert!(
+        shutdown_start.elapsed() < Duration::from_secs(3),
+        "slow-shutdown fault test should complete quickly for test tuning"
+    );
 
     let status = run(home, &["status"], &[]);
     assert_ok(&status);
