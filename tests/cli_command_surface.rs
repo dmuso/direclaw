@@ -195,6 +195,23 @@ fn daemon_command_surface_works() {
 }
 
 #[test]
+fn selector_function_id_aliases_work_on_cli_surface() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+
+    assert_ok(&run(temp.path(), &["setup"]));
+    assert_ok(&run(temp.path(), &["daemon.start"]));
+
+    let dashed = run(temp.path(), &["channel-profile", "list"]);
+    let dotted = run(temp.path(), &["channel_profile.list"]);
+    assert_ok(&dashed);
+    assert_ok(&dotted);
+    assert_eq!(stdout(&dashed), stdout(&dotted));
+
+    assert_ok(&run(temp.path(), &["daemon.stop"]));
+}
+
+#[test]
 fn doctor_reports_healthy_and_unhealthy_permutations() {
     let temp = tempdir().expect("tempdir");
     let workspace = temp.path().join("workspace");

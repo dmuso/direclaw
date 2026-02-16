@@ -620,6 +620,13 @@ pub fn plan_function_invocation(
         function_ids::DAEMON_ATTACH => {
             Ok(FunctionExecutionPlan::CliArgs(vec!["attach".to_string()]))
         }
+        function_ids::DAEMON_DOCTOR => {
+            Ok(FunctionExecutionPlan::CliArgs(vec!["doctor".to_string()]))
+        }
+        function_ids::AUTH_SYNC => Ok(FunctionExecutionPlan::CliArgs(vec![
+            "auth".to_string(),
+            "sync".to_string(),
+        ])),
         _ => Err(format!("unknown function id `{function_id}`")),
     }
 }

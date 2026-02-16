@@ -14,6 +14,15 @@ fn app_command_handlers_run_cli_supports_unknown_command_error() {
 }
 
 #[test]
+fn app_command_handlers_help_uses_single_catalog_backed_command_list() {
+    let help = run_cli(Vec::new()).expect("help");
+    assert!(help.contains("Commands:"));
+    assert!(!help.contains("Selector-callable operations:"));
+    assert!(help.contains("doctor"));
+    assert!(help.contains("auth sync"));
+}
+
+#[test]
 fn app_command_handlers_execute_function_invocation_routes_internal_functions() {
     let temp = tempdir().expect("tempdir");
     let settings = Settings {

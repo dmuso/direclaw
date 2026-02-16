@@ -64,6 +64,8 @@ pub mod function_ids {
     pub const UPDATE_CHECK: &str = "update.check";
     pub const UPDATE_APPLY: &str = "update.apply";
     pub const DAEMON_ATTACH: &str = "daemon.attach";
+    pub const DAEMON_DOCTOR: &str = "daemon.doctor";
+    pub const AUTH_SYNC: &str = "auth.sync";
 }
 
 const DAEMON_SEND_ARGS: &[FunctionArgDef] = &[
@@ -497,4 +499,40 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
         args: &[],
         read_only: true,
     },
+    FunctionDef {
+        function_id: function_ids::DAEMON_DOCTOR,
+        description: "Run local environment and config checks",
+        args: &[],
+        read_only: true,
+    },
+    FunctionDef {
+        function_id: function_ids::AUTH_SYNC,
+        description: "Sync provider auth from configured sources",
+        args: &[],
+        read_only: false,
+    },
 ];
+
+pub fn function_def(function_id: &str) -> Option<&'static FunctionDef> {
+    V1_FUNCTIONS
+        .iter()
+        .find(|def| def.function_id == function_id)
+}
+
+pub fn canonical_cli_tokens(function_id: &str) -> Option<Vec<String>> {
+    let (scope_raw, action_raw) = function_id.split_once('.')?;
+    if scope_raw.is_empty() || action_raw.is_empty() {
+        return None;
+    }
+
+    if scope_raw == "daemon" {
+        return Some(vec![action_raw.replace('_', "-")]);
+    }
+
+    let scope = scope_raw.replace('_', "-");
+    if scope_raw == "channels" && action_raw == "slack_sync" {
+        return Some(vec![scope, "slack".to_string(), "sync".to_string()]);
+    }
+
+    Some(vec![scope, action_raw.replace('_', "-")])
+}

@@ -2,7 +2,9 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn run(home: &Path, args: &[&str], path_prefix: Option<&Path>, op_token: Option<&str>) -> Output {
@@ -21,7 +23,34 @@ fn run(home: &Path, args: &[&str], path_prefix: Option<&Path>, op_token: Option<
             cmd.env_remove("OP_SERVICE_ACCOUNT_TOKEN");
         }
     }
-    cmd.output().expect("run direclaw")
+    run_with_timeout(cmd, Duration::from_secs(3))
+}
+
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Output {
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.stdin(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn direclaw");
+    let started_at = Instant::now();
+
+    loop {
+        match child.try_wait().expect("poll direclaw process") {
+            Some(_) => return child.wait_with_output().expect("collect direclaw output"),
+            None if started_at.elapsed() < timeout => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            None => {
+                let _ = child.kill();
+                let output = child.wait_with_output().expect("collect timed out output");
+                panic!(
+                    "direclaw test command timed out after {}s\nstdout:\n{}\nstderr:\n{}",
+                    timeout.as_secs(),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    }
 }
 
 fn stdout(output: &Output) -> String {
