@@ -83,6 +83,13 @@ mod tests {
         assert_eq!(&spec.args[0], "exec");
         assert!(spec.args.contains(&"resume".to_string()));
         assert!(spec.args.contains(&"--json".to_string()));
+        assert!(spec.args.contains(&"--ask-for-approval".to_string()));
+        assert!(spec.args.contains(&"never".to_string()));
+        assert!(spec.args.contains(&"--sandbox".to_string()));
+        assert!(spec.args.contains(&"workspace-write".to_string()));
+        assert!(!spec
+            .args
+            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
 
         req.reset_requested = true;
         let reset_spec = build_invocation(&req, &RunnerBinaries::default()).expect("build reset");
