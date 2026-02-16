@@ -577,12 +577,25 @@ fn final_user_message(
     let run = run_store.load_run(run_id).ok();
     if let Some(attempt) = last_attempt {
         if attempt.state == "succeeded" {
-            return attempt
-                .outputs
-                .get("summary")
-                .and_then(output_value_text)
-                .or_else(|| attempt.outputs.get("artifact").and_then(output_value_text))
-                .unwrap_or_else(|| "workflow completed".to_string());
+            let quick_answer = run
+                .as_ref()
+                .map(|record| record.workflow_id == "quick_answer")
+                .unwrap_or(false);
+            return if quick_answer {
+                attempt
+                    .outputs
+                    .get("artifact")
+                    .and_then(output_value_text)
+                    .or_else(|| attempt.outputs.get("summary").and_then(output_value_text))
+                    .unwrap_or_else(|| "workflow completed".to_string())
+            } else {
+                attempt
+                    .outputs
+                    .get("summary")
+                    .and_then(output_value_text)
+                    .or_else(|| attempt.outputs.get("artifact").and_then(output_value_text))
+                    .unwrap_or_else(|| "workflow completed".to_string())
+            };
         }
     }
 
@@ -626,5 +639,56 @@ fn output_value_text(value: &Value) -> Option<String> {
         other => serde_json::to_string(other)
             .ok()
             .filter(|text| !text.trim().is_empty()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::final_user_message;
+    use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunStore};
+    use serde_json::{Map, Value};
+    use tempfile::tempdir;
+
+    fn succeeded_attempt_with_outputs(summary: &str, artifact: &str) -> StepAttemptRecord {
+        let mut outputs = Map::new();
+        outputs.insert("summary".to_string(), Value::String(summary.to_string()));
+        outputs.insert("artifact".to_string(), Value::String(artifact.to_string()));
+        StepAttemptRecord {
+            run_id: "run-1".to_string(),
+            step_id: "answer".to_string(),
+            attempt: 1,
+            started_at: 10,
+            ended_at: 20,
+            state: "succeeded".to_string(),
+            outputs,
+            output_files: Default::default(),
+            next_step_id: None,
+            error: None,
+            output_validation_errors: Default::default(),
+        }
+    }
+
+    #[test]
+    fn final_message_prefers_artifact_for_quick_answer_workflow() {
+        let dir = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(dir.path());
+        store
+            .create_run("run-1", "quick_answer", 1)
+            .expect("create run");
+        let attempt = succeeded_attempt_with_outputs("summary output", "artifact output");
+
+        let message = final_user_message(&store, "run-1", Some(&attempt));
+        assert_eq!(message, "artifact output");
+    }
+
+    #[test]
+    fn final_message_prefers_summary_for_non_quick_answer_workflow() {
+        let dir = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(dir.path());
+        store.create_run("run-1", "plan", 1).expect("create run");
+        let attempt = succeeded_attempt_with_outputs("summary output", "artifact output");
+
+        let message = final_user_message(&store, "run-1", Some(&attempt));
+        assert_eq!(message, "summary output");
     }
 }
