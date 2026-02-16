@@ -478,14 +478,6 @@ fn workflow_lifecycle_messages(
             "orchestrator".to_string(),
         ));
         match attempt.state.as_str() {
-            "succeeded" => messages.push((
-                format!(
-                    "Step `{}` complete: {}",
-                    attempt.step_id,
-                    step_summary_text(attempt)
-                ),
-                "orchestrator".to_string(),
-            )),
             "failed_retryable" => messages.push((
                 format!(
                     "Step `{}` failed on attempt {}. Retrying.",
@@ -552,23 +544,6 @@ fn step_attempts_by_time(state_root: &Path, run_id: &str) -> Vec<StepAttemptReco
     attempts
 }
 
-fn step_summary_text(attempt: &StepAttemptRecord) -> String {
-    let summary = attempt
-        .outputs
-        .get("summary")
-        .and_then(output_value_text)
-        .unwrap_or_else(|| "no summary provided".to_string());
-    if let Some(decision) = attempt
-        .outputs
-        .get("decision")
-        .and_then(output_value_text)
-        .filter(|v| !v.trim().is_empty())
-    {
-        return format!("{summary} (decision: {decision})");
-    }
-    summary
-}
-
 fn final_user_message(
     run_store: &WorkflowRunStore,
     run_id: &str,
@@ -585,15 +560,19 @@ fn final_user_message(
                 attempt
                     .outputs
                     .get("artifact")
-                    .and_then(output_value_text)
-                    .or_else(|| attempt.outputs.get("summary").and_then(output_value_text))
+                    .and_then(|value| output_value_for_label(value, "artifact"))
+                    .or_else(|| {
+                        attempt
+                            .outputs
+                            .get("summary")
+                            .and_then(|value| output_value_for_label(value, "summary"))
+                    })
                     .unwrap_or_else(|| "workflow completed".to_string())
             } else {
                 attempt
                     .outputs
                     .get("summary")
-                    .and_then(output_value_text)
-                    .or_else(|| attempt.outputs.get("artifact").and_then(output_value_text))
+                    .and_then(|value| output_value_for_label(value, "summary"))
                     .unwrap_or_else(|| "workflow completed".to_string())
             };
         }
@@ -613,7 +592,10 @@ fn final_user_message(
     }
 
     if let Some(outputs) = latest_succeeded_attempt_outputs(run_store.state_root(), run_id) {
-        if let Some(summary) = outputs.get("summary").and_then(output_value_text) {
+        if let Some(summary) = outputs
+            .get("summary")
+            .and_then(|value| output_value_for_label(value, "summary"))
+        {
             return summary;
         }
     }
@@ -640,6 +622,54 @@ fn output_value_text(value: &Value) -> Option<String> {
             .ok()
             .filter(|text| !text.trim().is_empty()),
     }
+}
+
+fn output_value_for_label(value: &Value, label: &str) -> Option<String> {
+    output_value_text(value).map(|text| extract_output_label_value(&text, label).unwrap_or(text))
+}
+
+fn extract_output_label_value(text: &str, label: &str) -> Option<String> {
+    const OUTPUT_LABEL_KEYS: [&str; 7] = [
+        "status", "summary", "artifact", "decision", "feedback", "plan", "result",
+    ];
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    let mut labels: Vec<(usize, usize, &str)> = Vec::new();
+    for key in OUTPUT_LABEL_KEYS {
+        let token = format!("{key}:");
+        let mut from = 0usize;
+        while let Some(rel_idx) = lowered[from..].find(&token) {
+            let idx = from + rel_idx;
+            labels.push((idx, token.len(), key));
+            from = idx + token.len();
+        }
+    }
+    labels.sort_by_key(|(idx, _, _)| *idx);
+
+    for (idx, token_len, key) in labels.iter().copied() {
+        if key != label {
+            continue;
+        }
+        let start = idx + token_len;
+        let end = labels
+            .iter()
+            .find_map(|(next_idx, _, _)| (*next_idx > idx).then_some(*next_idx))
+            .unwrap_or(trimmed.len());
+        if start >= end || end > trimmed.len() {
+            continue;
+        }
+        let candidate = trimmed[start..end].trim();
+        if !candidate.is_empty() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -690,5 +720,35 @@ mod tests {
 
         let message = final_user_message(&store, "run-1", Some(&attempt));
         assert_eq!(message, "summary output");
+    }
+
+    #[test]
+    fn final_message_uses_artifact_value_without_label_for_quick_answer() {
+        let dir = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(dir.path());
+        store
+            .create_run("run-1", "quick_answer", 1)
+            .expect("create run");
+        let attempt = succeeded_attempt_with_outputs(
+            "summary output",
+            "status: complete\nsummary: concise summary\nartifact: Hello! I am ready.",
+        );
+
+        let message = final_user_message(&store, "run-1", Some(&attempt));
+        assert_eq!(message, "Hello! I am ready.");
+    }
+
+    #[test]
+    fn final_message_uses_summary_value_without_label_for_non_quick_answer() {
+        let dir = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(dir.path());
+        store.create_run("run-1", "plan", 1).expect("create run");
+        let attempt = succeeded_attempt_with_outputs(
+            "status: complete\nsummary: concise summary\nartifact: Hello! I am ready.",
+            "artifact output",
+        );
+
+        let message = final_user_message(&store, "run-1", Some(&attempt));
+        assert_eq!(message, "concise summary");
     }
 }

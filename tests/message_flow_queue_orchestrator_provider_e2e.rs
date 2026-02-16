@@ -311,8 +311,8 @@ workflows:
     assert!(
         outgoing_messages
             .iter()
-            .any(|message| message.message.contains("Step `review` complete")),
-        "expected review completion update in outbound messages"
+            .all(|message| !message.message.contains("Step `")),
+        "did not expect step-complete lifecycle updates in outbound messages"
     );
     assert!(
         outgoing_messages.iter().any(
