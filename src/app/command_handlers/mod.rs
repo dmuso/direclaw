@@ -1,4 +1,4 @@
-use crate::app::cli::{help_text, parse_cli_verb, CliVerb};
+use crate::app::cli::help_text;
 use crate::app::command_catalog::{function_def, FunctionArgTypeDef, FunctionDef};
 use crate::app::command_dispatch::{
     execute_function_invocation_with_executor, FunctionExecutionContext,
@@ -44,29 +44,29 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
 }
 
 fn run_cli_native(args: Vec<String>) -> Result<String, String> {
-    match parse_cli_verb(args[0].as_str()) {
-        CliVerb::Setup => crate::setup::actions::cmd_setup(),
-        CliVerb::Start => daemon::cmd_start(),
-        CliVerb::Stop => daemon::cmd_stop(),
-        CliVerb::Restart => daemon::cmd_restart(),
-        CliVerb::Status => daemon::cmd_status(),
-        CliVerb::Logs => daemon::cmd_logs(),
-        CliVerb::Send => channels::cmd_send(&args[1..]),
-        CliVerb::Update => update::cmd_update(&args[1..]),
-        CliVerb::Doctor => doctor::cmd_doctor(),
-        CliVerb::Attach => attach::cmd_attach(),
-        CliVerb::Chat => chat::cmd_chat(&args[1..]),
-        CliVerb::Channels => channels::cmd_channels(&args[1..]),
-        CliVerb::Provider => provider::cmd_provider(&args[1..]),
-        CliVerb::Model => provider::cmd_model(&args[1..]),
-        CliVerb::Agent => agents::cmd_orchestrator_agent(&args[1..]),
-        CliVerb::Orchestrator => orchestrators::cmd_orchestrator(&args[1..]),
-        CliVerb::OrchestratorAgent => agents::cmd_orchestrator_agent(&args[1..]),
-        CliVerb::Workflow => workflows::cmd_workflow(&args[1..]),
-        CliVerb::ChannelProfile => channel_profiles::cmd_channel_profile(&args[1..]),
-        CliVerb::Auth => auth::cmd_auth(&args[1..]),
-        CliVerb::Supervisor => daemon::cmd_supervisor(&args[1..]),
-        CliVerb::Unknown => Err(format!("unknown command `{}`", args[0])),
+    match args[0].as_str() {
+        "setup" => crate::setup::actions::cmd_setup(),
+        "start" => daemon::cmd_start(),
+        "stop" => daemon::cmd_stop(),
+        "restart" => daemon::cmd_restart(),
+        "status" => daemon::cmd_status(),
+        "logs" => daemon::cmd_logs(),
+        "send" => channels::cmd_send(&args[1..]),
+        "update" => update::cmd_update(&args[1..]),
+        "doctor" => doctor::cmd_doctor(),
+        "attach" => attach::cmd_attach(),
+        "chat" => chat::cmd_chat(&args[1..]),
+        "channels" => channels::cmd_channels(&args[1..]),
+        "provider" => provider::cmd_provider(&args[1..]),
+        "model" => provider::cmd_model(&args[1..]),
+        "agent" => agents::cmd_orchestrator_agent(&args[1..]),
+        "orchestrator" => orchestrators::cmd_orchestrator(&args[1..]),
+        "orchestrator-agent" => agents::cmd_orchestrator_agent(&args[1..]),
+        "workflow" => workflows::cmd_workflow(&args[1..]),
+        "channel-profile" => channel_profiles::cmd_channel_profile(&args[1..]),
+        "auth" => auth::cmd_auth(&args[1..]),
+        "__supervisor" => daemon::cmd_supervisor(&args[1..]),
+        _ => Err(format!("unknown command `{}`", args[0])),
     }
 }
 

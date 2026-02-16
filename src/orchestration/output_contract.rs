@@ -58,11 +58,33 @@ pub fn parse_review_decision(outputs: &Map<String, Value>) -> Result<bool, Orche
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("");
-    match decision.to_ascii_lowercase().as_str() {
-        "approve" => Ok(true),
-        "reject" => Ok(false),
-        other => Err(OrchestratorError::InvalidReviewDecision(other.to_string())),
+    match normalize_review_decision(decision) {
+        Some("approve") => Ok(true),
+        Some("reject") => Ok(false),
+        _ => Err(OrchestratorError::InvalidReviewDecision(
+            decision.to_string(),
+        )),
     }
+}
+
+fn normalize_review_decision(raw: &str) -> Option<&'static str> {
+    let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
+    let lowered = trimmed.to_ascii_lowercase();
+    match lowered.as_str() {
+        "approve" => return Some("approve"),
+        "reject" => return Some("reject"),
+        _ => {}
+    }
+
+    for delimiter in [':', '='] {
+        if let Some((key, value)) = trimmed.split_once(delimiter) {
+            if key.trim().eq_ignore_ascii_case("decision") {
+                return normalize_review_decision(value);
+            }
+        }
+    }
+
+    None
 }
 
 fn parse_output_contract(

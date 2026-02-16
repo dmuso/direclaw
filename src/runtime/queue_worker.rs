@@ -4,12 +4,14 @@ use super::{
 use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries;
-use crate::orchestration::run_store::WorkflowRunStore;
+use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunStore};
 use crate::orchestration::selector::run_selector_attempt_with_provider;
 use crate::orchestration::transitions::RoutedSelectorAction;
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -298,7 +300,7 @@ fn process_claimed_message(
 ) -> Result<(), String> {
     let queue_paths = QueuePaths::from_state_root(state_root);
     let run_store = WorkflowRunStore::new(state_root);
-    let functions = FunctionRegistry::v1_defaults(run_store, settings);
+    let functions = FunctionRegistry::v1_defaults(run_store.clone(), settings);
 
     let action = process_queued_message_with_runner_binaries(
         state_root,
@@ -325,7 +327,8 @@ fn process_claimed_message(
         e.to_string()
     })?;
 
-    let (response_message, response_agent) = action_to_outbound(&action);
+    let (response_message, response_agent) =
+        action_to_outbound(&action, &claimed.payload.channel, &run_store);
     let outgoing = OutgoingMessage {
         channel: claimed.payload.channel.clone(),
         channel_profile_id: claimed.payload.channel_profile_id.clone(),
@@ -375,15 +378,26 @@ fn slow_shutdown_delay() -> Duration {
     Duration::from_secs(seconds)
 }
 
-fn action_to_outbound(action: &RoutedSelectorAction) -> (String, String) {
+fn action_to_outbound(
+    action: &RoutedSelectorAction,
+    inbound_channel: &str,
+    run_store: &WorkflowRunStore,
+) -> (String, String) {
     match action {
         RoutedSelectorAction::WorkflowStart {
             run_id,
             workflow_id,
-        } => (
-            format!("workflow started\nrun_id={run_id}\nworkflow_id={workflow_id}"),
-            "orchestrator".to_string(),
-        ),
+        } => {
+            if inbound_channel == "local" {
+                if let Some(message) = local_workflow_answer(run_store, run_id) {
+                    return (message, "orchestrator".to_string());
+                }
+            }
+            (
+                format!("workflow started\nrun_id={run_id}\nworkflow_id={workflow_id}"),
+                "orchestrator".to_string(),
+            )
+        }
         RoutedSelectorAction::WorkflowStatus {
             run_id,
             progress,
@@ -410,5 +424,84 @@ fn action_to_outbound(action: &RoutedSelectorAction) -> (String, String) {
                 .unwrap_or_else(|_| "command completed".to_string());
             (rendered, "command".to_string())
         }
+    }
+}
+
+fn local_workflow_answer(run_store: &WorkflowRunStore, run_id: &str) -> Option<String> {
+    let run = run_store.load_run(run_id).ok()?;
+    if !run.state.is_terminal() {
+        return None;
+    }
+    if let Some(outputs) = latest_succeeded_attempt_outputs(run_store.state_root(), run_id) {
+        if let Some(answer) = select_user_visible_output(&outputs) {
+            return Some(answer);
+        }
+    }
+    run_store
+        .load_progress(run_id)
+        .ok()
+        .map(|progress| progress.summary)
+        .filter(|summary| !summary.trim().is_empty())
+}
+
+fn latest_succeeded_attempt_outputs(state_root: &Path, run_id: &str) -> Option<Map<String, Value>> {
+    let steps_root = state_root.join("workflows/runs").join(run_id).join("steps");
+    let mut latest: Option<StepAttemptRecord> = None;
+
+    for step in fs::read_dir(&steps_root).ok()?.flatten() {
+        let attempts_root = step.path().join("attempts");
+        let Ok(attempts) = fs::read_dir(&attempts_root) else {
+            continue;
+        };
+        for attempt in attempts.flatten() {
+            let result_path = attempt.path().join("result.json");
+            if !result_path.is_file() {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(&result_path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<StepAttemptRecord>(&raw) else {
+                continue;
+            };
+            if record.state != "succeeded" {
+                continue;
+            }
+            let replace = latest
+                .as_ref()
+                .map(|current| record.ended_at > current.ended_at)
+                .unwrap_or(true);
+            if replace {
+                latest = Some(record);
+            }
+        }
+    }
+
+    latest.map(|record| record.outputs)
+}
+
+fn select_user_visible_output(outputs: &Map<String, Value>) -> Option<String> {
+    for key in ["answer", "response", "summary", "result", "artifact"] {
+        if let Some(text) = outputs.get(key).and_then(output_value_text) {
+            return Some(text);
+        }
+    }
+    outputs.values().find_map(output_value_text)
+}
+
+fn output_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        other => serde_json::to_string(other)
+            .ok()
+            .filter(|text| !text.trim().is_empty()),
     }
 }

@@ -136,10 +136,9 @@ fn app_command_dispatch_module_exposes_invocation_planner() {
 }
 
 #[test]
-fn app_cli_module_exposes_cli_verb_and_help_surface() {
-    let verb = direclaw::app::cli::parse_cli_verb("start");
-    assert_eq!(verb, direclaw::app::cli::CliVerb::Start);
-
+fn app_cli_module_exposes_normalization_and_help_surface() {
+    let normalized = direclaw::app::cli::normalize_cli_args(vec!["daemon.start".to_string()]);
+    assert_eq!(normalized, vec!["start".to_string()]);
     let lines = direclaw::app::cli::cli_help_lines();
     assert!(lines.iter().any(|line| line.contains("start")));
 }

@@ -78,3 +78,12 @@ fn output_contract_module_parses_envelope_and_resolves_paths() {
     .expect("evaluate");
     assert_eq!(evaluation.next_step_id.as_deref(), Some("done"));
 }
+
+#[test]
+fn output_contract_module_accepts_prefixed_review_decision_values() {
+    let parsed = parse_workflow_result_envelope(
+        "[workflow_result]{\"decision\":\"decision: approve\"}[/workflow_result]",
+    )
+    .expect("parse envelope");
+    assert!(parse_review_decision(&parsed).expect("review decision"));
+}

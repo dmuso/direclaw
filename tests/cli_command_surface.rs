@@ -322,7 +322,7 @@ fn chat_command_processes_local_turn_and_prints_assistant_response() {
     );
     assert_ok(&output);
     let out = stdout(&output);
-    assert!(out.contains("assistant> workflow started"));
+    assert!(out.contains("assistant> ok"));
     assert!(out.contains("chat ended"));
 }
 
