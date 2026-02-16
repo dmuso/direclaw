@@ -33,10 +33,7 @@ pub fn build_invocation(
             args.push("--model".to_string());
             args.push(request.model.clone());
             args.push("--skip-git-repo-check".to_string());
-            args.push("--ask-for-approval".to_string());
-            args.push("never".to_string());
-            args.push("--sandbox".to_string());
-            args.push("workspace-write".to_string());
+            args.push("--full-auto".to_string());
             args.push("--json".to_string());
             args.push(request.message.clone());
             Ok(InvocationSpec {

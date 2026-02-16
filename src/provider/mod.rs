@@ -83,10 +83,7 @@ mod tests {
         assert_eq!(&spec.args[0], "exec");
         assert!(spec.args.contains(&"resume".to_string()));
         assert!(spec.args.contains(&"--json".to_string()));
-        assert!(spec.args.contains(&"--ask-for-approval".to_string()));
-        assert!(spec.args.contains(&"never".to_string()));
-        assert!(spec.args.contains(&"--sandbox".to_string()));
-        assert!(spec.args.contains(&"workspace-write".to_string()));
+        assert!(spec.args.contains(&"--full-auto".to_string()));
         assert!(!spec
             .args
             .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));

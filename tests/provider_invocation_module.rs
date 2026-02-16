@@ -31,4 +31,7 @@ fn invocation_module_builds_openai_resume_args() {
     let spec = build_invocation(&req, &RunnerBinaries::default()).expect("build");
     assert_eq!(spec.binary, "codex");
     assert!(spec.args.contains(&"resume".to_string()));
+    assert!(spec.args.contains(&"--full-auto".to_string()));
+    assert!(!spec.args.contains(&"--sandbox".to_string()));
+    assert!(!spec.args.contains(&"workspace-write".to_string()));
 }
