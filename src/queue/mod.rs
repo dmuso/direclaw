@@ -11,7 +11,8 @@ pub use file_tags::{
 pub use lifecycle::{claim_oldest, complete_success, requeue_failure, ClaimedMessage};
 pub use message::{IncomingMessage, OutgoingMessage};
 pub use outbound::{
-    OutboundContent, OUTBOUND_MAX_CHARS, OUTBOUND_TRUNCATE_KEEP_CHARS, OUTBOUND_TRUNCATION_SUFFIX,
+    sorted_outgoing_paths, OutboundContent, OUTBOUND_MAX_CHARS, OUTBOUND_TRUNCATE_KEEP_CHARS,
+    OUTBOUND_TRUNCATION_SUFFIX,
 };
 pub use paths::{is_valid_queue_json_filename, outgoing_filename, QueuePaths};
 pub use scheduler::{derive_ordering_key, OrderingKey, PerKeyScheduler, Scheduled};

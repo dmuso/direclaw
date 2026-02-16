@@ -26,6 +26,7 @@ pub mod function_ids {
     pub const DAEMON_LOGS: &str = "daemon.logs";
     pub const DAEMON_SETUP: &str = "daemon.setup";
     pub const DAEMON_SEND: &str = "daemon.send";
+    pub const DAEMON_CHAT: &str = "daemon.chat";
     pub const CHANNELS_RESET: &str = "channels.reset";
     pub const CHANNELS_SLACK_SYNC: &str = "channels.slack_sync";
     pub const PROVIDER_SHOW: &str = "provider.show";
@@ -184,6 +185,17 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
         function_id: function_ids::DAEMON_SEND,
         description: "Send message to channel profile",
         args: DAEMON_SEND_ARGS,
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::DAEMON_CHAT,
+        description: "Start local chat REPL for a local channel profile",
+        args: &[FunctionArgDef {
+            name: "channelProfileId",
+            arg_type: FunctionArgTypeDef::String,
+            required: true,
+            description: "Local channel profile id",
+        }],
         read_only: false,
     },
     FunctionDef {

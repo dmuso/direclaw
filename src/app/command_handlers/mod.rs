@@ -15,6 +15,7 @@ pub mod attach;
 pub mod auth;
 pub mod channel_profiles;
 pub mod channels;
+pub mod chat;
 pub mod daemon;
 pub mod doctor;
 pub mod orchestrators;
@@ -54,6 +55,7 @@ fn run_cli_native(args: Vec<String>) -> Result<String, String> {
         CliVerb::Update => update::cmd_update(&args[1..]),
         CliVerb::Doctor => doctor::cmd_doctor(),
         CliVerb::Attach => attach::cmd_attach(),
+        CliVerb::Chat => chat::cmd_chat(&args[1..]),
         CliVerb::Channels => channels::cmd_channels(&args[1..]),
         CliVerb::Provider => provider::cmd_provider(&args[1..]),
         CliVerb::Model => provider::cmd_model(&args[1..]),

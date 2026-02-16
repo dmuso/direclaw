@@ -14,11 +14,19 @@ fn app_command_handlers_run_cli_supports_unknown_command_error() {
 }
 
 #[test]
+fn app_command_handlers_run_cli_routes_chat_command() {
+    let args = vec!["chat".to_string()];
+    let err = run_cli(args).expect_err("chat usage");
+    assert!(err.contains("usage: chat <channel_profile_id>"));
+}
+
+#[test]
 fn app_command_handlers_help_uses_single_catalog_backed_command_list() {
     let help = run_cli(Vec::new()).expect("help");
     assert!(help.contains("Commands:"));
     assert!(!help.contains("Selector-callable operations:"));
     assert!(help.contains("doctor"));
+    assert!(help.contains("chat"));
     assert!(help.contains("auth sync"));
 }
 

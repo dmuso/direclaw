@@ -1,23 +1,9 @@
 use super::{io_error, json_error, SlackError, SlackProfileRuntime};
-use crate::queue::{OutgoingMessage, QueuePaths};
+use crate::queue::{sorted_outgoing_paths, OutgoingMessage, QueuePaths};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
 
 const OUTBOUND_CHUNK_CHARS: usize = 3500;
-
-fn sorted_outgoing_paths(paths: &QueuePaths) -> Result<Vec<PathBuf>, SlackError> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(&paths.outgoing).map_err(|e| io_error(&paths.outgoing, e))? {
-        let entry = entry.map_err(|e| io_error(&paths.outgoing, e))?;
-        let path = entry.path();
-        if path.extension().and_then(|v| v.to_str()) == Some("json") {
-            files.push(path);
-        }
-    }
-    files.sort();
-    Ok(files)
-}
 
 fn parse_conversation_id(value: &str) -> Result<(&str, &str), SlackError> {
     let (channel_id, thread_ts) = value
@@ -84,7 +70,9 @@ pub(super) fn process_outbound(
 ) -> Result<usize, SlackError> {
     let mut sent = 0usize;
 
-    for path in sorted_outgoing_paths(queue_paths)? {
+    for path in
+        sorted_outgoing_paths(queue_paths).map_err(|e| io_error(&queue_paths.outgoing, e))?
+    {
         let raw = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
         let outgoing: OutgoingMessage =
             serde_json::from_str(&raw).map_err(|e| json_error(&path, e))?;

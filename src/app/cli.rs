@@ -1,56 +1,5 @@
 use crate::app::command_catalog::{canonical_cli_tokens, V1_FUNCTIONS};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CliVerb {
-    Setup,
-    Start,
-    Stop,
-    Restart,
-    Status,
-    Logs,
-    Send,
-    Update,
-    Doctor,
-    Attach,
-    Channels,
-    Provider,
-    Model,
-    Agent,
-    Orchestrator,
-    OrchestratorAgent,
-    Workflow,
-    ChannelProfile,
-    Auth,
-    Supervisor,
-    Unknown,
-}
-
-pub fn parse_cli_verb(input: &str) -> CliVerb {
-    match input {
-        "setup" => CliVerb::Setup,
-        "start" => CliVerb::Start,
-        "stop" => CliVerb::Stop,
-        "restart" => CliVerb::Restart,
-        "status" => CliVerb::Status,
-        "logs" => CliVerb::Logs,
-        "send" => CliVerb::Send,
-        "update" => CliVerb::Update,
-        "doctor" => CliVerb::Doctor,
-        "attach" => CliVerb::Attach,
-        "channels" => CliVerb::Channels,
-        "provider" => CliVerb::Provider,
-        "model" => CliVerb::Model,
-        "agent" => CliVerb::Agent,
-        "orchestrator" => CliVerb::Orchestrator,
-        "orchestrator-agent" => CliVerb::OrchestratorAgent,
-        "workflow" => CliVerb::Workflow,
-        "channel-profile" => CliVerb::ChannelProfile,
-        "auth" => CliVerb::Auth,
-        "__supervisor" => CliVerb::Supervisor,
-        _ => CliVerb::Unknown,
-    }
-}
-
 pub fn normalize_cli_args(args: Vec<String>) -> Vec<String> {
     if args.is_empty() {
         return args;

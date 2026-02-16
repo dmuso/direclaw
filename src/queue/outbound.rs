@@ -1,5 +1,8 @@
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
+
+use super::QueuePaths;
 
 pub const OUTBOUND_MAX_CHARS: usize = 4000;
 pub const OUTBOUND_TRUNCATE_KEEP_CHARS: usize = 3900;
@@ -10,6 +13,19 @@ pub struct OutboundContent {
     pub message: String,
     pub files: Vec<String>,
     pub omitted_files: Vec<String>,
+}
+
+pub fn sorted_outgoing_paths(paths: &QueuePaths) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&paths.outgoing)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|v| v.to_str()) == Some("json") {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 pub fn prepare_outbound_content(raw_message: &str) -> OutboundContent {
@@ -80,4 +96,35 @@ fn is_absolute_readable_file(path: &str) -> bool {
 
 fn is_absolute_path(path: &str) -> bool {
     Path::new(path).is_absolute()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sorted_outgoing_paths;
+    use crate::queue::QueuePaths;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn sorted_outgoing_paths_returns_json_files_in_order() {
+        let dir = tempdir().expect("tempdir");
+        let queue = QueuePaths::from_state_root(dir.path());
+        fs::create_dir_all(&queue.outgoing).expect("outgoing");
+
+        fs::write(queue.outgoing.join("b.json"), "{}").expect("write json");
+        fs::write(queue.outgoing.join("a.json"), "{}").expect("write json");
+        fs::write(queue.outgoing.join("ignored.txt"), "nope").expect("write txt");
+
+        let paths = sorted_outgoing_paths(&queue).expect("sorted");
+        let names = paths
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|v| v.to_str())
+                    .expect("name")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["a.json".to_string(), "b.json".to_string()]);
+    }
 }
