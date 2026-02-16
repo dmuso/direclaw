@@ -57,25 +57,50 @@ pub fn complete_success(
     claimed: &ClaimedMessage,
     outgoing: &OutgoingMessage,
 ) -> Result<PathBuf, QueueError> {
-    let (normalized_outgoing, omitted_files) = file_tags::normalize_outgoing_message(outgoing);
-    if !omitted_files.is_empty() {
-        append_queue_log(
-            paths,
-            &format!(
-                "outgoing message `{}` omitted invalid/unreadable files: {}",
-                outgoing.message_id,
-                omitted_files.join(", ")
-            ),
-        );
-    }
-    let filename = outgoing_filename(&outgoing.channel, &outgoing.message_id, outgoing.timestamp);
-    let out_path = paths.outgoing.join(filename);
-    let body =
-        serde_json::to_string_pretty(&normalized_outgoing).map_err(|e| parse_err(&out_path, e))?;
+    let mut all = complete_success_many(paths, claimed, std::slice::from_ref(outgoing))?;
+    Ok(all.remove(0))
+}
 
-    fs::write(&out_path, body).map_err(|e| io_err(&out_path, e))?;
+pub fn complete_success_many(
+    paths: &QueuePaths,
+    claimed: &ClaimedMessage,
+    outgoing: &[OutgoingMessage],
+) -> Result<Vec<PathBuf>, QueueError> {
+    if outgoing.is_empty() {
+        return Err(io_err(
+            &claimed.processing_path,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "complete_success_many requires at least one outgoing message",
+            ),
+        ));
+    }
+
+    let mut written_paths = Vec::with_capacity(outgoing.len());
+    for (index, item) in outgoing.iter().enumerate() {
+        let (normalized_outgoing, omitted_files) = file_tags::normalize_outgoing_message(item);
+        if !omitted_files.is_empty() {
+            append_queue_log(
+                paths,
+                &format!(
+                    "outgoing message `{}` omitted invalid/unreadable files: {}",
+                    item.message_id,
+                    omitted_files.join(", ")
+                ),
+            );
+        }
+
+        let filename =
+            unique_outgoing_filename(&item.channel, &item.message_id, item.timestamp, index);
+        let out_path = paths.outgoing.join(filename);
+        let body = serde_json::to_string_pretty(&normalized_outgoing)
+            .map_err(|e| parse_err(&out_path, e))?;
+        fs::write(&out_path, body).map_err(|e| io_err(&out_path, e))?;
+        written_paths.push(out_path);
+    }
+
     fs::remove_file(&claimed.processing_path).map_err(|e| io_err(&claimed.processing_path, e))?;
-    Ok(out_path)
+    Ok(written_paths)
 }
 
 pub fn requeue_failure(
@@ -126,6 +151,23 @@ fn sorted_incoming_paths(incoming_dir: &Path) -> Result<Vec<PathBuf>, QueueError
     });
 
     Ok(entries.into_iter().map(|(_, path)| path).collect())
+}
+
+fn unique_outgoing_filename(
+    channel: &str,
+    message_id: &str,
+    timestamp: i64,
+    index: usize,
+) -> String {
+    let base = outgoing_filename(channel, message_id, timestamp);
+    if index == 0 {
+        return base;
+    }
+
+    if let Some(stem) = base.strip_suffix(".json") {
+        return format!("{stem}_{index}.json");
+    }
+    format!("{base}_{index}")
 }
 
 static REQUEUE_COUNTER: AtomicU64 = AtomicU64::new(0);

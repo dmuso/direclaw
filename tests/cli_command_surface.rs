@@ -5,10 +5,8 @@ use direclaw::config::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use tempfile::tempdir;
 
 fn run(home: &Path, args: &[&str]) -> Output {
@@ -26,31 +24,6 @@ fn run_with_env(home: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
         cmd.env(key, value);
     }
     cmd.output().expect("run direclaw")
-}
-
-fn run_with_stdin_and_env(
-    home: &Path,
-    args: &[&str],
-    stdin_body: &str,
-    envs: &[(&str, &str)],
-) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_direclaw"));
-    cmd.args(args)
-        .env("HOME", home)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (key, value) in envs {
-        cmd.env(key, value);
-    }
-    let mut child = cmd.spawn().expect("spawn direclaw");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(stdin_body.as_bytes())
-        .expect("write stdin");
-    child.wait_with_output().expect("wait output")
 }
 
 fn stdout(output: &Output) -> String {
@@ -145,67 +118,6 @@ channels:
     .expect("write settings");
 }
 
-fn write_chat_fixture(home: &Path) {
-    let workspace = home.join("workspace");
-    let orchestrator_workspace = workspace.join("eng_orchestrator");
-    fs::create_dir_all(&orchestrator_workspace).expect("create orchestrator workspace");
-    fs::create_dir_all(home.join(".direclaw")).expect("create config dir");
-
-    fs::write(
-        home.join(".direclaw/config.yaml"),
-        format!(
-            r#"
-workspaces_path: {workspace}
-shared_workspaces: {{}}
-orchestrators:
-  eng_orchestrator:
-    private_workspace: {orchestrator_workspace}
-    shared_access: []
-channel_profiles:
-  local-default:
-    channel: local
-    orchestrator_id: eng_orchestrator
-monitoring: {{}}
-channels: {{}}
-"#,
-            workspace = workspace.display(),
-            orchestrator_workspace = orchestrator_workspace.display()
-        ),
-    )
-    .expect("write settings");
-
-    fs::write(
-        orchestrator_workspace.join("orchestrator.yaml"),
-        r#"
-id: eng_orchestrator
-selector_agent: router
-default_workflow: triage
-selection_max_retries: 1
-agents:
-  router:
-    provider: anthropic
-    model: sonnet
-    can_orchestrate_workflows: true
-  worker:
-    provider: openai
-    model: gpt-5.2
-workflows:
-  - id: triage
-    version: 1
-    steps:
-      - id: start
-        type: agent_task
-        agent: worker
-        prompt: start
-        outputs: [summary, artifact]
-        output_files:
-          summary: outputs/summary.txt
-          artifact: outputs/artifact.txt
-"#,
-    )
-    .expect("write orchestrator");
-}
-
 fn run_id_from(output: &Output) -> String {
     stdout(output)
         .lines()
@@ -280,50 +192,6 @@ fn daemon_command_surface_works() {
     assert_ok(&run(temp.path(), &["stop"]));
     assert_ok(&run(temp.path(), &["restart"]));
     assert_ok(&run(temp.path(), &["stop"]));
-}
-
-#[test]
-fn chat_command_processes_local_turn_and_prints_assistant_response() {
-    let temp = tempdir().expect("tempdir");
-    write_chat_fixture(temp.path());
-
-    let claude = temp.path().join("claude-mock");
-    let codex = temp.path().join("codex-mock");
-    fs::write(
-        &claude,
-        "#!/bin/sh\necho '{\"selectorId\":\"sel-chat\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
-    )
-    .expect("write claude mock");
-    fs::write(
-        &codex,
-        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
-    )
-    .expect("write codex mock");
-    for path in [&claude, &codex] {
-        let mut perms = fs::metadata(path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("chmod");
-    }
-
-    let output = run_with_stdin_and_env(
-        temp.path(),
-        &["chat", "local-default"],
-        "hello\n/exit\n",
-        &[
-            (
-                "DIRECLAW_PROVIDER_BIN_ANTHROPIC",
-                claude.to_str().expect("claude str"),
-            ),
-            (
-                "DIRECLAW_PROVIDER_BIN_OPENAI",
-                codex.to_str().expect("codex str"),
-            ),
-        ],
-    );
-    assert_ok(&output);
-    let out = stdout(&output);
-    assert!(out.contains("assistant> ok"));
-    assert!(out.contains("chat ended"));
 }
 
 #[test]
@@ -969,8 +837,11 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                 next: None,
                 on_approve: None,
                 on_reject: None,
-                outputs: out_keys(&["result"]),
-                output_files: out_files(&[("result", "reports/{{workflow.run_id}}/result.json")]),
+                outputs: out_keys(&["summary", "result"]),
+                output_files: out_files(&[
+                    ("summary", "reports/{{workflow.run_id}}/final-summary.txt"),
+                    ("result", "reports/{{workflow.run_id}}/result.json"),
+                ]),
                 limits: None,
             },
         ],
@@ -998,7 +869,7 @@ fi
 if printf "%s" "$args" | grep -q "/steps/review/"; then
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\",\"summary\":\"looks good\",\"feedback\":\"none\"}[/workflow_result]"}}'
 elif printf "%s" "$args" | grep -q "/steps/finalize/"; then
-  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":{\"status\":\"done\"}}[/workflow_result]"}}'
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"done\",\"result\":{\"status\":\"done\"}}[/workflow_result]"}}'
 else
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"plan\":\"Use checks\",\"summary\":\"roundtrip-ok\"}[/workflow_result]"}}'
 fi
@@ -1211,11 +1082,17 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
             next: None,
             on_approve: None,
             on_reject: None,
-            outputs: out_keys(&["result"]),
-            output_files: out_files(&[(
-                "result",
-                "reports/{{workflow.run_id}}/slow-{{workflow.attempt}}.txt",
-            )]),
+            outputs: out_keys(&["summary", "result"]),
+            output_files: out_files(&[
+                (
+                    "summary",
+                    "reports/{{workflow.run_id}}/slow-summary-{{workflow.attempt}}.txt",
+                ),
+                (
+                    "result",
+                    "reports/{{workflow.run_id}}/slow-{{workflow.attempt}}.txt",
+                ),
+            ]),
             limits: None,
         }],
     }];
@@ -1233,7 +1110,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         r#"#!/bin/sh
 set -eu
 sleep 2
-echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":\"slow-ok\"}[/workflow_result]"}}'
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"slow-ok\",\"result\":\"slow-ok\"}[/workflow_result]"}}'
 "#,
     )
     .expect("write codex mock");

@@ -34,10 +34,12 @@ workflows:
           Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
-          Write output exactly to:
+          Write outputs exactly to:
+          summary -> {{workflow.output_paths.summary}}
           result -> {{workflow.output_paths.result}}
-        outputs: [result]
+        outputs: [summary, result]
         output_files:
+          summary: output/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           result: output/result__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
 
 workflow_orchestration:

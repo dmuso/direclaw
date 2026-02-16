@@ -471,6 +471,19 @@ impl OrchestratorConfig {
                         workflow.id, step.id
                     )));
                 }
+                let has_summary_output = step.outputs.iter().any(|key| key.as_str() == "summary");
+                if !has_summary_output {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires `summary` in `outputs`",
+                        workflow.id, step.id
+                    )));
+                }
+                if !step.output_files.contains_key("summary") {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires `summary` mapping in `output_files`",
+                        workflow.id, step.id
+                    )));
+                }
                 for key in &step.outputs {
                     if !step.output_files.contains_key(key.as_str()) {
                         return Err(ConfigError::Orchestrator(format!(

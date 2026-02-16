@@ -2,34 +2,29 @@ use crate::config::{ChannelKind, ChannelProfile, Settings};
 use crate::queue::{sorted_outgoing_paths, IncomingMessage, OutgoingMessage, QueuePaths};
 use crate::runtime::drain_queue_once;
 use std::fs;
-use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const CHAT_EXIT_COMMANDS: &[&str] = &["/exit", "exit", "quit"];
-const CHAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+pub const CHAT_EXIT_COMMANDS: &[&str] = &["/exit", "exit", "quit"];
+pub const CHAT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const CHAT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-pub fn run_local_chat_session_stdio(
-    state_root: &Path,
-    settings: &Settings,
-    profile_id: &str,
-) -> Result<String, String> {
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
-    let stdout = io::stdout();
-    let mut output = stdout.lock();
-    run_local_chat_session(state_root, settings, profile_id, &mut input, &mut output)
+#[derive(Debug, Clone)]
+pub struct LocalChatSession {
+    pub state_root: PathBuf,
+    pub settings: Settings,
+    pub queue_paths: QueuePaths,
+    pub profile_id: String,
+    pub profile: ChannelProfile,
+    pub conversation_id: String,
 }
 
-pub fn run_local_chat_session<R: BufRead, W: Write>(
+pub fn create_local_chat_session(
     state_root: &Path,
     settings: &Settings,
     profile_id: &str,
-    input: &mut R,
-    output: &mut W,
-) -> Result<String, String> {
+) -> Result<LocalChatSession, String> {
     let profile = settings
         .channel_profiles
         .get(profile_id)
@@ -41,128 +36,39 @@ pub fn run_local_chat_session<R: BufRead, W: Write>(
         ));
     }
 
-    let queue_paths = QueuePaths::from_state_root(state_root);
-    let conversation_id = format!("chat-{}", now_nanos());
-    let session = ChatSession {
-        state_root,
-        settings,
-        queue_paths: &queue_paths,
-        profile_id,
-        profile,
-        conversation_id: &conversation_id,
-    };
-    run_chat_repl(input, output, &session)?;
-
-    Ok(format!("chat ended\nconversation_id={conversation_id}"))
+    Ok(LocalChatSession {
+        state_root: state_root.to_path_buf(),
+        settings: settings.clone(),
+        queue_paths: QueuePaths::from_state_root(state_root),
+        profile_id: profile_id.to_string(),
+        profile: profile.clone(),
+        conversation_id: format!("chat-{}", now_nanos()),
+    })
 }
 
-struct ChatSession<'a> {
-    state_root: &'a Path,
-    settings: &'a Settings,
-    queue_paths: &'a QueuePaths,
-    profile_id: &'a str,
-    profile: &'a ChannelProfile,
-    conversation_id: &'a str,
-}
-
-fn run_chat_repl<R: BufRead, W: Write>(
-    input: &mut R,
-    output: &mut W,
-    session: &ChatSession<'_>,
-) -> Result<(), String> {
-    writeln!(
-        output,
-        "chat profile={} conversation_id={}",
-        session.profile_id, session.conversation_id
-    )
-    .map_err(|e| format!("failed to write chat output: {e}"))?;
-    writeln!(output, "type `/exit` to quit")
-        .map_err(|e| format!("failed to write chat output: {e}"))?;
-
-    loop {
-        write!(output, "you> ").map_err(|e| format!("failed to write chat prompt: {e}"))?;
-        output
-            .flush()
-            .map_err(|e| format!("failed to flush chat prompt: {e}"))?;
-
-        let mut line = String::new();
-        let read = input
-            .read_line(&mut line)
-            .map_err(|e| format!("failed to read chat input: {e}"))?;
-        if read == 0 {
-            break;
-        }
-
-        let message = line.trim();
-        if message.is_empty() {
-            continue;
-        }
-        if is_chat_exit_command(message) {
-            break;
-        }
-
-        let message_id = enqueue_chat_message(
-            session.queue_paths,
-            session.profile_id,
-            session.profile,
-            session.conversation_id,
-            message,
-        )?;
-        let _ = drain_queue_once(session.state_root, session.settings, 1)
-            .map_err(|e| format!("chat processing failed: {e}"))?;
-
-        match wait_for_outgoing_message(session.queue_paths, &message_id, CHAT_RESPONSE_TIMEOUT)? {
-            Some(response) => {
-                writeln!(output, "assistant> {}", response.message)
-                    .map_err(|e| format!("failed to write chat output: {e}"))?;
-                output
-                    .flush()
-                    .map_err(|e| format!("failed to flush chat output: {e}"))?;
-            }
-            None => {
-                writeln!(
-                    output,
-                    "assistant> timed out waiting for response (message_id={message_id})"
-                )
-                .map_err(|e| format!("failed to write chat timeout output: {e}"))?;
-                output
-                    .flush()
-                    .map_err(|e| format!("failed to flush chat output: {e}"))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn is_chat_exit_command(message: &str) -> bool {
+pub fn is_chat_exit_command(message: &str) -> bool {
     CHAT_EXIT_COMMANDS
         .iter()
         .any(|command| message.eq_ignore_ascii_case(command))
 }
 
-fn enqueue_chat_message(
-    queue_paths: &QueuePaths,
-    profile_id: &str,
-    profile: &ChannelProfile,
-    conversation_id: &str,
-    message: &str,
-) -> Result<String, String> {
+pub fn enqueue_chat_message(session: &LocalChatSession, message: &str) -> Result<String, String> {
     let msg_id = format!("msg-{}", now_nanos());
     let incoming = IncomingMessage {
-        channel: profile.channel.to_string(),
-        channel_profile_id: Some(profile_id.to_string()),
+        channel: session.profile.channel.to_string(),
+        channel_profile_id: Some(session.profile_id.clone()),
         sender: "cli".to_string(),
         sender_id: "cli".to_string(),
         message: message.to_string(),
         timestamp: now_secs(),
         message_id: msg_id.clone(),
-        conversation_id: Some(conversation_id.to_string()),
+        conversation_id: Some(session.conversation_id.clone()),
         files: Vec::new(),
         workflow_run_id: None,
         workflow_step_id: None,
     };
-    let queue_path = queue_paths
+    let queue_path = session
+        .queue_paths
         .incoming
         .join(format!("{}.json", incoming.message_id));
     let body = serde_json::to_vec_pretty(&incoming)
@@ -172,13 +78,37 @@ fn enqueue_chat_message(
     Ok(msg_id)
 }
 
-fn wait_for_outgoing_message(
+pub fn process_message(
+    session: &LocalChatSession,
+    message_id: &str,
+) -> Result<Vec<OutgoingMessage>, String> {
+    let _ = drain_queue_once(&session.state_root, &session.settings, 1)
+        .map_err(|e| format!("chat processing failed: {e}"))?;
+    wait_for_outgoing_messages(
+        &session.queue_paths,
+        message_id,
+        CHAT_RESPONSE_TIMEOUT,
+        || Ok(()),
+    )
+}
+
+pub fn wait_for_outgoing_messages<F>(
     queue_paths: &QueuePaths,
     message_id: &str,
     timeout: Duration,
-) -> Result<Option<OutgoingMessage>, String> {
+    mut on_poll: F,
+) -> Result<Vec<OutgoingMessage>, String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    let settle_window = Duration::from_millis(300);
     let started = Instant::now();
+    let mut found = Vec::new();
+    let mut first_received_at: Option<Instant> = None;
+
     while started.elapsed() <= timeout {
+        on_poll()?;
+        let mut matched_on_this_poll = false;
         for path in sorted_outgoing_paths(queue_paths)
             .map_err(|e| format!("failed to read {}: {e}", queue_paths.outgoing.display()))?
         {
@@ -191,11 +121,25 @@ fn wait_for_outgoing_message(
             }
             fs::remove_file(&path)
                 .map_err(|e| format!("failed to remove {}: {e}", path.display()))?;
-            return Ok(Some(outgoing));
+            matched_on_this_poll = true;
+            if first_received_at.is_none() {
+                first_received_at = Some(Instant::now());
+            }
+            found.push(outgoing);
+        }
+
+        if first_received_at.is_some()
+            && !matched_on_this_poll
+            && first_received_at
+                .map(|received_at| received_at.elapsed() >= settle_window)
+                .unwrap_or(false)
+        {
+            break;
         }
         thread::sleep(CHAT_POLL_INTERVAL);
     }
-    Ok(None)
+
+    Ok(found)
 }
 
 fn now_secs() -> i64 {
@@ -214,7 +158,7 @@ fn now_nanos() -> i128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_chat_exit_command, wait_for_outgoing_message};
+    use super::{is_chat_exit_command, wait_for_outgoing_messages};
     use crate::queue::{OutgoingMessage, QueuePaths};
     use std::fs;
     use std::time::Duration;
@@ -229,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_outgoing_message_consumes_matching_message_file() {
+    fn wait_for_outgoing_messages_consumes_all_matching_message_files() {
         let dir = tempdir().expect("tempdir");
         let queue = QueuePaths::from_state_root(dir.path());
         fs::create_dir_all(&queue.outgoing).expect("outgoing");
@@ -267,13 +211,27 @@ mod tests {
         )
         .expect("write matching");
 
+        let match_path_2 = queue.outgoing.join("local_msg-1_2.json");
+        fs::write(
+            &match_path_2,
+            serde_json::to_string(&matching).expect("serialize matching 2"),
+        )
+        .expect("write matching 2");
+
         let received =
-            wait_for_outgoing_message(&queue, "msg-1", Duration::from_secs(1)).expect("receive");
-        assert_eq!(received.expect("message").message, "ok");
+            wait_for_outgoing_messages(&queue, "msg-1", Duration::from_secs(1), || Ok(()))
+                .expect("receive");
+        assert_eq!(received.len(), 2);
+        assert_eq!(received[0].message, "ok");
+        assert_eq!(received[1].message, "ok");
         assert!(other_path.exists(), "non-matching message should remain");
         assert!(
             !match_path.exists(),
-            "matching message should be removed after consume"
+            "first matching message should be removed after consume"
+        );
+        assert!(
+            !match_path_2.exists(),
+            "second matching message should be removed after consume"
         );
     }
 }

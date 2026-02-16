@@ -4,7 +4,7 @@ use super::{
 use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries;
-use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunStore};
+use crate::orchestration::run_store::{RunState, StepAttemptRecord, WorkflowRunStore};
 use crate::orchestration::selector::run_selector_attempt_with_provider;
 use crate::orchestration::transitions::RoutedSelectorAction;
 use crate::provider::RunnerBinaries;
@@ -327,23 +327,27 @@ fn process_claimed_message(
         e.to_string()
     })?;
 
-    let (response_message, response_agent) =
-        action_to_outbound(&action, &claimed.payload.channel, &run_store);
-    let outgoing = OutgoingMessage {
-        channel: claimed.payload.channel.clone(),
-        channel_profile_id: claimed.payload.channel_profile_id.clone(),
-        sender: claimed.payload.sender.clone(),
-        message: response_message,
-        original_message: claimed.payload.message.clone(),
-        timestamp: now_secs(),
-        message_id: claimed.payload.message_id.clone(),
-        agent: response_agent,
-        conversation_id: claimed.payload.conversation_id.clone(),
-        files: Vec::new(),
-        workflow_run_id: claimed.payload.workflow_run_id.clone(),
-        workflow_step_id: claimed.payload.workflow_step_id.clone(),
-    };
-    queue::complete_success(&queue_paths, &claimed, &outgoing).map_err(|e| e.to_string())?;
+    let responses = action_to_outbound_messages(&action, &run_store);
+    let now = now_secs();
+    let outgoing: Vec<OutgoingMessage> = responses
+        .into_iter()
+        .enumerate()
+        .map(|(index, (message, agent))| OutgoingMessage {
+            channel: claimed.payload.channel.clone(),
+            channel_profile_id: claimed.payload.channel_profile_id.clone(),
+            sender: claimed.payload.sender.clone(),
+            message,
+            original_message: claimed.payload.message.clone(),
+            timestamp: now.saturating_add(index as i64),
+            message_id: claimed.payload.message_id.clone(),
+            agent,
+            conversation_id: claimed.payload.conversation_id.clone(),
+            files: Vec::new(),
+            workflow_run_id: claimed.payload.workflow_run_id.clone(),
+            workflow_step_id: claimed.payload.workflow_step_id.clone(),
+        })
+        .collect();
+    queue::complete_success_many(&queue_paths, &claimed, &outgoing).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -378,25 +382,13 @@ fn slow_shutdown_delay() -> Duration {
     Duration::from_secs(seconds)
 }
 
-fn action_to_outbound(
+fn action_to_outbound_messages(
     action: &RoutedSelectorAction,
-    inbound_channel: &str,
     run_store: &WorkflowRunStore,
-) -> (String, String) {
+) -> Vec<(String, String)> {
     match action {
-        RoutedSelectorAction::WorkflowStart {
-            run_id,
-            workflow_id,
-        } => {
-            if inbound_channel == "local" {
-                if let Some(message) = local_workflow_answer(run_store, run_id) {
-                    return (message, "orchestrator".to_string());
-                }
-            }
-            (
-                format!("workflow started\nrun_id={run_id}\nworkflow_id={workflow_id}"),
-                "orchestrator".to_string(),
-            )
+        RoutedSelectorAction::WorkflowStart { run_id, .. } => {
+            workflow_lifecycle_messages(run_store, run_id)
         }
         RoutedSelectorAction::WorkflowStatus {
             run_id,
@@ -404,44 +396,27 @@ fn action_to_outbound(
             message,
         } => {
             if let Some(progress) = progress {
-                (
+                vec![(
                     format!(
                         "{message}\nrun_id={}\nstate={}",
                         run_id.clone().unwrap_or_else(|| "none".to_string()),
                         progress.state,
                     ),
                     "orchestrator".to_string(),
-                )
+                )]
             } else {
-                (message.clone(), "orchestrator".to_string())
+                vec![(message.clone(), "orchestrator".to_string())]
             }
         }
         RoutedSelectorAction::DiagnosticsInvestigate { findings, .. } => {
-            (findings.clone(), "diagnostics".to_string())
+            vec![(findings.clone(), "diagnostics".to_string())]
         }
         RoutedSelectorAction::CommandInvoke { result } => {
             let rendered = serde_json::to_string_pretty(result)
                 .unwrap_or_else(|_| "command completed".to_string());
-            (rendered, "command".to_string())
+            vec![(rendered, "command".to_string())]
         }
     }
-}
-
-fn local_workflow_answer(run_store: &WorkflowRunStore, run_id: &str) -> Option<String> {
-    let run = run_store.load_run(run_id).ok()?;
-    if !run.state.is_terminal() {
-        return None;
-    }
-    if let Some(outputs) = latest_succeeded_attempt_outputs(run_store.state_root(), run_id) {
-        if let Some(answer) = select_user_visible_output(&outputs) {
-            return Some(answer);
-        }
-    }
-    run_store
-        .load_progress(run_id)
-        .ok()
-        .map(|progress| progress.summary)
-        .filter(|summary| !summary.trim().is_empty())
 }
 
 fn latest_succeeded_attempt_outputs(state_root: &Path, run_id: &str) -> Option<Map<String, Value>> {
@@ -480,13 +455,161 @@ fn latest_succeeded_attempt_outputs(state_root: &Path, run_id: &str) -> Option<M
     latest.map(|record| record.outputs)
 }
 
-fn select_user_visible_output(outputs: &Map<String, Value>) -> Option<String> {
-    for key in ["answer", "response", "summary", "result", "artifact"] {
-        if let Some(text) = outputs.get(key).and_then(output_value_text) {
-            return Some(text);
+fn workflow_lifecycle_messages(
+    run_store: &WorkflowRunStore,
+    run_id: &str,
+) -> Vec<(String, String)> {
+    let mut messages = Vec::new();
+    let attempts = step_attempts_by_time(run_store.state_root(), run_id);
+    if attempts.is_empty() {
+        messages.push((
+            format!("workflow started\nrun_id={run_id}"),
+            "orchestrator".to_string(),
+        ));
+        return messages;
+    }
+
+    for attempt in &attempts {
+        messages.push((
+            format!(
+                "Running step `{}` (attempt {})...",
+                attempt.step_id, attempt.attempt
+            ),
+            "orchestrator".to_string(),
+        ));
+        match attempt.state.as_str() {
+            "succeeded" => messages.push((
+                format!(
+                    "Step `{}` complete: {}",
+                    attempt.step_id,
+                    step_summary_text(attempt)
+                ),
+                "orchestrator".to_string(),
+            )),
+            "failed_retryable" => messages.push((
+                format!(
+                    "Step `{}` failed on attempt {}. Retrying.",
+                    attempt.step_id, attempt.attempt
+                ),
+                "orchestrator".to_string(),
+            )),
+            "failed" => messages.push((
+                format!(
+                    "Step `{}` failed on attempt {}: {}",
+                    attempt.step_id,
+                    attempt.attempt,
+                    attempt
+                        .error
+                        .clone()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| "unknown error".to_string())
+                ),
+                "orchestrator".to_string(),
+            )),
+            _ => {}
         }
     }
-    outputs.values().find_map(output_value_text)
+
+    let final_message = final_user_message(run_store, run_id, attempts.last());
+    messages.push((final_message, "orchestrator".to_string()));
+    messages
+}
+
+fn step_attempts_by_time(state_root: &Path, run_id: &str) -> Vec<StepAttemptRecord> {
+    let steps_root = state_root.join("workflows/runs").join(run_id).join("steps");
+    let mut attempts = Vec::new();
+    let Ok(steps) = fs::read_dir(&steps_root) else {
+        return attempts;
+    };
+
+    for step in steps.flatten() {
+        let attempts_root = step.path().join("attempts");
+        let Ok(entries) = fs::read_dir(&attempts_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let result_path = entry.path().join("result.json");
+            if !result_path.is_file() {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(&result_path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<StepAttemptRecord>(&raw) else {
+                continue;
+            };
+            attempts.push(record);
+        }
+    }
+
+    attempts.sort_by(|a, b| {
+        a.started_at
+            .cmp(&b.started_at)
+            .then_with(|| a.ended_at.cmp(&b.ended_at))
+            .then_with(|| a.step_id.cmp(&b.step_id))
+            .then_with(|| a.attempt.cmp(&b.attempt))
+    });
+    attempts
+}
+
+fn step_summary_text(attempt: &StepAttemptRecord) -> String {
+    let summary = attempt
+        .outputs
+        .get("summary")
+        .and_then(output_value_text)
+        .unwrap_or_else(|| "no summary provided".to_string());
+    if let Some(decision) = attempt
+        .outputs
+        .get("decision")
+        .and_then(output_value_text)
+        .filter(|v| !v.trim().is_empty())
+    {
+        return format!("{summary} (decision: {decision})");
+    }
+    summary
+}
+
+fn final_user_message(
+    run_store: &WorkflowRunStore,
+    run_id: &str,
+    last_attempt: Option<&StepAttemptRecord>,
+) -> String {
+    let run = run_store.load_run(run_id).ok();
+    if let Some(attempt) = last_attempt {
+        if attempt.state == "succeeded" {
+            return attempt
+                .outputs
+                .get("summary")
+                .and_then(output_value_text)
+                .or_else(|| attempt.outputs.get("artifact").and_then(output_value_text))
+                .unwrap_or_else(|| "workflow completed".to_string());
+        }
+    }
+
+    if let Some(run) = run {
+        if run.state == RunState::Canceled {
+            return run
+                .terminal_reason
+                .unwrap_or_else(|| "workflow canceled".to_string());
+        }
+        if run.state == RunState::Failed {
+            return run
+                .terminal_reason
+                .unwrap_or_else(|| "workflow failed".to_string());
+        }
+    }
+
+    if let Some(outputs) = latest_succeeded_attempt_outputs(run_store.state_root(), run_id) {
+        if let Some(summary) = outputs.get("summary").and_then(output_value_text) {
+            return summary;
+        }
+    }
+    run_store
+        .load_progress(run_id)
+        .ok()
+        .map(|progress| progress.summary)
+        .filter(|summary| !summary.trim().is_empty())
+        .unwrap_or_else(|| "workflow update unavailable".to_string())
 }
 
 fn output_value_text(value: &Value) -> Option<String> {

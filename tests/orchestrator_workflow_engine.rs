@@ -77,8 +77,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: plan
-        outputs: [plan]
+        outputs: [summary, plan]
         output_files:
+          summary: out/plan-summary.txt
           plan: out/plan.md
       - id: review
         type: agent_review
@@ -611,7 +612,7 @@ fn step_execution_contract_enforces_envelope_routing_and_configured_safety_contr
     let plan_out = evaluate_step_result(
         workflow,
         plan,
-        r#"[workflow_result]{"plan":"plan.md"}[/workflow_result]"#,
+        r#"[workflow_result]{"summary":"planning complete","plan":"plan.md"}[/workflow_result]"#,
         &BTreeMap::new(),
     )
     .expect("plan result");
@@ -1263,8 +1264,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: plan
-        outputs: [plan]
+        outputs: [summary, plan]
         output_files:
+          summary: out/summary.txt
           plan: ../../escape.md
 "#,
     )
@@ -1587,8 +1589,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: test
-        outputs: [plan]
+        outputs: [summary, plan]
         output_files:
+          summary: out/summary.txt
           plan: out/plan.md
         limits:
           max_retries: 1

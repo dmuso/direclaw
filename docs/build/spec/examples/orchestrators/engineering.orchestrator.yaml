@@ -82,8 +82,9 @@ workflows:
           3. Follow the additional step requirements below.
           4. When complete, write structured output to the exact mapped path(s).
           Do not rely on stdout for structured output.
-        outputs: [repo_status]
+        outputs: [summary, repo_status]
         output_files:
+          summary: clone/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           repo_status: clone/repo_status__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
         next: plan_create
 
@@ -107,11 +108,13 @@ workflows:
           Do not rely on stdout for structured output.
           Required outputs schema:
           {{workflow.output_schema_json}}
-          Write output file exactly here:
-          {{workflow.output_paths.plan_doc}}
+          Write outputs exactly to:
+          summary -> {{workflow.output_paths.summary}}
+          plan_doc -> {{workflow.output_paths.plan_doc}}
           Do not write plan_doc anywhere else.
-        outputs: [plan_doc]
+        outputs: [summary, plan_doc]
         output_files:
+          summary: plan/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           plan_doc: plan/plan_doc__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         next: plan_review
 
@@ -133,6 +136,7 @@ workflows:
           {{workflow.output_schema_json}}
           Write outputs exactly to:
           decision -> {{workflow.output_paths.decision}}
+          summary -> {{workflow.output_paths.summary}}
           feedback -> {{workflow.output_paths.feedback}}
           approved_plan -> {{workflow.output_paths.approved_plan}}
           Decision file format:
@@ -141,9 +145,10 @@ workflows:
           Put rationale in feedback file.
           ---
           {{steps.plan_create.outputs.plan_doc}}
-        outputs: [decision, feedback, approved_plan]
+        outputs: [decision, summary, feedback, approved_plan]
         output_files:
           decision: review/decision__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          summary: review/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           feedback: review/feedback__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
           approved_plan: review/approved_plan__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         on_approve: build_create
@@ -174,10 +179,12 @@ workflows:
           {{workflow.output_schema_json}}
           Include changed_files and test_report fields accurately.
           Write outputs exactly to:
+          summary -> {{workflow.output_paths.summary}}
           build_result -> {{workflow.output_paths.build_result}}
           changed_files_summary -> {{workflow.output_paths.changed_files_summary}}
-        outputs: [build_result, changed_files_summary]
+        outputs: [summary, build_result, changed_files_summary]
         output_files:
+          summary: build/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           build_result: build/build_result__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
           changed_files_summary: build/changed_files_summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         next: build_review
@@ -202,6 +209,7 @@ workflows:
           {{workflow.output_schema_json}}
           Write outputs exactly to:
           decision -> {{workflow.output_paths.decision}}
+          summary -> {{workflow.output_paths.summary}}
           feedback -> {{workflow.output_paths.feedback}}
           Decision file format:
           - write exactly one word: approve OR reject
@@ -209,9 +217,10 @@ workflows:
           Put rationale in feedback file.
           ---
           {{steps.build_create.outputs.build_result}}
-        outputs: [decision, feedback]
+        outputs: [decision, summary, feedback]
         output_files:
           decision: review/decision__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
+          summary: review/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           feedback: review/feedback__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         on_approve: create_pull_request
         on_reject: build_create
@@ -236,8 +245,9 @@ workflows:
           3. Follow the additional step requirements below.
           4. When complete, write structured output to the exact mapped path(s).
           Do not rely on stdout for structured output.
-        outputs: [pr_url, pr_summary]
+        outputs: [summary, pr_url, pr_summary]
         output_files:
+          summary: pr/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           pr_url: pr/pr_url__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt
           pr_summary: pr/pr_summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.md
         next: done

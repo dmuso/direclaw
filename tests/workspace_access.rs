@@ -48,8 +48,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: do work
-        outputs: [result]
+        outputs: [summary, result]
         output_files:
+          summary: out/summary.txt
           result: out/result.txt
 "#,
     )

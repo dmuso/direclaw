@@ -8,7 +8,9 @@ pub mod scheduler;
 pub use file_tags::{
     append_inbound_file_tags, extract_inbound_file_tags, prepare_outbound_content,
 };
-pub use lifecycle::{claim_oldest, complete_success, requeue_failure, ClaimedMessage};
+pub use lifecycle::{
+    claim_oldest, complete_success, complete_success_many, requeue_failure, ClaimedMessage,
+};
 pub use message::{IncomingMessage, OutgoingMessage};
 pub use outbound::{
     sorted_outgoing_paths, OutboundContent, OUTBOUND_MAX_CHARS, OUTBOUND_TRUNCATE_KEEP_CHARS,

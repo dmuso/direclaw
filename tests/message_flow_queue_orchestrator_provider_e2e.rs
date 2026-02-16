@@ -186,7 +186,7 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     assert_eq!(processed, 1);
 
     let outgoing = read_outgoing_text(&state_root);
-    assert!(outgoing.contains("workflow started"));
+    assert!(outgoing.contains("ok"));
     assert!(state_root
         .join("orchestrator/messages/msg-1.json")
         .is_file());
@@ -221,7 +221,7 @@ if printf "%s" "$args" | grep -q "/steps/plan/"; then
 elif printf "%s" "$args" | grep -q "/steps/review/"; then
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"decision\":\"approve\",\"summary\":\"approved\",\"feedback\":\"none\"}[/workflow_result]"}}'
 else
-  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"result\":{\"status\":\"done\",\"ticket\":\"123\"}}[/workflow_result]"}}'
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"completed\",\"result\":{\"status\":\"done\",\"ticket\":\"123\"}}[/workflow_result]"}}'
 fi
 "#,
     );
@@ -281,8 +281,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: finalize
-        outputs: [result]
+        outputs: [summary, result]
         output_files:
+          summary: artifacts/done-summary.txt
           result: artifacts/result.json
 "#,
     )
@@ -300,8 +301,27 @@ workflows:
     .expect("drain");
     assert_eq!(processed, 1);
 
-    let outgoing = read_outgoing_text(&state_root);
-    assert!(outgoing.contains("workflow started"));
+    let outgoing_messages = read_outgoing_messages(&state_root);
+    assert!(
+        outgoing_messages
+            .iter()
+            .any(|message| message.message.contains("Running step")),
+        "expected lifecycle start update in outbound messages"
+    );
+    assert!(
+        outgoing_messages
+            .iter()
+            .any(|message| message.message.contains("Step `review` complete")),
+        "expected review completion update in outbound messages"
+    );
+    assert!(
+        outgoing_messages.iter().any(
+            |message| message.message.contains("Summary: collect traces")
+                || message.message.contains("approved")
+                || message.message.contains("completed")
+        ),
+        "expected final user-facing summary in outbound messages"
+    );
     let mut run_ids: Vec<String> = fs::read_dir(state_root.join("workflows/runs"))
         .expect("run dir")
         .map(|entry| entry.expect("entry").path())
@@ -848,8 +868,9 @@ workflows:
         type: agent_task
         agent: worker
         prompt: start
-        outputs: [result]
+        outputs: [summary, result]
         output_files:
+          summary: outputs/summary.txt
           result: ../../escape.md
 "#,
     )
@@ -863,7 +884,10 @@ workflows:
         &binaries(claude.display().to_string(), codex.display().to_string()),
     )
     .expect_err("malicious output file template must fail");
-    assert!(err.contains("output path validation failed"));
+    assert!(
+        err.contains("requires `summary` mapping in `output_files`")
+            || err.contains("output path validation failed")
+    );
 
     let security_log =
         fs::read_to_string(state_root.join("logs/security.log")).expect("security log");
