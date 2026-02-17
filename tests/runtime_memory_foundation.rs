@@ -18,6 +18,7 @@ monitoring: {{}}
 channels: {{}}
 memory:
   enabled: {memory_enabled}
+  worker_interval_seconds: 30
   bulletin_mode: every_message
   retrieval:
     top_n: 20
@@ -66,18 +67,22 @@ fn supervisor_registers_memory_worker_only_when_memory_enabled() {
             let processed = ingest.join("processed");
             let rejected = ingest.join("rejected");
             let bulletins = memory_root.join("bulletins");
-            let log_file = memory_root.join("logs/memory.log");
+            let orchestrator_log = runtime_root.join("logs/orchestrator.log");
 
             assert!(ingest.is_dir(), "missing {}", ingest.display());
             assert!(processed.is_dir(), "missing {}", processed.display());
             assert!(rejected.is_dir(), "missing {}", rejected.display());
             assert!(bulletins.is_dir(), "missing {}", bulletins.display());
-            assert!(log_file.is_file(), "missing {}", log_file.display());
+            assert!(
+                orchestrator_log.is_file(),
+                "missing {}",
+                orchestrator_log.display()
+            );
 
-            let log_body = fs::read_to_string(&log_file).expect("read memory log");
+            let log_body = fs::read_to_string(&orchestrator_log).expect("read orchestrator log");
             assert!(
                 log_body.contains("\"event\":\"memory.worker.bootstrap_complete\""),
-                "expected bootstrap line in memory log"
+                "expected bootstrap line in orchestrator log"
             );
         }
     }
@@ -165,8 +170,8 @@ fn supervisor_reports_corrupt_memory_store_as_degraded_while_runtime_continues()
     fs::write(&stop_path, "stop").expect("stop");
     handle.join().expect("join").expect("supervisor");
 
-    let log_file = memory_root.join("logs/memory.log");
-    let log_body = fs::read_to_string(log_file).expect("read memory log");
+    let log_file = orch_root.join("logs/orchestrator.log");
+    let log_body = fs::read_to_string(log_file).expect("read orchestrator log");
     assert!(
         log_body.lines().any(|line| {
             serde_json::from_str::<serde_json::Value>(line)
@@ -176,6 +181,6 @@ fn supervisor_reports_corrupt_memory_store_as_degraded_while_runtime_continues()
                         && event["reason_code"] == "memory_db_corrupt"
                 })
         }),
-        "expected structured degraded event in memory log"
+        "expected structured degraded event in orchestrator log"
     );
 }

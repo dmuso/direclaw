@@ -210,6 +210,36 @@ channels:
                 "channel:slack"
             ]
         );
+
+        let memory_worker = specs
+            .iter()
+            .find(|spec| spec.id == "memory_worker")
+            .expect("memory worker spec");
+        assert_eq!(memory_worker.interval, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn memory_worker_interval_uses_memory_config_override() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp
+shared_workspaces: {}
+orchestrators: {}
+channel_profiles: {}
+monitoring: {}
+channels: {}
+memory:
+  worker_interval_seconds: 7
+"#,
+        )
+        .expect("parse settings");
+
+        let specs = channel_worker::build_worker_specs(&settings);
+        let memory_worker = specs
+            .iter()
+            .find(|spec| spec.id == "memory_worker")
+            .expect("memory worker spec");
+        assert_eq!(memory_worker.interval, Duration::from_secs(7));
     }
 
     fn sample_incoming(message_id: &str) -> IncomingMessage {

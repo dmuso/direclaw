@@ -1,8 +1,7 @@
 use crate::config::Settings;
 use crate::memory::{bootstrap_memory_paths, process_ingest_once, MemoryPaths, MemoryRepository};
+use crate::shared::logging::append_orchestrator_log_line;
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::Path;
 
 pub fn bootstrap_memory_runtime_paths(settings: &Settings) -> Result<(), String> {
@@ -14,9 +13,11 @@ pub fn bootstrap_memory_runtime_paths(settings: &Settings) -> Result<(), String>
         bootstrap_memory_paths(&paths).map_err(|e| e.to_string())?;
         MemoryRepository::open(&paths.database, orchestrator_id)
             .and_then(|repo| repo.ensure_schema())
-            .map_err(|e| classify_memory_store_error(&paths.database, &e.to_string()))?;
+            .map_err(|e| {
+                classify_memory_store_error(&runtime_root, &paths.database, &e.to_string())
+            })?;
         append_memory_log(
-            &paths.log_file,
+            &runtime_root,
             "memory.worker.bootstrap_complete",
             &[(
                 "orchestrator_id",
@@ -42,9 +43,9 @@ pub fn tick_memory_worker(settings: &Settings) -> Result<(), String> {
             orchestrator_id,
             settings.memory.ingest.max_file_size_mb,
         )
-        .map_err(|e| classify_memory_store_error(&paths.database, &e.to_string()))?;
+        .map_err(|e| classify_memory_store_error(&runtime_root, &paths.database, &e.to_string()))?;
         append_memory_log(
-            &paths.log_file,
+            &runtime_root,
             "memory.worker.heartbeat",
             &[(
                 "orchestrator_id",
@@ -55,18 +56,14 @@ pub fn tick_memory_worker(settings: &Settings) -> Result<(), String> {
     Ok(())
 }
 
-fn classify_memory_store_error(database_path: &Path, message: &str) -> String {
+fn classify_memory_store_error(runtime_root: &Path, database_path: &Path, message: &str) -> String {
     if is_sqlite_corruption_message(message) {
         let normalized = format!(
             "memory_db_corrupt path={} detail={message}",
             database_path.display()
         );
-        let log_path = database_path
-            .parent()
-            .map(|root| root.join("logs/memory.log"))
-            .unwrap_or_else(|| database_path.to_path_buf());
         let _ = append_memory_log(
-            &log_path,
+            runtime_root,
             "memory.worker.degraded",
             &[
                 (
@@ -94,7 +91,11 @@ fn is_sqlite_corruption_message(message: &str) -> bool {
         || normalized.contains("sqlite format")
 }
 
-fn append_memory_log(path: &Path, event: &str, fields: &[(&str, Value)]) -> Result<(), String> {
+fn append_memory_log(
+    runtime_root: &Path,
+    event: &str,
+    fields: &[(&str, Value)],
+) -> Result<(), String> {
     let mut payload = serde_json::Map::new();
     payload.insert("timestamp".to_string(), Value::from(now_secs()));
     payload.insert("event".to_string(), Value::String(event.to_string()));
@@ -102,17 +103,12 @@ fn append_memory_log(path: &Path, event: &str, fields: &[(&str, Value)]) -> Resu
         payload.insert((*key).to_string(), value.clone());
     }
     let line = serde_json::to_string(&payload).map_err(|source| source.to_string())?;
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create memory path {}: {e}", parent.display()))?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("failed to create memory path {}: {e}", path.display()))?;
-    writeln!(file, "{line}").map_err(|e| format!("failed to write {}: {e}", path.display()))
+    append_orchestrator_log_line(runtime_root, &line).map_err(|e| {
+        format!(
+            "failed to write orchestrator log {}: {e}",
+            runtime_root.display()
+        )
+    })
 }
 
 fn now_secs() -> i64 {

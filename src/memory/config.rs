@@ -30,6 +30,10 @@ fn default_ingest_max_file_size_mb() -> u64 {
     25
 }
 
+fn default_worker_interval_seconds() -> u64 {
+    30
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
@@ -41,6 +45,8 @@ pub struct MemoryConfig {
     pub retrieval: MemoryRetrievalConfig,
     #[serde(default)]
     pub ingest: MemoryIngestConfig,
+    #[serde(default = "default_worker_interval_seconds")]
+    pub worker_interval_seconds: u64,
     #[serde(default)]
     pub scope: MemoryScopeConfig,
 }
@@ -52,6 +58,7 @@ impl Default for MemoryConfig {
             bulletin_mode: default_bulletin_mode(),
             retrieval: MemoryRetrievalConfig::default(),
             ingest: MemoryIngestConfig::default(),
+            worker_interval_seconds: default_worker_interval_seconds(),
             scope: MemoryScopeConfig::default(),
         }
     }
@@ -109,6 +116,9 @@ impl MemoryConfig {
         }
         if self.ingest.max_file_size_mb == 0 {
             return Err("memory.ingest.max_file_size_mb must be >= 1".to_string());
+        }
+        if self.worker_interval_seconds == 0 {
+            return Err("memory.worker_interval_seconds must be >= 1".to_string());
         }
         if self.scope.cross_orchestrator {
             return Err(

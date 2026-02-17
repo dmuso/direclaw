@@ -162,9 +162,12 @@ pub fn query_full_text(
     query: &str,
     top_k: usize,
 ) -> Result<Vec<FullTextCandidate>, MemoryRecallError> {
-    if query.trim().is_empty() || top_k == 0 {
+    if top_k == 0 {
         return Ok(Vec::new());
     }
+    let Some(safe_query) = build_safe_fts_query(query) else {
+        return Ok(Vec::new());
+    };
 
     let connection = open_connection(repo)?;
     let mut statement = connection
@@ -203,7 +206,7 @@ pub fn query_full_text(
 
     let rows = statement
         .query_map(
-            params![query.trim(), repo.orchestrator_id(), top_k as i64],
+            params![safe_query, repo.orchestrator_id(), top_k as i64],
             |row| {
                 let (memory, provenance) = map_memory_row(row)?;
                 let score: f64 = row.get(16)?;
@@ -224,6 +227,18 @@ pub fn query_full_text(
         });
     }
     Ok(out)
+}
+
+fn build_safe_fts_query(raw_query: &str) -> Option<String> {
+    let terms = raw_query
+        .split(|ch: char| !ch.is_alphanumeric())
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return None;
+    }
+    Some(terms.join(" OR "))
 }
 
 pub fn query_vector(

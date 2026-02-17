@@ -72,7 +72,7 @@ pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
         specs.push(WorkerSpec {
             id: "memory_worker".to_string(),
             runtime: WorkerRuntime::Memory,
-            interval: Duration::from_secs(1),
+            interval: Duration::from_secs(settings.memory.worker_interval_seconds),
         });
     }
 

@@ -150,6 +150,37 @@ fn full_text_adapter_returns_ranked_results_with_provenance() {
 }
 
 #[test]
+fn full_text_adapter_handles_punctuation_without_fts_parse_errors() {
+    let (dir, repo, _) = setup_repo();
+    let src = dir.path().join("source.txt");
+    fs::write(&src, "x").expect("write source");
+
+    let node = memory_node(
+        "mem-punct",
+        "alpha",
+        MemoryNodeType::Fact,
+        "deployment failed due to flaky tests",
+        "deployment failed",
+        50,
+        0.8,
+        10,
+        Some(canonical(&src)),
+        Some("conv-a"),
+    );
+    repo.upsert_nodes_and_edges(
+        &source_record("alpha", "k-punct", Some(canonical(&src))),
+        &[node],
+        &[],
+    )
+    .expect("persist");
+
+    let hits = query_full_text(&repo, "why did deployment fail, and where?", 10)
+        .expect("full text query must not fail on punctuation");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].memory.memory_id, "mem-punct");
+}
+
+#[test]
 fn vector_adapter_reports_missing_embeddings_and_hybrid_recall_falls_back_to_text() {
     let (dir, repo, paths) = setup_repo();
     let src = dir.path().join("source.txt");

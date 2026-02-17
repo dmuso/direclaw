@@ -115,3 +115,32 @@ memory:
     let err = Settings::from_path(&path).expect_err("parse should fail");
     assert!(matches!(err, ConfigError::Parse { .. }));
 }
+
+#[test]
+fn settings_memory_config_rejects_zero_worker_interval_seconds() {
+    let settings: Settings = serde_yaml::from_str(
+        r#"
+workspaces_path: /tmp/workspaces
+shared_workspaces: {}
+orchestrators: {}
+channel_profiles: {}
+monitoring: {}
+channels: {}
+memory:
+  worker_interval_seconds: 0
+"#,
+    )
+    .expect("parse settings");
+
+    let err = settings
+        .validate(ValidationOptions {
+            require_shared_paths_exist: false,
+        })
+        .expect_err("validation should fail");
+    match err {
+        ConfigError::Settings(message) => {
+            assert!(message.contains("memory.worker_interval_seconds"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
