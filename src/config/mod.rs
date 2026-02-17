@@ -8,6 +8,9 @@ pub mod settings;
 pub(crate) mod setup_draft;
 pub mod typed_fields;
 pub mod validate;
+pub use crate::memory::{
+    MemoryBulletinMode, MemoryConfig, MemoryIngestConfig, MemoryRetrievalConfig, MemoryScopeConfig,
+};
 pub use error::ConfigError;
 pub use load::{load_global_settings, load_orchestrator_config};
 pub use orchestrator_file::{

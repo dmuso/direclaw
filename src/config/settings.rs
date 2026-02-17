@@ -1,4 +1,5 @@
 use super::{ConfigError, OrchestratorId};
+use crate::memory::MemoryConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -60,6 +61,8 @@ pub struct Settings {
     pub channels: BTreeMap<String, ChannelConfig>,
     #[serde(default)]
     pub auth_sync: AuthSyncConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -257,6 +260,8 @@ impl Settings {
                 }
             }
         }
+
+        self.memory.validate().map_err(ConfigError::Settings)?;
 
         Ok(())
     }

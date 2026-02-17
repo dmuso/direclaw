@@ -2,6 +2,7 @@ pub use super::orchestrators_registry::{remove_orchestrator_config, save_orchest
 use super::{
     default_global_config_path, ConfigError, OrchestratorConfig, Settings, ValidationOptions,
 };
+use crate::memory::{bootstrap_memory_paths_for_runtime_root, MemoryPathError};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -43,6 +44,10 @@ pub fn save_orchestrator_config(
     fs::create_dir_all(&private_workspace).map_err(|source| ConfigError::CreateDir {
         path: private_workspace.display().to_string(),
         source,
+    })?;
+    bootstrap_memory_paths_for_runtime_root(&private_workspace).map_err(|err| match err {
+        MemoryPathError::Canonicalize { path, source }
+        | MemoryPathError::CreateDir { path, source } => ConfigError::CreateDir { path, source },
     })?;
     let path = private_workspace.join("orchestrator.yaml");
     let body = serde_yaml::to_string(orchestrator).map_err(|source| ConfigError::Encode {

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 TASK_DIR="docs/build/tasks"
-SPEC="docs/build/config-typing-and-type-driven-setup-tui-plan.md"
+SPEC="docs/build/spec/14-memory.md"
 
 if ! command -v codex >/dev/null 2>&1; then
   echo "Error: 'codex' CLI is not installed or not in PATH." >&2

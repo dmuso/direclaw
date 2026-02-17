@@ -7,7 +7,7 @@ Establish canonical memory subsystem scaffolding, strict configuration contracts
 
 ### P14-T01 Define memory runtime paths and bootstrap creation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Runtime path helpers resolve `<orchestrator_runtime_root>/memory` subpaths deterministically.
   - Startup/provisioning creates required memory directories when missing.
@@ -18,7 +18,7 @@ Establish canonical memory subsystem scaffolding, strict configuration contracts
 
 ### P14-T02 Add typed memory configuration schema and validation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Config supports `memory.enabled`, `memory.bulletin_mode`, retrieval settings, ingest settings, and scope settings.
   - Unknown keys or invalid types fail validation.
@@ -29,7 +29,7 @@ Establish canonical memory subsystem scaffolding, strict configuration contracts
 
 ### P14-T03 Introduce core memory domain types
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Typed enums exist for all memory node and edge types in spec.
   - Bounds validation exists for `importance`, `confidence`, and edge `weight`.
@@ -40,7 +40,7 @@ Establish canonical memory subsystem scaffolding, strict configuration contracts
 
 ### P14-T04 Register memory worker lifecycle in runtime supervisor
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Memory worker starts/stops under existing runtime supervision model.
   - Worker health/status is observable via runtime state/logging paths.

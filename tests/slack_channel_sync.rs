@@ -3,6 +3,7 @@ use direclaw::config::{
     AuthSyncConfig, ChannelConfig, ChannelKind, ChannelProfile, Monitoring, Settings,
     SettingsOrchestrator,
 };
+use direclaw::memory::MemoryConfig;
 use direclaw::queue::{OutgoingMessage, QueuePaths};
 use std::collections::BTreeMap;
 use std::fs;
@@ -160,6 +161,7 @@ fn sample_settings(
         monitoring: Monitoring::default(),
         channels,
         auth_sync: AuthSyncConfig::default(),
+        memory: MemoryConfig::default(),
     }
 }
 

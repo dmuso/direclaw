@@ -3,6 +3,7 @@ use direclaw::app::command_dispatch::{
     execute_function_invocation_with_executor, FunctionExecutionContext,
 };
 use direclaw::config::{AuthSyncConfig, Monitoring, Settings, SettingsOrchestrator};
+use direclaw::memory::MemoryConfig;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -24,6 +25,7 @@ fn command_dispatch_module_executes_internal_orchestrator_list_function() {
         monitoring: Monitoring::default(),
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
+        memory: MemoryConfig::default(),
     };
 
     let value = execute_function_invocation_with_executor(

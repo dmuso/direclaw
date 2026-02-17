@@ -1,6 +1,7 @@
 pub mod app;
 pub mod channels;
 pub mod config;
+pub mod memory;
 pub mod orchestration;
 pub mod provider;
 pub mod queue;

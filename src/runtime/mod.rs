@@ -10,6 +10,7 @@ use std::time::Duration;
 pub mod channel_worker;
 pub mod heartbeat_worker;
 pub mod logging;
+pub mod memory_worker;
 pub mod ownership_lock;
 pub mod queue_worker;
 pub mod recovery;
@@ -23,6 +24,7 @@ pub use crate::shared::fs_atomic::canonicalize_existing;
 pub(crate) use crate::shared::time::now_secs;
 pub use channel_worker::PollingDefaults;
 pub use logging::append_runtime_log;
+pub use memory_worker::{bootstrap_memory_runtime_paths, tick_memory_worker};
 pub use ownership_lock::{
     cleanup_stale_supervisor, clear_start_lock, is_process_alive, reserve_start_lock, signal_stop,
     spawn_supervisor_process, stop_active_supervisor, supervisor_ownership_state,
@@ -108,11 +110,13 @@ mod tests {
         let orchestrator = WorkerKind::Orchestrator;
         let slack = WorkerKind::ChannelAdapter("slack".to_string());
         let heartbeat = WorkerKind::Heartbeat;
+        let memory = WorkerKind::Memory;
 
         registry.register(queue.clone());
         registry.register(orchestrator.clone());
         registry.register(slack.clone());
         registry.register(heartbeat.clone());
+        registry.register(memory.clone());
 
         registry.start(&queue);
         registry.start(&slack);
@@ -121,6 +125,7 @@ mod tests {
         assert_eq!(registry.state(&orchestrator), Some(WorkerState::Stopped));
         assert_eq!(registry.state(&slack), Some(WorkerState::Running));
         assert_eq!(registry.state(&heartbeat), Some(WorkerState::Stopped));
+        assert_eq!(registry.state(&memory), Some(WorkerState::Stopped));
 
         registry.fail(&slack);
         assert_eq!(registry.state(&slack), Some(WorkerState::Error));
@@ -200,6 +205,7 @@ channels:
             vec![
                 "queue_processor",
                 "orchestrator_dispatcher",
+                "memory_worker",
                 "heartbeat",
                 "channel:slack"
             ]

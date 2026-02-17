@@ -1,4 +1,4 @@
-use super::{heartbeat_worker, now_secs, queue_worker, WorkerEvent};
+use super::{heartbeat_worker, memory_worker, now_secs, queue_worker, WorkerEvent};
 use crate::channels::slack;
 use crate::config::Settings;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,7 @@ impl Default for PollingDefaults {
 pub(crate) enum WorkerRuntime {
     QueueProcessor,
     OrchestratorDispatcher,
+    Memory,
     Slack,
     Heartbeat,
 }
@@ -67,6 +68,13 @@ pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
         runtime: WorkerRuntime::OrchestratorDispatcher,
         interval: Duration::from_secs(1),
     });
+    if settings.memory.enabled {
+        specs.push(WorkerSpec {
+            id: "memory_worker".to_string(),
+            runtime: WorkerRuntime::Memory,
+            interval: Duration::from_secs(1),
+        });
+    }
 
     if let Some(interval) = heartbeat_worker::configured_heartbeat_interval(settings) {
         specs.push(WorkerSpec {
@@ -107,6 +115,22 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
         worker_id: spec.id.clone(),
         at: now_secs(),
     });
+
+    if matches!(spec.runtime, WorkerRuntime::Memory) {
+        if let Err(err) = memory_worker::bootstrap_memory_runtime_paths(&settings) {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: spec.id.clone(),
+                at: now_secs(),
+                message: err,
+                fatal: true,
+            });
+            let _ = events.send(WorkerEvent::Stopped {
+                worker_id: spec.id,
+                at: now_secs(),
+            });
+            return;
+        }
+    }
 
     if matches!(spec.runtime, WorkerRuntime::Slack) {
         if let Err(err) = slack::validate_startup_credentials(&settings) {
@@ -162,6 +186,7 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
         let tick = match spec.runtime {
             WorkerRuntime::QueueProcessor => Ok(()),
             WorkerRuntime::OrchestratorDispatcher => Ok(()),
+            WorkerRuntime::Memory => memory_worker::tick_memory_worker(&settings),
             WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
             WorkerRuntime::Heartbeat => heartbeat_worker::tick_heartbeat_worker(),
         };

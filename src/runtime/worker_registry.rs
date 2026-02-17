@@ -27,6 +27,7 @@ pub enum WorkerEvent {
 pub enum WorkerKind {
     QueueProcessor,
     Orchestrator,
+    Memory,
     ChannelAdapter(String),
     Heartbeat,
 }

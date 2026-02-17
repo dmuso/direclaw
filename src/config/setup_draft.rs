@@ -5,6 +5,7 @@ use crate::config::{
     WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
     WorkflowStepWorkspaceMode, WorkflowTag,
 };
+use crate::memory::MemoryConfig;
 use crate::templates::orchestrator_templates::{
     initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate,
 };
@@ -997,6 +998,7 @@ impl SetupDraft {
             monitoring: Default::default(),
             channels: BTreeMap::new(),
             auth_sync: AuthSyncConfig::default(),
+            memory: MemoryConfig::default(),
         });
 
         settings.workspaces_path = self.workspaces_path.clone();

@@ -2,6 +2,7 @@ use direclaw::app::command_catalog::function_ids;
 use direclaw::app::command_dispatch::FunctionExecutionContext;
 use direclaw::app::command_handlers::{execute_function_invocation, run_cli};
 use direclaw::config::{AuthSyncConfig, Monitoring, Settings, SettingsOrchestrator};
+use direclaw::memory::MemoryConfig;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -47,6 +48,7 @@ fn app_command_handlers_execute_function_invocation_routes_internal_functions() 
         monitoring: Monitoring::default(),
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
+        memory: MemoryConfig::default(),
     };
 
     let value = execute_function_invocation(

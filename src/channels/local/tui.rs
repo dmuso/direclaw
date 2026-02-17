@@ -488,6 +488,7 @@ mod tests {
     };
     use crate::channels::local::session::LocalChatSession;
     use crate::config::{ChannelKind, ChannelProfile, Settings};
+    use crate::memory::MemoryConfig;
     use crate::orchestration::progress::ProgressSnapshot;
     use crate::orchestration::run_store::RunState;
     use crate::queue::QueuePaths;
@@ -508,6 +509,7 @@ mod tests {
                 monitoring: Default::default(),
                 channels: BTreeMap::new(),
                 auth_sync: Default::default(),
+                memory: MemoryConfig::default(),
             },
             queue_paths: QueuePaths::from_state_root(PathBuf::from("/tmp/state").as_path()),
             profile_id: "local-default".to_string(),
