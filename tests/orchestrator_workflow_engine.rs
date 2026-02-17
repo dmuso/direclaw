@@ -567,6 +567,7 @@ fn run_state_and_progress_are_persisted_at_spec_paths_with_lifecycle_updates() {
         state: "succeeded".to_string(),
         outputs: Map::from_iter([("plan".to_string(), Value::String("draft done".to_string()))]),
         output_files: BTreeMap::from_iter([("plan".to_string(), "/tmp/run-2-plan.md".to_string())]),
+        final_output_priority: vec!["summary".to_string()],
         next_step_id: Some("review".to_string()),
         error: None,
         output_validation_errors: BTreeMap::new(),

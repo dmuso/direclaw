@@ -29,6 +29,7 @@ fn output_contract_module_parses_envelope_and_resolves_paths() {
             PathTemplate::parse("artifacts/{{workflow.run_id}}/{{workflow.step_id}}.md")
                 .expect("template"),
         )]),
+        final_output_priority: vec![OutputKey::parse("feedback").expect("feedback key")],
         limits: None,
     };
     let done = WorkflowStepConfig {
@@ -43,6 +44,7 @@ fn output_contract_module_parses_envelope_and_resolves_paths() {
         on_reject: None,
         outputs: Vec::new(),
         output_files: BTreeMap::new(),
+        final_output_priority: Vec::new(),
         limits: None,
     };
     let workflow = WorkflowConfig {

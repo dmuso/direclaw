@@ -9,7 +9,8 @@ use crate::orchestration::run_store::{RunState, WorkflowRunStore};
 use crate::orchestration::workflow_engine::WorkflowEngine;
 use crate::orchestration::workspace_access::verify_orchestrator_workspace_access;
 use crate::templates::workflow_step_defaults::{
-    default_step_output_contract, default_step_output_files, default_step_scaffold,
+    default_step_output_contract, default_step_output_files, default_step_output_priority,
+    default_step_scaffold,
 };
 use serde_json::{Map, Value};
 use std::fs;
@@ -81,6 +82,7 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
                     on_reject: None,
                     outputs: default_step_output_contract("agent_task"),
                     output_files: default_step_output_files("agent_task"),
+                    final_output_priority: default_step_output_priority("agent_task"),
                     limits: None,
                 }],
             });

@@ -335,6 +335,11 @@ impl WorkflowEngine {
                         state: "succeeded".to_string(),
                         outputs: evaluation.outputs.clone(),
                         output_files: evaluation.output_files.clone(),
+                        final_output_priority: step
+                            .final_output_priority
+                            .iter()
+                            .map(|key| key.as_str().to_string())
+                            .collect(),
                         next_step_id: evaluation.next_step_id.clone(),
                         error: None,
                         output_validation_errors: BTreeMap::new(),
@@ -408,6 +413,11 @@ impl WorkflowEngine {
                         },
                         outputs: Map::new(),
                         output_files: BTreeMap::new(),
+                        final_output_priority: step
+                            .final_output_priority
+                            .iter()
+                            .map(|key| key.as_str().to_string())
+                            .collect(),
                         next_step_id: None,
                         error: Some(err.to_string()),
                         output_validation_errors,

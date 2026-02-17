@@ -537,7 +537,7 @@ fn action_to_outbound_messages(
     }
 }
 
-fn latest_succeeded_attempt_outputs(state_root: &Path, run_id: &str) -> Option<Map<String, Value>> {
+fn latest_succeeded_attempt(state_root: &Path, run_id: &str) -> Option<StepAttemptRecord> {
     let steps_root = state_root.join("workflows/runs").join(run_id).join("steps");
     let mut latest: Option<StepAttemptRecord> = None;
 
@@ -570,7 +570,7 @@ fn latest_succeeded_attempt_outputs(state_root: &Path, run_id: &str) -> Option<M
         }
     }
 
-    latest.map(|record| record.outputs)
+    latest
 }
 
 fn workflow_lifecycle_messages(
@@ -670,29 +670,11 @@ fn final_user_message(
     let run = run_store.load_run(run_id).ok();
     if let Some(attempt) = last_attempt {
         if attempt.state == "succeeded" {
-            let quick_answer = run
-                .as_ref()
-                .map(|record| record.workflow_id == "quick_answer")
-                .unwrap_or(false);
-            return if quick_answer {
-                attempt
-                    .outputs
-                    .get("artifact")
-                    .and_then(|value| output_value_for_label(value, "artifact"))
-                    .or_else(|| {
-                        attempt
-                            .outputs
-                            .get("summary")
-                            .and_then(|value| output_value_for_label(value, "summary"))
-                    })
-                    .unwrap_or_else(|| "workflow completed".to_string())
-            } else {
-                attempt
-                    .outputs
-                    .get("summary")
-                    .and_then(|value| output_value_for_label(value, "summary"))
-                    .unwrap_or_else(|| "workflow completed".to_string())
-            };
+            return select_final_output_message(
+                &attempt.outputs,
+                final_output_priority(&attempt.final_output_priority),
+            )
+            .unwrap_or_else(|| "workflow completed".to_string());
         }
     }
 
@@ -709,8 +691,15 @@ fn final_user_message(
         }
     }
 
-    if let Some(outputs) = latest_succeeded_attempt_outputs(run_store.state_root(), run_id) {
-        if let Some(summary) = outputs
+    if let Some(attempt) = latest_succeeded_attempt(run_store.state_root(), run_id) {
+        if let Some(message) = select_final_output_message(
+            &attempt.outputs,
+            final_output_priority(&attempt.final_output_priority),
+        ) {
+            return message;
+        }
+        if let Some(summary) = attempt
+            .outputs
             .get("summary")
             .and_then(|value| output_value_for_label(value, "summary"))
         {
@@ -744,6 +733,29 @@ fn output_value_text(value: &Value) -> Option<String> {
 
 fn output_value_for_label(value: &Value, label: &str) -> Option<String> {
     output_value_text(value).map(|text| extract_output_label_value(&text, label).unwrap_or(text))
+}
+
+fn final_output_priority(configured: &[String]) -> Vec<&str> {
+    if configured.is_empty() {
+        vec!["artifact", "summary"]
+    } else {
+        configured.iter().map(String::as_str).collect()
+    }
+}
+
+fn select_final_output_message(
+    outputs: &Map<String, Value>,
+    priority: Vec<&str>,
+) -> Option<String> {
+    for key in priority {
+        if let Some(message) = outputs
+            .get(key)
+            .and_then(|value| output_value_for_label(value, key))
+        {
+            return Some(message);
+        }
+    }
+    None
 }
 
 fn extract_output_label_value(text: &str, label: &str) -> Option<String> {
@@ -797,7 +809,11 @@ mod tests {
     use serde_json::{Map, Value};
     use tempfile::tempdir;
 
-    fn succeeded_attempt_with_outputs(summary: &str, artifact: &str) -> StepAttemptRecord {
+    fn succeeded_attempt_with_outputs(
+        summary: &str,
+        artifact: &str,
+        final_output_priority: &[&str],
+    ) -> StepAttemptRecord {
         let mut outputs = Map::new();
         outputs.insert("summary".to_string(), Value::String(summary.to_string()));
         outputs.insert("artifact".to_string(), Value::String(artifact.to_string()));
@@ -810,6 +826,10 @@ mod tests {
             state: "succeeded".to_string(),
             outputs,
             output_files: Default::default(),
+            final_output_priority: final_output_priority
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect(),
             next_step_id: None,
             error: None,
             output_validation_errors: Default::default(),
@@ -823,21 +843,29 @@ mod tests {
         store
             .create_run("run-1", "quick_answer", 1)
             .expect("create run");
-        let attempt = succeeded_attempt_with_outputs("summary output", "artifact output");
+        let attempt = succeeded_attempt_with_outputs(
+            "summary output",
+            "artifact output",
+            &["artifact", "summary"],
+        );
 
         let message = final_user_message(&store, "run-1", Some(&attempt));
         assert_eq!(message, "artifact output");
     }
 
     #[test]
-    fn final_message_prefers_summary_for_non_quick_answer_workflow() {
+    fn final_message_prefers_artifact_for_non_quick_answer_workflow() {
         let dir = tempdir().expect("tempdir");
         let store = WorkflowRunStore::new(dir.path());
         store.create_run("run-1", "plan", 1).expect("create run");
-        let attempt = succeeded_attempt_with_outputs("summary output", "artifact output");
+        let attempt = succeeded_attempt_with_outputs(
+            "summary output",
+            "artifact output",
+            &["artifact", "summary"],
+        );
 
         let message = final_user_message(&store, "run-1", Some(&attempt));
-        assert_eq!(message, "summary output");
+        assert_eq!(message, "artifact output");
     }
 
     #[test]
@@ -850,6 +878,7 @@ mod tests {
         let attempt = succeeded_attempt_with_outputs(
             "summary output",
             "status: complete\nsummary: concise summary\nartifact: Hello! I am ready.",
+            &["artifact", "summary"],
         );
 
         let message = final_user_message(&store, "run-1", Some(&attempt));
@@ -864,9 +893,21 @@ mod tests {
         let attempt = succeeded_attempt_with_outputs(
             "status: complete\nsummary: concise summary\nartifact: Hello! I am ready.",
             "artifact output",
+            &["summary", "artifact"],
         );
 
         let message = final_user_message(&store, "run-1", Some(&attempt));
         assert_eq!(message, "concise summary");
+    }
+
+    #[test]
+    fn final_message_defaults_to_artifact_then_summary_when_priority_missing() {
+        let dir = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(dir.path());
+        store.create_run("run-1", "plan", 1).expect("create run");
+        let attempt = succeeded_attempt_with_outputs("summary output", "artifact output", &[]);
+
+        let message = final_user_message(&store, "run-1", Some(&attempt));
+        assert_eq!(message, "artifact output");
     }
 }

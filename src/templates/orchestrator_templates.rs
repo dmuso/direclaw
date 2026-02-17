@@ -4,7 +4,8 @@ use crate::config::{
     WorkflowTag,
 };
 use crate::templates::workflow_step_defaults::{
-    default_step_output_contract, default_step_output_files, default_step_prompt,
+    default_step_output_contract, default_step_output_files, default_step_output_priority,
+    default_step_prompt,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -39,6 +40,7 @@ fn workflow_step(id: &str, step_type: &str, agent: &str, prompt: &str) -> Workfl
         on_reject: None,
         outputs: default_step_output_contract(step_type),
         output_files: default_step_output_files(step_type),
+        final_output_priority: default_step_output_priority(step_type),
         limits: None,
     }
 }

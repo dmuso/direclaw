@@ -633,6 +633,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                         "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
                     ),
                 ]),
+                final_output_priority: out_keys(&["artifact", "summary"]),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -656,6 +657,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                         "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
                     ),
                 ]),
+                final_output_priority: out_keys(&["artifact", "summary"]),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -679,6 +681,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                         "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
                     ),
                 ]),
+                final_output_priority: out_keys(&["artifact", "summary"]),
                 limits: None,
             },
         ],
@@ -820,6 +823,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                         "reports/{{workflow.run_id}}/summary-{{workflow.attempt}}.txt",
                     ),
                 ]),
+                final_output_priority: out_keys(&["summary"]),
                 limits: Some(StepLimitsConfig {
                     max_retries: Some(1),
                 }),
@@ -849,6 +853,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                         "reports/{{workflow.run_id}}/review-feedback-{{workflow.attempt}}.txt",
                     ),
                 ]),
+                final_output_priority: out_keys(&["summary"]),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -866,6 +871,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
                     ("summary", "reports/{{workflow.run_id}}/final-summary.txt"),
                     ("result", "reports/{{workflow.run_id}}/result.json"),
                 ]),
+                final_output_priority: out_keys(&["summary", "result"]),
                 limits: None,
             },
         ],
@@ -1122,6 +1128,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
                     "reports/{{workflow.run_id}}/slow-{{workflow.attempt}}.txt",
                 ),
             ]),
+            final_output_priority: out_keys(&["summary", "result"]),
             limits: None,
         }],
     }];

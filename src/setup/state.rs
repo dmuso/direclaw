@@ -190,6 +190,7 @@ mod tests {
                 on_reject: None,
                 outputs: Vec::new(),
                 output_files: BTreeMap::new(),
+                final_output_priority: Vec::new(),
                 limits: None,
             },
             WorkflowStepConfig {
@@ -204,6 +205,7 @@ mod tests {
                 on_reject: None,
                 outputs: Vec::new(),
                 output_files: BTreeMap::new(),
+                final_output_priority: Vec::new(),
                 limits: None,
             },
         ];

@@ -27,6 +27,39 @@ where
     Ok(Some(parsed))
 }
 
+fn deserialize_optional_output_priority<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<OutputKey>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Vec<String>>::deserialize(deserializer)?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut parsed = Vec::with_capacity(raw.len());
+    for key in raw {
+        let parsed_key = OutputKey::parse_output_file_key(&key).map_err(|err| {
+            D::Error::custom(format!("invalid final_output_priority key `{key}`: {err}"))
+        })?;
+        parsed.push(parsed_key);
+    }
+    Ok(Some(parsed))
+}
+
+fn default_final_output_priority(outputs: &[OutputKey]) -> Vec<OutputKey> {
+    let has_artifact = outputs.iter().any(|key| key.as_str() == "artifact");
+    let has_summary = outputs.iter().any(|key| key.as_str() == "summary");
+    let mut priority = Vec::new();
+    if has_artifact {
+        priority.push(OutputKey::parse_output_file_key("artifact").expect("static key is valid"));
+    }
+    if has_summary {
+        priority.push(OutputKey::parse_output_file_key("summary").expect("static key is valid"));
+    }
+    priority
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigProviderKind {
@@ -215,6 +248,7 @@ pub struct WorkflowStepConfig {
     pub on_reject: Option<String>,
     pub outputs: Vec<OutputKey>,
     pub output_files: BTreeMap<OutputKey, PathTemplate>,
+    pub final_output_priority: Vec<OutputKey>,
     #[serde(default)]
     pub limits: Option<StepLimitsConfig>,
 }
@@ -239,6 +273,8 @@ struct WorkflowStepConfigRaw {
     pub outputs: Option<Vec<OutputKey>>,
     #[serde(default, deserialize_with = "deserialize_optional_output_files")]
     pub output_files: Option<BTreeMap<OutputKey, PathTemplate>>,
+    #[serde(default, deserialize_with = "deserialize_optional_output_priority")]
+    pub final_output_priority: Option<Vec<OutputKey>>,
     #[serde(default)]
     pub limits: Option<StepLimitsConfig>,
 }
@@ -259,6 +295,9 @@ impl<'de> Deserialize<'de> for WorkflowStepConfig {
                 "workflow step is missing required `output_files`; include explicit `outputs` and `output_files` contract fields",
             )
         })?;
+        let final_output_priority = raw
+            .final_output_priority
+            .unwrap_or_else(|| default_final_output_priority(&outputs));
         Ok(Self {
             id: raw.id,
             step_type: raw.step_type,
@@ -271,6 +310,7 @@ impl<'de> Deserialize<'de> for WorkflowStepConfig {
             on_reject: raw.on_reject,
             outputs,
             output_files,
+            final_output_priority,
             limits: raw.limits,
         })
     }
@@ -514,6 +554,31 @@ impl OrchestratorConfig {
                         return Err(ConfigError::Orchestrator(format!(
                             "workflow `{}` step `{}` missing output_files mapping for `{}`",
                             workflow.id, step.id, key.name
+                        )));
+                    }
+                }
+                if step.final_output_priority.is_empty() {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` step `{}` requires non-empty `final_output_priority`",
+                        workflow.id, step.id
+                    )));
+                }
+                let mut priority_keys = HashSet::new();
+                for key in &step.final_output_priority {
+                    if !priority_keys.insert(key.as_str()) {
+                        return Err(ConfigError::Orchestrator(format!(
+                            "workflow `{}` step `{}` contains duplicate `final_output_priority` key `{}`",
+                            workflow.id, step.id, key.as_str()
+                        )));
+                    }
+                    if !step
+                        .outputs
+                        .iter()
+                        .any(|output| output.as_str() == key.as_str())
+                    {
+                        return Err(ConfigError::Orchestrator(format!(
+                            "workflow `{}` step `{}` `final_output_priority` key `{}` must exist in `outputs`",
+                            workflow.id, step.id, key.as_str()
                         )));
                     }
                 }

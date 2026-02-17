@@ -459,6 +459,87 @@ output_files:
     }
 
     #[test]
+    fn workflow_step_final_output_priority_defaults_to_artifact_then_summary() {
+        let step: WorkflowStepConfig = serde_yaml::from_str(
+            r#"
+id: step_1
+type: agent_task
+agent: worker
+prompt: hello
+outputs: [summary, artifact]
+output_files:
+  summary: outputs/summary.txt
+  artifact: outputs/artifact.txt
+"#,
+        )
+        .expect("parse step");
+        let priority = step
+            .final_output_priority
+            .iter()
+            .map(|key| key.as_str().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            priority,
+            vec!["artifact".to_string(), "summary".to_string()]
+        );
+    }
+
+    #[test]
+    fn orchestrator_validation_rejects_final_output_priority_key_not_declared_in_outputs() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators:
+  alpha:
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("parse settings");
+
+        let config: OrchestratorConfig = serde_yaml::from_str(
+            r#"
+id: alpha
+selector_agent: router
+default_workflow: real
+selection_max_retries: 1
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+workflows:
+  - id: real
+    version: 1
+    steps:
+      - id: step_1
+        type: agent_task
+        agent: router
+        prompt: hello
+        outputs: [summary]
+        output_files:
+          summary: summary.txt
+        final_output_priority: [artifact, summary]
+"#,
+        )
+        .expect("parse orchestrator");
+
+        let err = config
+            .validate(&settings, "alpha")
+            .expect_err("validation should fail");
+        match err {
+            ConfigError::Orchestrator(message) => {
+                assert!(message.contains("final_output_priority"));
+                assert!(message.contains("artifact"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn workflow_inputs_round_trip_and_normalize_keys() {
         let workflow: WorkflowConfig = serde_yaml::from_str(
             r#"

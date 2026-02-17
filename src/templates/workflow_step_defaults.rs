@@ -116,6 +116,17 @@ pub fn default_step_output_files(step_type: &str) -> BTreeMap<OutputKey, PathTem
     }
 }
 
+pub fn default_step_output_priority(step_type: &str) -> Vec<OutputKey> {
+    if step_type == "agent_review" {
+        vec![OutputKey::parse("summary").expect("default output key is valid")]
+    } else {
+        vec![
+            OutputKey::parse("artifact").expect("default output key is valid"),
+            OutputKey::parse("summary").expect("default output key is valid"),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +143,13 @@ mod tests {
         assert!(task_scaffold.contains("Execute this step objective"));
         assert!(!default_step_output_contract("agent_task").is_empty());
         assert!(!default_step_output_files("agent_task").is_empty());
+        assert_eq!(
+            default_step_output_priority("agent_task")
+                .into_iter()
+                .map(|key| key.name)
+                .collect::<Vec<_>>(),
+            vec!["artifact".to_string(), "summary".to_string()]
+        );
     }
 
     #[test]
@@ -142,5 +160,12 @@ mod tests {
         assert!(review_prompt.contains("reject"));
         assert!(!default_step_output_contract("agent_review").is_empty());
         assert!(!default_step_output_files("agent_review").is_empty());
+        assert_eq!(
+            default_step_output_priority("agent_review")
+                .into_iter()
+                .map(|key| key.name)
+                .collect::<Vec<_>>(),
+            vec!["summary".to_string()]
+        );
     }
 }

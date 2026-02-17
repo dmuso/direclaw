@@ -97,6 +97,8 @@ pub struct StepAttemptRecord {
     #[serde(default)]
     pub output_files: BTreeMap<String, String>,
     #[serde(default)]
+    pub final_output_priority: Vec<String>,
+    #[serde(default)]
     pub next_step_id: Option<String>,
     #[serde(default)]
     pub error: Option<String>,

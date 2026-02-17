@@ -51,6 +51,7 @@ fn prompt_render_module_renders_inputs_state_and_output_paths() {
             OutputKey::parse_output_file_key("summary").expect("key"),
             PathTemplate::parse("summary.md").expect("template"),
         )]),
+        final_output_priority: vec![OutputKey::parse("summary").expect("key")],
         limits: None,
     };
 
