@@ -2,13 +2,23 @@
 
 # DireClaw
 
-DireClaw is an OpenClaw and TinyClaw inspired AI agent platform to get things done.
+DireClaw is an agentic AI platform designed for reliability, performance, and flexible multi-agent workflows to get shit done.
 
-## How DireClaw differs from OpenClaw
+* DireClaw is designed to decouple chat interactions from agent execution. This frees up your bot to be able to hold multiple concurrent conversations whilst background agents are executing on tasks.
+* It's designed for reliable task execution for long running tasks. No more dropped or abandoned tasks that you have to chase your bot to get done.
+* DireClaw is written in Rust, and is designed to maintain performance when handling many concurrent, complex multi-agent orchestrations.
+* The agent capabilities leverage Claude Code and/or Codex via OAuth. This provides native, out of the box support for effective coding capabilities, web search, thinking models and tool execution.
+* DireClaw's agents are sandboxed via Claude Code and Codex's sandboxing features.
+* Agents can access private workspaces as well as shared resources and can be configured in many different ways to support your multi-agent coordination needs.
+* DireClaw supports deterministic agentic workflows allowing for stepped execution, review gates and defined agent handoffs.
+
+## DireClaw vs OpenClaw vs TinyClaw
 
 DireClaw is influenced by both OpenClaw and TinyClaw. OpenClaw's complexity introduces many areas where things can break. TinyClaw's approach is to drastically simplify things, and start with a multi-agent approach.
 
 DireClaw draws from both examples to provide deterministic, multi-agent workflows whilst at the same time providing the flexibility and intelligence of AI agents managing the system for you.
+
+DireClaw prioritises deterministic and reliable task executions over agent autonomy. DireClaw's agents might not have as much personality as OpenClaw's, but instead aims to be much more reliable managing complex and long running tasks and workflows.
 
 ## Wrapping Claude and Codex CLI tools
 
@@ -33,7 +43,7 @@ In Slack, you connect one installed bot to one orchestrator in DireClaw. This al
 Agents exist to separate responsibilities in a workflow into explicit, reusable execution units.
 Instead of one prompt handling everything, each step can call a specific configured agent with a specific role.
 
-Agents are defined per orchestrator in `~/.direclaw/config-orchestrators.yaml` and referenced by workflow steps.
+Agents are defined per orchestrator in `~/.direclaw/workspaces/<orchestrator-id>/orchestrator.yaml` and referenced by workflow steps.
 
 Each agent is responsible for:
 
@@ -133,7 +143,7 @@ This bootstraps runtime state (under `~/.direclaw`) and opens a full-screen setu
 - provider/model defaults
 - workflow bundle (`minimal`, `engineering`, or `product`)
 
-Setup can be re-run any time to review or update these values. It writes global settings to `~/.direclaw/config.yaml` and orchestrator definitions to `~/.direclaw/config-orchestrators.yaml`.
+Setup can be re-run any time to review or update these values. It writes global settings to `~/.direclaw/config.yaml` and orchestrator definitions to `~/.direclaw/workspaces/<orchestrator-id>/orchestrator.yaml`.
 
 ### Basic lifecycle commands
 
