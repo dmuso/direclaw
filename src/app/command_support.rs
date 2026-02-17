@@ -118,6 +118,13 @@ pub fn load_orchestrator_or_err(
     load_orchestrator_config(settings, orchestrator_id).map_err(map_config_err)
 }
 
+pub fn validate_all_orchestrators(settings: &Settings) -> Result<(), String> {
+    for orchestrator_id in settings.orchestrators.keys() {
+        load_orchestrator_or_err(settings, orchestrator_id)?;
+    }
+    Ok(())
+}
+
 pub fn default_orchestrator_config(id: &str) -> OrchestratorConfig {
     initial_orchestrator_config(id, "anthropic", "sonnet", WorkflowTemplate::Minimal)
 }

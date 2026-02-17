@@ -145,6 +145,76 @@ workflows:
     .expect("orchestrator");
 }
 
+fn write_invalid_workflow_settings(home: &Path) {
+    let workspace = home.join("workspace");
+    let orch_workspace = home.join("orch");
+    fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&orch_workspace).expect("orchestrator workspace");
+    fs::create_dir_all(home.join(".direclaw")).expect("config dir");
+    fs::write(
+        home.join(".direclaw/config.yaml"),
+        format!(
+            r#"
+workspaces_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {orch_workspace}
+    shared_access: []
+channel_profiles:
+  eng:
+    channel: slack
+    orchestrator_id: eng_orchestrator
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring:
+  heartbeat_interval: 1
+channels:
+  slack:
+    enabled: false
+auth_sync:
+  enabled: false
+"#,
+            workspace = workspace.display(),
+            orch_workspace = orch_workspace.display(),
+        ),
+    )
+    .expect("settings");
+    fs::write(
+        orch_workspace.join("orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: default
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: default
+    version: 1
+    description: ""
+    tags: [triage]
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
+"#,
+    )
+    .expect("orchestrator");
+}
+
 fn write_script(path: &Path, body: &str) {
     fs::write(path, body).expect("write script");
     #[cfg(unix)]
@@ -158,7 +228,9 @@ fn write_script(path: &Path, body: &str) {
 
 fn write_slack_settings(home: &Path, slack_enabled: bool) {
     let workspace = home.join("workspace");
+    let orchestrator_workspace = workspace.join("main");
     fs::create_dir_all(&workspace).expect("workspace");
+    fs::create_dir_all(&orchestrator_workspace).expect("orchestrator workspace");
     fs::create_dir_all(home.join(".direclaw")).expect("config dir");
     fs::write(
         home.join(".direclaw/config.yaml"),
@@ -189,6 +261,39 @@ auth_sync:
         ),
     )
     .expect("settings");
+    fs::write(
+        orchestrator_workspace.join("orchestrator.yaml"),
+        r#"
+id: main
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    description: triage workflow for slack status tests
+    tags: [triage, slack]
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
+"#,
+    )
+    .expect("orchestrator");
 }
 
 struct MockSlackServer {
@@ -335,6 +440,19 @@ fn start_stop_idempotency_and_duplicate_start_protection() {
     let stopped_again = run(home, &["stop"], &[]);
     assert_ok(&stopped_again);
     assert!(stdout(&stopped_again).contains("running=false"));
+}
+
+#[test]
+fn start_fails_fast_when_orchestrator_config_is_invalid() {
+    let temp = tempdir().expect("tempdir");
+    let home = temp.path();
+    write_invalid_workflow_settings(home);
+
+    let started = run(home, &["start"], &[]);
+    assert_err_contains(
+        &started,
+        "orchestrator validation failed: workflow `default` requires non-empty `description`",
+    );
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use crate::app::command_handlers::auth::{render_auth_sync_result, sync_auth_sources};
-use crate::app::command_support::{ensure_runtime_root, load_settings};
+use crate::app::command_support::{ensure_runtime_root, load_settings, validate_all_orchestrators};
 use crate::channels::slack;
 use crate::runtime::{
     append_runtime_log, cleanup_stale_supervisor, load_supervisor_state, reserve_start_lock,
@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub fn cmd_start() -> Result<String, String> {
     let paths = ensure_runtime_root()?;
     let settings = load_settings()?;
+    validate_all_orchestrators(&settings)?;
     let auth_sync = sync_auth_sources(&settings)?;
     match supervisor_ownership_state(&paths).map_err(|e| e.to_string())? {
         OwnershipState::Running { pid } => {
@@ -278,6 +279,7 @@ pub fn cmd_logs() -> Result<String, String> {
 pub fn cmd_supervisor(args: &[String]) -> Result<String, String> {
     let state_root = parse_supervisor_state_root(args)?;
     let settings = load_settings()?;
+    validate_all_orchestrators(&settings)?;
     run_supervisor(&state_root, settings).map_err(|e| e.to_string())?;
     Ok("supervisor exited".to_string())
 }

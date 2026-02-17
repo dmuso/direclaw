@@ -210,29 +210,43 @@ fn check_processing_result(session: &LocalChatSession, state: &mut TuiState) -> 
     };
     let mut worker = worker;
 
-    maybe_emit_progress_update(&session.state_root, state, &mut worker)?;
+    if let Err(err) = maybe_emit_progress_update(&session.state_root, state, &mut worker) {
+        push_assistant_line(
+            state,
+            &mut worker,
+            format!("processing update failed: {err}"),
+        );
+    }
 
     match worker.result_rx.try_recv() {
-        Ok(result) => {
-            let responses = result?;
-            if responses.is_empty() {
-                let message_id = worker.message_id.clone();
-                push_assistant_line(
-                    state,
-                    &mut worker,
-                    format!("timed out waiting for response (message_id={})", message_id),
-                );
-            } else {
-                for response in responses {
-                    push_assistant_line(state, &mut worker, response.message);
+        Ok(result) => match result {
+            Ok(responses) => {
+                if responses.is_empty() {
+                    let message_id = worker.message_id.clone();
+                    push_assistant_line(
+                        state,
+                        &mut worker,
+                        format!("timed out waiting for response (message_id={})", message_id),
+                    );
+                } else {
+                    for response in responses {
+                        push_assistant_line(state, &mut worker, response.message);
+                    }
                 }
             }
-        }
+            Err(err) => {
+                push_assistant_line(state, &mut worker, err);
+            }
+        },
         Err(mpsc::TryRecvError::Empty) => {
             state.processing = Some(worker);
         }
         Err(mpsc::TryRecvError::Disconnected) => {
-            return Err("chat processing worker disconnected unexpectedly".to_string());
+            push_assistant_line(
+                state,
+                &mut worker,
+                "chat processing worker disconnected unexpectedly".to_string(),
+            );
         }
     }
 
@@ -460,14 +474,19 @@ fn teardown_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{render_progress_line, TuiState, CURSOR_BLINK_INTERVAL, PROCESSING_FRAMES};
+    use super::{
+        check_processing_result, render_progress_line, ProcessingWorker, TuiState,
+        CURSOR_BLINK_INTERVAL, PROCESSING_FRAMES,
+    };
     use crate::channels::local::session::LocalChatSession;
     use crate::config::{ChannelKind, ChannelProfile, Settings};
     use crate::orchestration::progress::ProgressSnapshot;
     use crate::orchestration::run_store::RunState;
     use crate::queue::QueuePaths;
     use std::collections::BTreeMap;
+    use std::collections::HashSet;
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::time::Instant;
 
     fn fake_session() -> LocalChatSession {
@@ -538,5 +557,38 @@ mod tests {
 
         let rendered = render_progress_line(&progress).expect("line");
         assert_eq!(rendered, "Running step `answer` (attempt 1)...");
+    }
+
+    #[test]
+    fn processing_error_is_rendered_in_transcript_without_failing_chat_loop() {
+        let session = fake_session();
+        let mut state = TuiState::new(&session);
+        let (tx, rx) = mpsc::channel();
+        tx.send(Err(
+            "chat processing failed: step `answer` output contract validation failed".to_string(),
+        ))
+        .expect("send processing error");
+        state.processing = Some(ProcessingWorker {
+            message_id: "msg-1".to_string(),
+            result_rx: rx,
+            run_id: None,
+            last_progress_line: None,
+            seen_assistant_lines: HashSet::new(),
+        });
+
+        let result = check_processing_result(&session, &mut state);
+        assert!(
+            result.is_ok(),
+            "processing errors should not abort chat loop"
+        );
+        assert!(
+            state.processing.is_none(),
+            "worker should be cleared after receiving result"
+        );
+        let last = state.transcript.last().expect("transcript line");
+        assert_eq!(last.speaker, "assistant");
+        assert!(last
+            .text
+            .contains("chat processing failed: step `answer` output contract validation failed"));
     }
 }
