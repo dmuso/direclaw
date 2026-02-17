@@ -283,9 +283,15 @@ channels: {{}}
         let state_root = dir.path().join(".direclaw");
         let paths = StatePaths::new(&state_root);
         bootstrap_state_root(&paths).expect("bootstrap");
-        let queue = QueuePaths::from_state_root(&state_root);
 
         let settings = write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"));
+        let queue = QueuePaths::from_state_root(
+            &settings
+                .resolve_channel_profile_runtime_root("eng")
+                .expect("runtime root"),
+        );
+        fs::create_dir_all(&queue.incoming).expect("incoming dir");
+        fs::create_dir_all(&queue.processing).expect("processing dir");
         fs::write(
             queue.incoming.join("msg-stop.json"),
             serde_json::to_vec(&sample_incoming("msg-stop")).expect("serialize"),

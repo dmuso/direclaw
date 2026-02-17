@@ -527,7 +527,9 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
         "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"status\\\":\\\"complete\\\",\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
     );
 
-    let processing_dir = home.join(".direclaw/queue/processing");
+    let runtime_root = home.join("orch/.direclaw");
+    let processing_dir = runtime_root.join("queue/processing");
+    fs::create_dir_all(runtime_root.join("queue/incoming")).expect("incoming dir");
     fs::create_dir_all(&processing_dir).expect("processing dir");
     let stale = IncomingMessage {
         channel: "slack".to_string(),
@@ -565,7 +567,8 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
     assert_ok(&started);
     wait_for_status_line(home, "running=true", Duration::from_secs(4));
 
-    let outgoing_dir = home.join(".direclaw/queue/outgoing");
+    let outgoing_dir = runtime_root.join("queue/outgoing");
+    fs::create_dir_all(&outgoing_dir).expect("outgoing dir");
     let start = Instant::now();
     while fs::read_dir(&outgoing_dir)
         .expect("outgoing")

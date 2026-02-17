@@ -955,7 +955,10 @@ channels: {{}}
     )
     .expect("write orchestrator");
 
-    let store = WorkflowRunStore::new(&state_root);
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root("engineering")
+        .expect("runtime root");
+    let store = WorkflowRunStore::new(&runtime_root);
     let mut run = store
         .create_run("run-diag", "fix_issue", 5)
         .expect("create run");
@@ -1021,10 +1024,10 @@ channels: {{}}
         other => panic!("unexpected diagnostics route: {other:?}"),
     }
 
-    assert!(state_root
+    assert!(runtime_root
         .join("orchestrator/diagnostics/context/diag-selector-1-200.json")
         .is_file());
-    assert!(state_root
+    assert!(runtime_root
         .join("orchestrator/diagnostics/results/diag-selector-1-200.json")
         .is_file());
 
@@ -1200,7 +1203,10 @@ channels: {{}}
     ))
     .expect("settings");
 
-    let store = WorkflowRunStore::new(&state_root);
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root("engineering")
+        .expect("runtime root");
+    let store = WorkflowRunStore::new(&runtime_root);
     let functions = FunctionRegistry::with_run_store(vec!["workflow.status".to_string()], store);
     let err = process_queued_message(
         &state_root,
@@ -1215,7 +1221,7 @@ channels: {{}}
     assert!(err.to_string().contains("workspace access denied"));
 
     let security_log =
-        fs::read_to_string(state_root.join("logs/security.log")).expect("read security log");
+        fs::read_to_string(runtime_root.join("logs/security.log")).expect("read security log");
     assert!(security_log.contains("workspace access denied"));
 }
 
@@ -1282,13 +1288,16 @@ workflows:
     )
     .expect("write orchestrator");
 
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root("engineering")
+        .expect("runtime root");
     let functions = FunctionRegistry::with_run_store(
         vec![
             "workflow.status".to_string(),
             "workflow.cancel".to_string(),
             "orchestrator.list".to_string(),
         ],
-        WorkflowRunStore::new(&state_root),
+        WorkflowRunStore::new(&runtime_root),
     );
 
     let err = process_queued_message(
@@ -1314,7 +1323,7 @@ workflows:
     assert!(err.to_string().contains("output path validation failed"));
 
     let security_log =
-        fs::read_to_string(state_root.join("logs/security.log")).expect("read security log");
+        fs::read_to_string(runtime_root.join("logs/security.log")).expect("read security log");
     assert!(security_log.contains("output path validation denied"));
 }
 

@@ -89,6 +89,55 @@ channels: {}
     }
 
     #[test]
+    fn orchestrator_runtime_root_scopes_under_private_workspace() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators:
+  alpha:
+    private_workspace: /tmp/custom-alpha
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("parse settings");
+
+        let resolved = settings
+            .resolve_orchestrator_runtime_root("alpha")
+            .expect("resolve runtime root");
+        assert_eq!(resolved, PathBuf::from("/tmp/custom-alpha/.direclaw"));
+    }
+
+    #[test]
+    fn channel_profile_runtime_root_uses_profile_orchestrator_scope() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators:
+  alpha:
+    private_workspace: /tmp/custom-alpha
+    shared_access: []
+channel_profiles:
+  local-default:
+    channel: local
+    orchestrator_id: alpha
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("parse settings");
+
+        let resolved = settings
+            .resolve_channel_profile_runtime_root("local-default")
+            .expect("resolve runtime root");
+        assert_eq!(resolved, PathBuf::from("/tmp/custom-alpha/.direclaw"));
+    }
+
+    #[test]
     fn settings_validation_fails_for_unknown_shared_grant() {
         let settings: Settings = serde_yaml::from_str(
             r#"

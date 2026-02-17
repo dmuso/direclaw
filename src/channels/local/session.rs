@@ -39,7 +39,11 @@ pub fn create_local_chat_session(
     Ok(LocalChatSession {
         state_root: state_root.to_path_buf(),
         settings: settings.clone(),
-        queue_paths: QueuePaths::from_state_root(state_root),
+        queue_paths: QueuePaths::from_state_root(
+            &settings
+                .resolve_channel_profile_runtime_root(profile_id)
+                .map_err(|err| err.to_string())?,
+        ),
         profile_id: profile_id.to_string(),
         profile: profile.clone(),
         conversation_id: format!("chat-{}", now_nanos()),
@@ -67,6 +71,12 @@ pub fn enqueue_chat_message(session: &LocalChatSession, message: &str) -> Result
         workflow_run_id: None,
         workflow_step_id: None,
     };
+    fs::create_dir_all(&session.queue_paths.incoming).map_err(|e| {
+        format!(
+            "failed to prepare {}: {e}",
+            session.queue_paths.incoming.display()
+        )
+    })?;
     let queue_path = session
         .queue_paths
         .incoming
@@ -82,6 +92,12 @@ pub fn process_message(
     session: &LocalChatSession,
     message_id: &str,
 ) -> Result<Vec<OutgoingMessage>, String> {
+    fs::create_dir_all(&session.queue_paths.outgoing).map_err(|e| {
+        format!(
+            "failed to prepare {}: {e}",
+            session.queue_paths.outgoing.display()
+        )
+    })?;
     let _ = drain_queue_once(&session.state_root, &session.settings, 1)
         .map_err(|e| format!("chat processing failed: {e}"))?;
     wait_for_outgoing_messages(
@@ -159,8 +175,10 @@ fn now_nanos() -> i128 {
 #[cfg(test)]
 mod tests {
     use super::{is_chat_exit_command, wait_for_outgoing_messages};
+    use crate::channels::local::session::create_local_chat_session;
     use crate::queue::{OutgoingMessage, QueuePaths};
     use std::fs;
+    use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -232,6 +250,40 @@ mod tests {
         assert!(
             !match_path_2.exists(),
             "second matching message should be removed after consume"
+        );
+    }
+
+    #[test]
+    fn create_local_chat_session_scopes_queue_paths_to_orchestrator_workspace() {
+        let temp = tempdir().expect("tempdir");
+        let state_root = temp.path().join(".direclaw");
+        let orchestrator_workspace = temp.path().join("workspaces/eng");
+        fs::create_dir_all(&orchestrator_workspace).expect("orchestrator workspace");
+        let settings: crate::config::Settings = serde_yaml::from_str(&format!(
+            r#"
+workspaces_path: {workspaces}
+shared_workspaces: {{}}
+orchestrators:
+  eng:
+    private_workspace: {orchestrator_workspace}
+    shared_access: []
+channel_profiles:
+  local-default:
+    channel: local
+    orchestrator_id: eng
+monitoring: {{}}
+channels: {{}}
+"#,
+            workspaces = temp.path().join("workspaces").display(),
+            orchestrator_workspace = orchestrator_workspace.display(),
+        ))
+        .expect("settings");
+
+        let session =
+            create_local_chat_session(&state_root, &settings, "local-default").expect("session");
+        assert_eq!(
+            session.queue_paths.incoming,
+            PathBuf::from(&orchestrator_workspace).join(".direclaw/queue/incoming")
         );
     }
 }

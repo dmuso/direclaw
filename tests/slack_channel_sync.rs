@@ -163,6 +163,13 @@ fn sample_settings(
     }
 }
 
+fn queue_for_profile(settings: &Settings, profile_id: &str) -> QueuePaths {
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root(profile_id)
+        .expect("runtime root");
+    QueuePaths::from_state_root(&runtime_root)
+}
+
 fn set_env(base_url: &str) {
     std::env::set_var("DIRECLAW_SLACK_API_BASE", format!("{base_url}/api"));
     std::env::set_var("SLACK_BOT_TOKEN", "xoxb-test");
@@ -221,7 +228,8 @@ fn sync_queues_inbound_and_sends_outbound() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
 
@@ -246,7 +254,6 @@ fn sync_queues_inbound_and_sends_outbound() {
     )
     .expect("write outbound");
 
-    let settings = sample_settings(temp.path(), true, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.profiles_processed, 1);
     assert_eq!(report.inbound_enqueued, 1);
@@ -295,11 +302,10 @@ fn sync_respects_require_mention_for_channels() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
-
-    let settings = sample_settings(temp.path(), true, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.inbound_enqueued, 0);
 
@@ -333,11 +339,10 @@ fn sync_requires_allowlist_thread_or_mention_even_when_mentions_not_required() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), false, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
-
-    let settings = sample_settings(temp.path(), false, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.inbound_enqueued, 0);
     assert_eq!(
@@ -372,11 +377,10 @@ fn sync_uses_configured_allowlisted_channels() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, vec!["C222".to_string()]);
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
-
-    let settings = sample_settings(temp.path(), true, vec!["C222".to_string()]);
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.inbound_enqueued, 1);
     assert_eq!(
@@ -413,11 +417,10 @@ fn sync_pages_conversation_history_before_advancing_cursor() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
-
-    let settings = sample_settings(temp.path(), true, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.inbound_enqueued, 2);
     assert_eq!(
@@ -481,11 +484,10 @@ fn sync_avoids_duplicate_ingestion_on_repeated_polling() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
-
-    let settings = sample_settings(temp.path(), true, Vec::new());
     let first = sync_once(&state_root, &settings).expect("first sync");
     let second = sync_once(&state_root, &settings).expect("second sync");
 
@@ -530,7 +532,8 @@ fn sync_chunks_outbound_and_removes_queue_file_on_success() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
 
@@ -555,7 +558,6 @@ fn sync_chunks_outbound_and_removes_queue_file_on_success() {
     )
     .expect("write outbound");
 
-    let settings = sample_settings(temp.path(), true, Vec::new());
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
     assert_eq!(report.outbound_messages_sent, 1);
     assert!(!outbound_path.exists(), "outgoing file should be consumed");
@@ -597,7 +599,8 @@ fn sync_preserves_outbound_file_and_returns_context_on_api_failure() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let queue = QueuePaths::from_state_root(&state_root);
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
 
@@ -622,7 +625,6 @@ fn sync_preserves_outbound_file_and_returns_context_on_api_failure() {
     )
     .expect("write outbound");
 
-    let settings = sample_settings(temp.path(), true, Vec::new());
     let err = sync_once(&state_root, &settings).expect_err("sync should fail");
     let error_text = err.to_string();
     assert!(error_text.contains("msg_fail"));

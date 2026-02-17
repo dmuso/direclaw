@@ -4,7 +4,7 @@ use api::SlackApiClient;
 use auth::{configured_slack_allowlist, load_env_config, slack_profiles};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod api;
@@ -51,6 +51,8 @@ pub enum SlackError {
     ApiRequest(String),
     #[error("slack api responded with error `{0}`")]
     ApiResponse(String),
+    #[error("invalid settings configuration: {0}")]
+    Config(String),
     #[error("io error at {path}: {source}")]
     Io {
         path: String,
@@ -133,10 +135,6 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
     let profile_scoped_tokens_required = profiles.len() > 1;
     let config_allowlist = configured_slack_allowlist(settings);
 
-    let queue_paths = QueuePaths::from_state_root(state_root);
-    fs::create_dir_all(&queue_paths.incoming).map_err(|e| io_error(&queue_paths.incoming, e))?;
-    fs::create_dir_all(&queue_paths.outgoing).map_err(|e| io_error(&queue_paths.outgoing, e))?;
-
     let mut bot_token_profile = BTreeMap::<String, String>::new();
     let mut app_token_profile = BTreeMap::<String, String>::new();
     let mut runtimes = BTreeMap::new();
@@ -179,11 +177,24 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
         ..SlackSyncReport::default()
     };
 
+    let mut outbound_roots = BTreeSet::<PathBuf>::new();
     for (profile_id, runtime) in &runtimes {
+        let runtime_root = settings
+            .resolve_channel_profile_runtime_root(profile_id)
+            .map_err(|err| SlackError::Config(err.to_string()))?;
+        let queue_paths = QueuePaths::from_state_root(&runtime_root);
+        fs::create_dir_all(&queue_paths.incoming)
+            .map_err(|e| io_error(&queue_paths.incoming, e))?;
+        fs::create_dir_all(&queue_paths.outgoing)
+            .map_err(|e| io_error(&queue_paths.outgoing, e))?;
         report.inbound_enqueued +=
             ingest::process_inbound_for_profile(state_root, &queue_paths, profile_id, runtime)?;
+        outbound_roots.insert(runtime_root);
     }
-    report.outbound_messages_sent = egress::process_outbound(&queue_paths, &runtimes)?;
+    for runtime_root in outbound_roots {
+        let queue_paths = QueuePaths::from_state_root(&runtime_root);
+        report.outbound_messages_sent += egress::process_outbound(&queue_paths, &runtimes)?;
+    }
     Ok(report)
 }
 

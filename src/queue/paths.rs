@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuePaths {
+    pub root: PathBuf,
     pub incoming: PathBuf,
     pub processing: PathBuf,
     pub outgoing: PathBuf,
@@ -10,6 +11,7 @@ pub struct QueuePaths {
 impl QueuePaths {
     pub fn from_state_root(state_root: &Path) -> Self {
         Self {
+            root: state_root.to_path_buf(),
             incoming: state_root.join("queue/incoming"),
             processing: state_root.join("queue/processing"),
             outgoing: state_root.join("queue/outgoing"),

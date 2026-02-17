@@ -283,4 +283,23 @@ impl Settings {
 
         Ok(resolved)
     }
+
+    pub fn resolve_orchestrator_runtime_root(
+        &self,
+        orchestrator_id: &str,
+    ) -> Result<PathBuf, ConfigError> {
+        Ok(self
+            .resolve_private_workspace(orchestrator_id)?
+            .join(".direclaw"))
+    }
+
+    pub fn resolve_channel_profile_runtime_root(
+        &self,
+        profile_id: &str,
+    ) -> Result<PathBuf, ConfigError> {
+        let profile = self.channel_profiles.get(profile_id).ok_or_else(|| {
+            ConfigError::Settings(format!("unknown channel profile `{profile_id}`"))
+        })?;
+        self.resolve_orchestrator_runtime_root(&profile.orchestrator_id)
+    }
 }

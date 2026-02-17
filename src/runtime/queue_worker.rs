@@ -45,6 +45,12 @@ struct QueueTaskCompletion {
 }
 
 #[derive(Debug, Clone)]
+struct ScopedClaimedMessage {
+    queue_paths: QueuePaths,
+    claimed: queue::ClaimedMessage,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct QueueProcessorLoopConfig {
     pub(crate) slow_shutdown: bool,
     pub(crate) max_concurrency: usize,
@@ -66,15 +72,33 @@ pub fn drain_queue_once_with_binaries(
     max_concurrency: usize,
     binaries: &RunnerBinaries,
 ) -> Result<usize, String> {
-    let queue_paths = QueuePaths::from_state_root(state_root);
+    let queue_sets = collect_orchestrator_queue_paths(settings)?;
+    for paths in &queue_sets {
+        fs::create_dir_all(&paths.incoming).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&paths.processing).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&paths.outgoing).map_err(|e| e.to_string())?;
+    }
     let mut scheduler = queue::PerKeyScheduler::default();
     let (result_tx, result_rx) = mpsc::channel::<QueueTaskCompletion>();
     let mut in_flight = 0usize;
     let mut processed = 0usize;
 
-    while let Some(claimed) = queue::claim_oldest(&queue_paths).map_err(|e| e.to_string())? {
-        let key = queue::derive_ordering_key(&claimed.payload);
-        scheduler.enqueue(key, claimed);
+    let mut claimed_any = true;
+    while claimed_any {
+        claimed_any = false;
+        for queue_paths in &queue_sets {
+            while let Some(claimed) = queue::claim_oldest(queue_paths).map_err(|e| e.to_string())? {
+                let key = queue::derive_ordering_key(&claimed.payload);
+                scheduler.enqueue(
+                    key,
+                    ScopedClaimedMessage {
+                        queue_paths: queue_paths.clone(),
+                        claimed,
+                    },
+                );
+                claimed_any = true;
+            }
+        }
     }
 
     loop {
@@ -144,7 +168,7 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
     events: Sender<WorkerEvent>,
     config: QueueProcessorLoopConfig,
 ) {
-    match recover_processing_queue_entries(&state_root) {
+    match recover_processing_queue_entries_for_settings(&state_root, &settings) {
         Ok(recovered) => {
             for path in recovered {
                 append_runtime_log(
@@ -165,7 +189,33 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
         }
     }
 
-    let queue_paths = QueuePaths::from_state_root(&state_root);
+    let queue_sets = match collect_orchestrator_queue_paths(&settings) {
+        Ok(paths) => paths,
+        Err(error) => {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: worker_id.clone(),
+                at: now_secs(),
+                message: error,
+                fatal: false,
+            });
+            return;
+        }
+    };
+    for paths in &queue_sets {
+        if let Err(error) = fs::create_dir_all(&paths.incoming)
+            .and_then(|_| fs::create_dir_all(&paths.processing))
+            .and_then(|_| fs::create_dir_all(&paths.outgoing))
+        {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: worker_id.clone(),
+                at: now_secs(),
+                message: error.to_string(),
+                fatal: false,
+            });
+            return;
+        }
+    }
+
     let (result_tx, result_rx) = mpsc::channel::<QueueTaskCompletion>();
     let mut scheduler = queue::PerKeyScheduler::default();
     let mut in_flight = 0usize;
@@ -176,23 +226,38 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
         if !stopping {
             let mut claim_budget = config.max_concurrency.saturating_mul(4);
             while claim_budget > 0 {
-                match queue::claim_oldest(&queue_paths) {
-                    Ok(Some(claimed)) => {
-                        let key = queue::derive_ordering_key(&claimed.payload);
-                        scheduler.enqueue(key, claimed);
-                    }
-                    Ok(None) => break,
-                    Err(err) => {
-                        let _ = events.send(WorkerEvent::Error {
-                            worker_id: worker_id.clone(),
-                            at: now_secs(),
-                            message: err.to_string(),
-                            fatal: false,
-                        });
-                        break;
+                let mut claimed_any = false;
+                for queue_paths in &queue_sets {
+                    match queue::claim_oldest(queue_paths) {
+                        Ok(Some(claimed)) => {
+                            let key = queue::derive_ordering_key(&claimed.payload);
+                            scheduler.enqueue(
+                                key,
+                                ScopedClaimedMessage {
+                                    queue_paths: queue_paths.clone(),
+                                    claimed,
+                                },
+                            );
+                            claimed_any = true;
+                            claim_budget = claim_budget.saturating_sub(1);
+                            if claim_budget == 0 {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            let _ = events.send(WorkerEvent::Error {
+                                worker_id: worker_id.clone(),
+                                at: now_secs(),
+                                message: err.to_string(),
+                                fatal: false,
+                            });
+                        }
                     }
                 }
-                claim_budget -= 1;
+                if !claimed_any {
+                    break;
+                }
             }
         }
 
@@ -221,7 +286,8 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
         if stopping {
             if in_flight == 0 {
                 for pending in scheduler.drain_pending() {
-                    let _ = queue::requeue_failure(&queue_paths, &pending.value);
+                    let _ =
+                        queue::requeue_failure(&pending.value.queue_paths, &pending.value.claimed);
                 }
                 if config.slow_shutdown {
                     thread::sleep(slow_shutdown_delay());
@@ -271,7 +337,7 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
 fn handle_queue_task_completion(
     worker_id: &str,
     events: &Sender<WorkerEvent>,
-    scheduler: &mut queue::PerKeyScheduler<queue::ClaimedMessage>,
+    scheduler: &mut queue::PerKeyScheduler<ScopedClaimedMessage>,
     in_flight: &mut usize,
     done: QueueTaskCompletion,
 ) {
@@ -293,26 +359,25 @@ fn handle_queue_task_completion(
 }
 
 fn process_claimed_message(
-    state_root: &Path,
+    _state_root: &Path,
     settings: &Settings,
-    claimed: queue::ClaimedMessage,
+    scoped: ScopedClaimedMessage,
     binaries: &RunnerBinaries,
 ) -> Result<(), String> {
-    let queue_paths = QueuePaths::from_state_root(state_root);
-    let run_store = WorkflowRunStore::new(state_root);
+    let run_store = WorkflowRunStore::new(&scoped.queue_paths.root);
     let functions = FunctionRegistry::v1_defaults(run_store.clone(), settings);
 
     let action = process_queued_message_with_runner_binaries(
-        state_root,
+        &scoped.queue_paths.root,
         settings,
-        &claimed.payload,
+        &scoped.claimed.payload,
         now_secs(),
         &BTreeMap::new(),
         &functions,
         Some(binaries.clone()),
         |attempt, request, orchestrator_cfg| {
             run_selector_attempt_with_provider(
-                state_root,
+                &scoped.queue_paths.root,
                 settings,
                 request,
                 orchestrator_cfg,
@@ -323,7 +388,7 @@ fn process_claimed_message(
         },
     )
     .map_err(|e| {
-        let _ = queue::requeue_failure(&queue_paths, &claimed);
+        let _ = queue::requeue_failure(&scoped.queue_paths, &scoped.claimed);
         e.to_string()
     })?;
 
@@ -333,22 +398,77 @@ fn process_claimed_message(
         .into_iter()
         .enumerate()
         .map(|(index, (message, agent))| OutgoingMessage {
-            channel: claimed.payload.channel.clone(),
-            channel_profile_id: claimed.payload.channel_profile_id.clone(),
-            sender: claimed.payload.sender.clone(),
+            channel: scoped.claimed.payload.channel.clone(),
+            channel_profile_id: scoped.claimed.payload.channel_profile_id.clone(),
+            sender: scoped.claimed.payload.sender.clone(),
             message,
-            original_message: claimed.payload.message.clone(),
+            original_message: scoped.claimed.payload.message.clone(),
             timestamp: now.saturating_add(index as i64),
-            message_id: claimed.payload.message_id.clone(),
+            message_id: scoped.claimed.payload.message_id.clone(),
             agent,
-            conversation_id: claimed.payload.conversation_id.clone(),
+            conversation_id: scoped.claimed.payload.conversation_id.clone(),
             files: Vec::new(),
-            workflow_run_id: claimed.payload.workflow_run_id.clone(),
-            workflow_step_id: claimed.payload.workflow_step_id.clone(),
+            workflow_run_id: scoped.claimed.payload.workflow_run_id.clone(),
+            workflow_step_id: scoped.claimed.payload.workflow_step_id.clone(),
         })
         .collect();
-    queue::complete_success_many(&queue_paths, &claimed, &outgoing).map_err(|e| e.to_string())?;
+    queue::complete_success_many(&scoped.queue_paths, &scoped.claimed, &outgoing)
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn collect_orchestrator_queue_paths(settings: &Settings) -> Result<Vec<QueuePaths>, String> {
+    let mut paths = Vec::new();
+    for orchestrator_id in settings.orchestrators.keys() {
+        let root = settings
+            .resolve_orchestrator_runtime_root(orchestrator_id)
+            .map_err(|err| err.to_string())?;
+        paths.push(QueuePaths::from_state_root(&root));
+    }
+    Ok(paths)
+}
+
+fn recover_processing_queue_entries_for_settings(
+    state_root: &Path,
+    settings: &Settings,
+) -> Result<Vec<PathBuf>, String> {
+    let mut recovered = recover_processing_queue_entries(state_root)?;
+    for queue_paths in collect_orchestrator_queue_paths(settings)? {
+        recovered.extend(recover_queue_processing_paths(&queue_paths)?);
+    }
+    Ok(recovered)
+}
+
+fn recover_queue_processing_paths(queue_paths: &QueuePaths) -> Result<Vec<PathBuf>, String> {
+    let mut recovered = Vec::new();
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&queue_paths.processing).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.is_file() {
+            entries.push(path);
+        }
+    }
+    entries.sort();
+    for (index, processing_path) in entries.into_iter().enumerate() {
+        let name = processing_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or("message.json");
+        let target = queue_paths
+            .incoming
+            .join(format!("recovered_{index}_{name}"));
+        fs::rename(&processing_path, &target).map_err(|e| {
+            format!(
+                "failed to recover processing file {}: {}",
+                processing_path.display(),
+                e
+            )
+        })?;
+        recovered.push(target);
+    }
+    Ok(recovered)
 }
 
 fn resolve_runner_binaries() -> RunnerBinaries {

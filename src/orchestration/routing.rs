@@ -91,7 +91,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub fn process_queued_message_with_runner_binaries<F>(
-    state_root: &Path,
+    _state_root: &Path,
     settings: &Settings,
     inbound: &IncomingMessage,
     now: i64,
@@ -104,7 +104,11 @@ where
     F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
 {
     let runner_binaries = runner_binaries.unwrap_or_else(resolve_runner_binaries);
-    let run_store = WorkflowRunStore::new(state_root);
+    let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
+    let runtime_root = settings
+        .resolve_orchestrator_runtime_root(&orchestrator_id)
+        .map_err(|err| OrchestratorError::Config(err.to_string()))?;
+    let run_store = WorkflowRunStore::new(&runtime_root);
     let inbound_message = inbound.message.trim().to_ascii_lowercase();
     if let Some(run_id) = inbound
         .workflow_run_id
@@ -170,7 +174,6 @@ where
             );
         }
 
-        let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
         let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
         let workspace_context = match verify_orchestrator_workspace_access(
             settings,
@@ -180,7 +183,7 @@ where
             Ok(context) => context,
             Err(err) => {
                 append_security_log(
-                        state_root,
+                        &runtime_root,
                         &format!(
                             "workspace access denied for orchestrator `{orchestrator_id}` message `{}`: {err}",
                             inbound.message_id
@@ -228,7 +231,6 @@ where
         });
     }
 
-    let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
     let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
     let workspace_context = match verify_orchestrator_workspace_access(
         settings,
@@ -238,7 +240,7 @@ where
         Ok(context) => context,
         Err(err) => {
             append_security_log(
-                    state_root,
+                    &runtime_root,
                     &format!(
                         "workspace access denied for orchestrator `{orchestrator_id}` message `{}`: {err}",
                         inbound.message_id
@@ -267,7 +269,7 @@ where
         available_function_schemas: functions.available_function_schemas(),
     };
 
-    let artifact_store = SelectorArtifactStore::new(state_root);
+    let artifact_store = SelectorArtifactStore::new(&runtime_root);
     artifact_store.persist_message_snapshot(inbound)?;
     artifact_store.persist_selector_request(&request)?;
     let _ = artifact_store.move_request_to_processing(&request.selector_id)?;

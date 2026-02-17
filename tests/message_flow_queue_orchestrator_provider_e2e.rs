@@ -44,6 +44,7 @@ fn sample_message(message_id: &str, conversation_id: &str) -> IncomingMessage {
 }
 
 fn write_incoming(queue: &QueuePaths, payload: &IncomingMessage) {
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::write(
         queue.incoming.join(format!("{}.json", payload.message_id)),
         serde_json::to_vec(payload).expect("serialize"),
@@ -125,6 +126,20 @@ fn binaries(anthropic: impl Into<String>, openai: impl Into<String>) -> RunnerBi
     }
 }
 
+fn queue_for_profile(settings: &Settings, profile_id: &str) -> QueuePaths {
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root(profile_id)
+        .expect("resolve runtime root");
+    QueuePaths::from_state_root(&runtime_root)
+}
+
+fn queue_for_orchestrator(settings: &Settings, orchestrator_id: &str) -> QueuePaths {
+    let runtime_root = settings
+        .resolve_orchestrator_runtime_root(orchestrator_id)
+        .expect("resolve runtime root");
+    QueuePaths::from_state_root(&runtime_root)
+}
+
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -132,8 +147,8 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-fn read_outgoing_text(state_root: &Path) -> String {
-    let out_dir = state_root.join("queue/outgoing");
+fn read_outgoing_text(queue: &QueuePaths) -> String {
+    let out_dir = queue.outgoing.clone();
     let mut files: Vec<PathBuf> = fs::read_dir(&out_dir)
         .expect("read outgoing")
         .map(|e| e.expect("entry").path())
@@ -143,8 +158,8 @@ fn read_outgoing_text(state_root: &Path) -> String {
     fs::read_to_string(path).expect("outgoing text")
 }
 
-fn read_outgoing_messages(state_root: &Path) -> Vec<OutgoingMessage> {
-    let out_dir = state_root.join("queue/outgoing");
+fn read_outgoing_messages(queue: &QueuePaths) -> Vec<OutgoingMessage> {
+    let out_dir = queue.outgoing.clone();
     let mut files: Vec<PathBuf> = fs::read_dir(&out_dir)
         .expect("read outgoing")
         .map(|e| e.expect("entry").path())
@@ -164,7 +179,6 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-mock");
     let codex = dir.path().join("codex-mock");
@@ -176,6 +190,7 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
 
     let settings =
         write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"), "anthropic", 1, 30);
+    let queue = queue_for_profile(&settings, "eng");
     write_incoming(&queue, &sample_message("msg-1", "thread-1"));
 
     let processed = drain_queue_once_with_binaries(
@@ -187,15 +202,18 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     .expect("drain");
     assert_eq!(processed, 1);
 
-    let outgoing = read_outgoing_text(&state_root);
+    let outgoing = read_outgoing_text(&queue);
     assert!(outgoing.contains("ok"));
-    assert!(state_root
+    assert!(queue
+        .root
         .join("orchestrator/messages/msg-1.json")
         .is_file());
-    assert!(state_root
+    assert!(queue
+        .root
         .join("orchestrator/select/results/sel-msg-1.json")
         .is_file());
-    assert!(state_root
+    assert!(queue
+        .root
         .join("orchestrator/select/logs/sel-msg-1_attempt_0.invocation.json")
         .is_file());
 }
@@ -205,7 +223,6 @@ fn channel_ingress_multi_step_workflow_reaches_terminal_state_and_writes_safe_ou
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-multi-selector");
     let codex = dir.path().join("codex-multi-worker");
@@ -235,6 +252,7 @@ fi
         1,
         30,
     );
+    let queue = queue_for_profile(&settings, "eng");
     fs::write(
         dir.path().join("orch-multi/orchestrator.yaml"),
         r#"
@@ -305,7 +323,7 @@ workflows:
     .expect("drain");
     assert_eq!(processed, 1);
 
-    let outgoing_messages = read_outgoing_messages(&state_root);
+    let outgoing_messages = read_outgoing_messages(&queue);
     assert!(
         outgoing_messages
             .iter()
@@ -326,7 +344,7 @@ workflows:
         ),
         "expected final user-facing summary in outbound messages"
     );
-    let mut run_ids: Vec<String> = fs::read_dir(state_root.join("workflows/runs"))
+    let mut run_ids: Vec<String> = fs::read_dir(queue.root.join("workflows/runs"))
         .expect("run dir")
         .map(|entry| entry.expect("entry").path())
         .filter(|path| path.extension().and_then(|v| v.to_str()) == Some("json"))
@@ -339,8 +357,9 @@ workflows:
     run_ids.sort();
     let run_id = run_ids.pop().expect("run id");
 
-    let run_root = state_root.join(format!("workflows/runs/{run_id}"));
-    assert!(state_root
+    let run_root = queue.root.join(format!("workflows/runs/{run_id}"));
+    assert!(queue
+        .root
         .join(format!("workflows/runs/{run_id}.json"))
         .is_file());
     assert!(run_root.join("progress.json").is_file());
@@ -394,7 +413,7 @@ workflows:
     .expect("drain status");
     assert_eq!(status_processed, 1);
 
-    let status_outbound = read_outgoing_messages(&state_root)
+    let status_outbound = read_outgoing_messages(&queue)
         .into_iter()
         .find(|outbound| outbound.message_id == "msg-multi-status")
         .expect("status outbound message");
@@ -411,7 +430,6 @@ fn workflow_bound_message_resumes_run_execution_when_not_status_command() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-mock");
     let codex = dir.path().join("codex-mock");
@@ -428,7 +446,8 @@ fn workflow_bound_message_resumes_run_execution_when_not_status_command() {
         1,
         30,
     );
-    let run_store = WorkflowRunStore::new(&state_root);
+    let queue = queue_for_profile(&settings, "eng");
+    let run_store = WorkflowRunStore::new(&queue.root);
     run_store
         .create_run("run-resume-1", "triage", now_secs())
         .expect("create run");
@@ -448,10 +467,11 @@ fn workflow_bound_message_resumes_run_execution_when_not_status_command() {
 
     let run = run_store.load_run("run-resume-1").expect("load run");
     assert_eq!(run.state, RunState::Succeeded);
-    assert!(state_root
+    assert!(queue
+        .root
         .join("workflows/runs/run-resume-1/steps/start/attempts/1/result.json")
         .is_file());
-    let outgoing = read_outgoing_text(&state_root);
+    let outgoing = read_outgoing_text(&queue);
     assert!(outgoing.contains("workflow progress loaded"));
 }
 
@@ -460,7 +480,6 @@ fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let settings = write_settings_and_orchestrator(
         dir.path(),
@@ -469,7 +488,8 @@ fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
         1,
         30,
     );
-    let run_store = WorkflowRunStore::new(&state_root);
+    let queue = queue_for_profile(&settings, "eng");
+    let run_store = WorkflowRunStore::new(&queue.root);
     let mut run = run_store
         .create_run("run-status-1", "triage", 1)
         .expect("create run");
@@ -497,7 +517,7 @@ fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
     assert!(!state_root
         .join("workflows/runs/run-status-1/steps/start/attempts/1/result.json")
         .exists());
-    let outgoing = read_outgoing_text(&state_root);
+    let outgoing = read_outgoing_text(&queue);
     assert!(outgoing.contains("workflow progress loaded"));
 }
 
@@ -506,7 +526,6 @@ fn workflow_bound_message_with_unknown_run_id_does_not_requeue_forever() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-mock");
     let codex = dir.path().join("codex-mock");
@@ -523,6 +542,7 @@ fn workflow_bound_message_with_unknown_run_id_does_not_requeue_forever() {
         1,
         30,
     );
+    let queue = queue_for_profile(&settings, "eng");
     let mut inbound = sample_message("msg-missing-run", "thread-missing-run");
     inbound.workflow_run_id = Some("run-does-not-exist".to_string());
     inbound.message = "continue please".to_string();
@@ -537,7 +557,7 @@ fn workflow_bound_message_with_unknown_run_id_does_not_requeue_forever() {
     .expect("drain");
     assert_eq!(processed, 1);
 
-    let outgoing = read_outgoing_text(&state_root);
+    let outgoing = read_outgoing_text(&queue);
     assert!(outgoing.contains("workflow run `run-does-not-exist` was not found"));
     assert!(fs::read_dir(&queue.processing)
         .expect("processing")
@@ -563,13 +583,15 @@ fn queue_failures_requeue_without_payload_loss_for_unknown_profile() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let settings: Settings = serde_yaml::from_str(&format!(
         r#"
 workspaces_path: {workspace}
 shared_workspaces: {{}}
-orchestrators: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {workspace}/orch-unknown-profile
+    shared_access: []
 channel_profiles: {{}}
 monitoring: {{}}
 channels: {{}}
@@ -577,6 +599,8 @@ channels: {{}}
         workspace = dir.path().display()
     ))
     .expect("settings");
+    let queue = queue_for_orchestrator(&settings, "eng_orchestrator");
+    fs::create_dir_all(&queue.incoming).expect("incoming");
 
     let raw = serde_json::to_string(&sample_message("msg-unknown", "thread-1")).expect("raw");
     fs::write(queue.incoming.join("msg-unknown.json"), &raw).expect("incoming");
@@ -607,7 +631,6 @@ fn runtime_logs_and_persisted_progress_expose_failure_reason_for_limit_triggers(
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-reject");
     let codex = dir.path().join("codex-ok");
@@ -623,6 +646,7 @@ fn runtime_logs_and_persisted_progress_expose_failure_reason_for_limit_triggers(
         1,
         30,
     );
+    let queue = queue_for_profile(&settings, "eng");
 
     fs::write(
         dir.path().join("orch-limit/orchestrator.yaml"),
@@ -693,7 +717,7 @@ workflows:
     let requeued = fs::read_to_string(&incoming_files[0]).expect("requeued");
     assert!(requeued.contains("\"messageId\":\"msg-limit\""));
 
-    let run_root = state_root.join("workflows/runs");
+    let run_root = queue.root.join("workflows/runs");
     let mut run_dirs: Vec<PathBuf> = fs::read_dir(&run_root)
         .expect("run root")
         .map(|e| e.expect("entry").path())
@@ -713,7 +737,6 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude_fail = dir.path().join("claude-fail");
     let codex_ok = dir.path().join("codex-ok");
@@ -726,6 +749,7 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
         1,
         30,
     );
+    let queue = queue_for_profile(&settings_fail, "eng");
     write_incoming(&queue, &sample_message("msg-fail", "thread-1"));
     let processed = drain_queue_once_with_binaries(
         &state_root,
@@ -739,7 +763,9 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
     .expect("drain non-zero");
     assert_eq!(processed, 1);
     let non_zero_log = fs::read_to_string(
-        state_root.join("orchestrator/select/logs/sel-msg-fail_attempt_0.invocation.json"),
+        queue
+            .root
+            .join("orchestrator/select/logs/sel-msg-fail_attempt_0.invocation.json"),
     )
     .expect("non-zero log");
     assert!(non_zero_log.contains("\"status\": \"failed\""));
@@ -765,7 +791,8 @@ fi
         1,
         30,
     );
-    write_incoming(&queue, &sample_message("msg-parse", "thread-2"));
+    let queue_parse = queue_for_profile(&settings_parse, "eng");
+    write_incoming(&queue_parse, &sample_message("msg-parse", "thread-2"));
     let processed = drain_queue_once_with_binaries(
         &state_root,
         &settings_parse,
@@ -778,7 +805,9 @@ fi
     .expect("drain parse failure");
     assert_eq!(processed, 1);
     let parse_log = fs::read_to_string(
-        state_root.join("orchestrator/select/logs/sel-msg-parse_attempt_0.invocation.json"),
+        queue_parse
+            .root
+            .join("orchestrator/select/logs/sel-msg-parse_attempt_0.invocation.json"),
     )
     .expect("parse log");
     assert!(parse_log.contains("\"status\": \"failed\""));
@@ -793,7 +822,6 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude_timeout = dir.path().join("claude-timeout");
     let codex = dir.path().join("codex-timeout-ok");
@@ -806,6 +834,7 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
         1,
         1,
     );
+    let queue = queue_for_profile(&settings, "eng");
     write_incoming(&queue, &sample_message("msg-timeout", "thread-timeout"));
 
     let processed = drain_queue_once_with_binaries(
@@ -821,7 +850,9 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
     assert_eq!(processed, 1);
 
     let timeout_log = fs::read_to_string(
-        state_root.join("orchestrator/select/logs/sel-msg-timeout_attempt_0.invocation.json"),
+        queue
+            .root
+            .join("orchestrator/select/logs/sel-msg-timeout_attempt_0.invocation.json"),
     )
     .expect("timeout log");
     assert!(timeout_log.contains("\"status\": \"failed\""));
@@ -834,7 +865,6 @@ fn malicious_output_file_template_is_rejected_and_security_log_records_denial() 
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
 
     let claude = dir.path().join("claude-malicious-selector");
     let codex = dir.path().join("codex-malicious-worker");
@@ -850,6 +880,7 @@ fn malicious_output_file_template_is_rejected_and_security_log_records_denial() 
         1,
         30,
     );
+    let queue = queue_for_profile(&settings, "eng");
     fs::write(
         dir.path().join("orch-malicious/orchestrator.yaml"),
         r#"
@@ -898,7 +929,7 @@ workflows:
     );
 
     let security_log =
-        fs::read_to_string(state_root.join("logs/security.log")).expect("security log");
+        fs::read_to_string(queue.root.join("logs/security.log")).expect("security log");
     assert!(security_log.contains("output path validation denied"));
     assert!(security_log.contains("sel-msg-malicious"));
     assert!(fs::read_dir(&queue.processing)
@@ -912,15 +943,14 @@ fn malformed_queue_payload_is_requeued_not_dropped() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
-
-    fs::write(queue.incoming.join("malformed.json"), "{not-json").expect("write malformed");
-
     let settings: Settings = serde_yaml::from_str(&format!(
         r#"
 workspaces_path: {workspace}
 shared_workspaces: {{}}
-orchestrators: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {workspace}/orch-malformed
+    shared_access: []
 channel_profiles: {{}}
 monitoring: {{}}
 channels: {{}}
@@ -928,6 +958,9 @@ channels: {{}}
         workspace = dir.path().display()
     ))
     .expect("settings");
+    let queue = queue_for_orchestrator(&settings, "eng_orchestrator");
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::write(queue.incoming.join("malformed.json"), "{not-json").expect("write malformed");
 
     let err =
         drain_queue_once_with_binaries(&state_root, &settings, 1, &binaries("unused", "unused"))
@@ -955,10 +988,18 @@ fn startup_recovery_moves_processing_back_to_incoming() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
-
+    let settings = write_settings_and_orchestrator(
+        dir.path(),
+        &dir.path().join("orch-recovery"),
+        "anthropic",
+        1,
+        30,
+    );
+    let queue = queue_for_profile(&settings, "eng");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::write(queue.processing.join("stale.json"), "{\"k\":\"v\"}").expect("stale file");
-    let recovered = recover_processing_queue_entries(&state_root).expect("recover");
+    let recovered = recover_processing_queue_entries(&queue.root).expect("recover");
     assert_eq!(recovered.len(), 1);
     assert!(recovered[0].starts_with(&queue.incoming));
     assert_eq!(
@@ -976,7 +1017,6 @@ fn recovered_workflow_bound_message_resumes_existing_run_after_restart() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
     let settings = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-recovered-resume"),
@@ -984,8 +1024,9 @@ fn recovered_workflow_bound_message_resumes_existing_run_after_restart() {
         1,
         30,
     );
+    let queue = queue_for_profile(&settings, "eng");
 
-    let run_store = WorkflowRunStore::new(&state_root);
+    let run_store = WorkflowRunStore::new(&queue.root);
     run_store
         .create_run("run-recovered-1", "triage", now_secs())
         .expect("create run");
@@ -993,13 +1034,15 @@ fn recovered_workflow_bound_message_resumes_existing_run_after_restart() {
     let mut payload = sample_message("msg-recovered-resume", "thread-recovered-resume");
     payload.workflow_run_id = Some("run-recovered-1".to_string());
     payload.message = "continue".to_string();
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
     fs::write(
         queue.processing.join("stale-workflow-bound.json"),
         serde_json::to_vec(&payload).expect("serialize"),
     )
     .expect("write stale processing");
 
-    let recovered = recover_processing_queue_entries(&state_root).expect("recover");
+    let recovered = recover_processing_queue_entries(&queue.root).expect("recover");
     assert_eq!(recovered.len(), 1);
 
     let claude = dir.path().join("claude-recovered-resume");
@@ -1021,7 +1064,8 @@ fn recovered_workflow_bound_message_resumes_existing_run_after_restart() {
 
     let run = run_store.load_run("run-recovered-1").expect("run");
     assert_eq!(run.state, RunState::Succeeded);
-    assert!(state_root
+    assert!(queue
+        .root
         .join("workflows/runs/run-recovered-1/steps/start/attempts/1/result.json")
         .is_file());
 }
@@ -1031,8 +1075,6 @@ fn supervisor_start_recovers_processing_entries_and_processes_message() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
-
     let settings = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-restart"),
@@ -1040,7 +1082,10 @@ fn supervisor_start_recovers_processing_entries_and_processes_message() {
         1,
         30,
     );
+    let queue = queue_for_profile(&settings, "eng");
+    fs::create_dir_all(&queue.incoming).expect("incoming");
     let stale = sample_message("msg-restart", "thread-restart");
+    fs::create_dir_all(&queue.processing).expect("processing");
     fs::write(
         queue.processing.join("stale-msg-restart.json"),
         serde_json::to_vec(&stale).expect("serialize stale"),
@@ -1066,7 +1111,8 @@ fn supervisor_start_recovers_processing_entries_and_processes_message() {
     let settings_for_thread = settings.clone();
     let handle = thread::spawn(move || run_supervisor(&state_root_for_thread, settings_for_thread));
 
-    let out_dir = state_root.join("queue/outgoing");
+    let out_dir = queue.outgoing.clone();
+    fs::create_dir_all(&out_dir).expect("outgoing");
     let start = Instant::now();
     while fs::read_dir(&out_dir).expect("outgoing").next().is_none() {
         assert!(
@@ -1105,9 +1151,9 @@ fn queue_runtime_enforces_same_key_ordering_and_cross_key_concurrency() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let queue = QueuePaths::from_state_root(&state_root);
     let orch_ws = dir.path().join("orch-order");
     let settings = write_settings_and_orchestrator(dir.path(), &orch_ws, "anthropic", 1, 30);
+    let queue = queue_for_profile(&settings, "eng");
 
     let claude = dir.path().join("claude-order");
     let codex = dir.path().join("codex-order");
