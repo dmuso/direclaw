@@ -188,7 +188,9 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
             WorkerRuntime::OrchestratorDispatcher => Ok(()),
             WorkerRuntime::Memory => memory_worker::tick_memory_worker(&settings),
             WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
-            WorkerRuntime::Heartbeat => heartbeat_worker::tick_heartbeat_worker(),
+            WorkerRuntime::Heartbeat => {
+                heartbeat_worker::tick_heartbeat_worker(&state_root, &settings)
+            }
         };
 
         match tick {

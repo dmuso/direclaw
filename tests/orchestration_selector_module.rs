@@ -1,10 +1,11 @@
 use direclaw::config::OrchestratorConfig;
 use direclaw::orchestration::selector::{
-    parse_and_validate_selector_result, resolve_selector_with_retries,
+    parse_and_validate_selector_result, resolve_orchestrator_id, resolve_selector_with_retries,
     run_selector_attempt_with_provider, FunctionArgSchema, FunctionArgType, FunctionSchema,
     SelectorAction, SelectorRequest, SelectorStatus,
 };
 use direclaw::provider::RunnerBinaries;
+use direclaw::queue::IncomingMessage;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tempfile::tempdir;
@@ -148,4 +149,38 @@ channels: {}
     .expect_err("selector agent must exist");
 
     assert!(err.contains("selector agent `selector` missing"));
+}
+
+#[test]
+fn selector_module_resolves_heartbeat_orchestrator_without_channel_profile_id() {
+    let settings: direclaw::config::Settings = serde_yaml::from_str(
+        r#"
+workspaces_path: /tmp/workspaces
+shared_workspaces: {}
+orchestrators:
+  orch:
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+    )
+    .expect("settings");
+
+    let inbound = IncomingMessage {
+        channel: "heartbeat".to_string(),
+        channel_profile_id: None,
+        sender: "heartbeat:orch".to_string(),
+        sender_id: "heartbeat-agent".to_string(),
+        message: "health".to_string(),
+        timestamp: 1,
+        message_id: "hb-1".to_string(),
+        conversation_id: Some("hb:orch:agent".to_string()),
+        files: Vec::new(),
+        workflow_run_id: Some("hb:orch:agent".to_string()),
+        workflow_step_id: Some("heartbeat_worker_check".to_string()),
+    };
+
+    let orchestrator_id = resolve_orchestrator_id(&settings, &inbound).expect("resolved");
+    assert_eq!(orchestrator_id, "orch");
 }

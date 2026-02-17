@@ -65,6 +65,9 @@ Requirements:
 - selector retry and default-workflow baseline behavior
 - selector `command_invoke` routing executes only functions present in `availableFunctions` and rejects unknown function ids
 - selector request/result file persistence and replayability
+- heartbeat worker startup semantics respect `monitoring.heartbeat_interval` enable/disable behavior
+- heartbeat ticks enqueue one message per configured agent across orchestrators and monitor outbound response correlation without mutating outbound artifacts
+- heartbeat tick failures report degraded worker health and runtime logs without crashing supervisor
 - status-check intent handling uses selector-agent inference for natural-language requests (for example `what's the latest update`) and returns run progress without advancing workflow steps
 - diagnostics intent handling uses selector-agent inference for natural-language requests (for example `why did this fail`) and returns investigation findings without advancing workflow steps
 - natural-language command intent handling routes through selector `command_invoke` for supported CLI-parity functions

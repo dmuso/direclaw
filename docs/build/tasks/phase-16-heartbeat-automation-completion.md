@@ -7,7 +7,7 @@ Implement the remaining heartbeat automation behavior so the heartbeat worker pe
 
 ### P16-T01 Implement per-agent heartbeat enqueue pipeline
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Heartbeat worker tick resolves all configured orchestrators and their configured agents.
   - For each agent, worker loads `<agent_dir>/heartbeat.md` when present and uses a deterministic fallback prompt when missing.
@@ -20,7 +20,7 @@ Implement the remaining heartbeat automation behavior so the heartbeat worker pe
 
 ### P16-T02 Implement heartbeat response matching and monitoring logs
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Worker inspects outbound queue for responses matching heartbeat correlation ids.
   - Matching response snippets are logged with orchestrator id, agent id, and heartbeat message id.
@@ -33,7 +33,7 @@ Implement the remaining heartbeat automation behavior so the heartbeat worker pe
 
 ### P16-T03 Integrate heartbeat automation with runtime reliability and status surfaces
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Heartbeat worker failures are reported through worker health state and runtime logs without crashing supervisor.
   - Worker honors enable/disable semantics from `monitoring.heartbeat_interval`.

@@ -52,6 +52,10 @@ fn assert_err_contains(output: &Output, needle: &str) {
 }
 
 fn write_settings(home: &Path) {
+    write_settings_with_heartbeat_interval(home, 1);
+}
+
+fn write_settings_with_heartbeat_interval(home: &Path, heartbeat_interval: u64) {
     let workspace = home.join("workspace");
     fs::create_dir_all(&workspace).expect("workspace");
     fs::create_dir_all(home.join(".direclaw")).expect("config dir");
@@ -64,12 +68,13 @@ shared_workspaces: {{}}
 orchestrators: {{}}
 channel_profiles: {{}}
 monitoring:
-  heartbeat_interval: 1
+  heartbeat_interval: {heartbeat_interval}
 channels: {{}}
 auth_sync:
   enabled: false
 "#,
-            workspace = workspace.display()
+            workspace = workspace.display(),
+            heartbeat_interval = heartbeat_interval
         ),
     )
     .expect("settings");
@@ -700,6 +705,11 @@ fn status_and_logs_expose_stable_operational_fields() {
         "worker:orchestrator_dispatcher.state=running",
         Duration::from_secs(3),
     );
+    wait_for_status_line(
+        home,
+        "worker:heartbeat.state=running",
+        Duration::from_secs(3),
+    );
 
     let status = run(home, &["status"], &[]);
     assert_ok(&status);
@@ -707,6 +717,8 @@ fn status_and_logs_expose_stable_operational_fields() {
     assert!(status_text.contains("ownership=running"));
     assert!(status_text.contains("worker:queue_processor.state=running"));
     assert!(status_text.contains("worker:orchestrator_dispatcher.state=running"));
+    assert!(status_text.contains("worker:heartbeat.state=running"));
+    assert!(!status_text.contains("worker:heartbeat.last_heartbeat=none"));
 
     let logs = run(home, &["logs"], &[]);
     assert_ok(&logs);
@@ -715,6 +727,54 @@ fn status_and_logs_expose_stable_operational_fields() {
     let runtime_log = read_runtime_log(home);
     assert!(runtime_log.contains("\"event\":\"supervisor.started\""));
     assert!(runtime_log.contains("\"event\":\"worker.started\""));
+
+    stop_if_running(home);
+}
+
+#[test]
+fn heartbeat_worker_respects_disabled_interval() {
+    let temp = tempdir().expect("tempdir");
+    let home = temp.path();
+    write_settings_with_heartbeat_interval(home, 0);
+
+    let started = run(home, &["start"], &[]);
+    assert_ok(&started);
+    wait_for_status_line(home, "running=true", Duration::from_secs(3));
+
+    let status = run(home, &["status"], &[]);
+    assert_ok(&status);
+    let status_text = stdout(&status);
+    assert!(
+        !status_text.contains("worker:heartbeat.state="),
+        "heartbeat worker should not start when disabled:\n{status_text}"
+    );
+
+    stop_if_running(home);
+}
+
+#[test]
+fn heartbeat_tick_failure_is_non_fatal_to_supervisor() {
+    let temp = tempdir().expect("tempdir");
+    let home = temp.path();
+    write_settings(home);
+
+    let started = run(home, &["start"], &[("DIRECLAW_FAIL_HEARTBEAT_TICK", "1")]);
+    assert_ok(&started);
+    wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    wait_for_status_line(home, "worker:heartbeat.state=error", Duration::from_secs(4));
+    wait_for_status_line(
+        home,
+        "worker:queue_processor.state=running",
+        Duration::from_secs(3),
+    );
+
+    let status = run(home, &["status"], &[]);
+    assert_ok(&status);
+    let status_text = stdout(&status);
+    assert!(status_text.contains("running=true"));
+    assert!(status_text
+        .contains("worker:heartbeat.last_error=fault injection requested for heartbeat tick"));
+    assert!(status_text.contains("worker:queue_processor.state=running"));
 
     stop_if_running(home);
 }

@@ -16,11 +16,13 @@ For each configured agent:
 1. Load `<agent_dir>/heartbeat.md`.
 2. If missing, use default short fallback prompt.
 3. Enqueue heartbeat message targeting that specific agent.
+4. Heartbeat payload ids/correlation metadata must be deterministic per orchestrator-agent tick (`messageId`, `conversationId`, `workflowRunId`).
 
 Post-enqueue behavior:
 
 - Inspect outbound queue for matching heartbeat responses.
 - Log response snippets for monitoring visibility.
+- Outbound inspection must be read-only; never consume/mutate outbound files needed by channel adapters.
 
 ## Integration Rules
 
@@ -33,4 +35,3 @@ Post-enqueue behavior:
 - Heartbeat messages are generated for every configured agent on schedule.
 - Missing `heartbeat.md` does not block heartbeat execution.
 - Matching outbound responses are observable in logs.
-

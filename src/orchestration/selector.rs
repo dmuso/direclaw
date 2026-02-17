@@ -20,8 +20,23 @@ pub fn resolve_orchestrator_id(
     let channel_profile_id = inbound
         .channel_profile_id
         .as_ref()
-        .filter(|id| !id.trim().is_empty())
-        .ok_or_else(|| OrchestratorError::MissingChannelProfileId {
+        .filter(|id| !id.trim().is_empty());
+
+    if channel_profile_id.is_none() && inbound.channel == "heartbeat" {
+        if let Some(orchestrator_id) = inbound
+            .sender
+            .strip_prefix("heartbeat:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if settings.orchestrators.contains_key(orchestrator_id) {
+                return Ok(orchestrator_id.to_string());
+            }
+        }
+    }
+
+    let channel_profile_id =
+        channel_profile_id.ok_or_else(|| OrchestratorError::MissingChannelProfileId {
             message_id: inbound.message_id.clone(),
         })?;
 
