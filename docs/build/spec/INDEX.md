@@ -40,6 +40,8 @@ Source baseline: `docs/SPEC.md`.
     `docs/build/spec/12-reliability-compat-testing.md`
 13. Memory Subsystem
     `docs/build/spec/14-memory.md`
+14. Scheduled Automation and Cron Handling
+    `docs/build/spec/15-scheduled-automation.md`
 
 ## Working Decision Docs
 
@@ -72,6 +74,7 @@ These feature specs collectively cover:
 - Hybrid workspaces (private + shared)
 - Provider execution through local CLIs (`claude`, `codex`)
 - Heartbeat automation
+- Scheduled automation and cron handling
 - Daemonized runtime operations
 - Compatibility posture and reliability requirements
 - Test strategy and release milestones
