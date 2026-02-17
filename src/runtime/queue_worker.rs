@@ -1,6 +1,4 @@
-use super::{
-    append_runtime_log, now_secs, recover_processing_queue_entries, StatePaths, WorkerEvent,
-};
+use super::{append_runtime_log, now_secs, StatePaths, WorkerEvent};
 use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries;
@@ -429,10 +427,10 @@ fn collect_orchestrator_queue_paths(settings: &Settings) -> Result<Vec<QueuePath
 }
 
 fn recover_processing_queue_entries_for_settings(
-    state_root: &Path,
+    _state_root: &Path,
     settings: &Settings,
 ) -> Result<Vec<PathBuf>, String> {
-    let mut recovered = recover_processing_queue_entries(state_root)?;
+    let mut recovered = Vec::new();
     for queue_paths in collect_orchestrator_queue_paths(settings)? {
         recovered.extend(recover_queue_processing_paths(&queue_paths)?);
     }

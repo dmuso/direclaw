@@ -126,20 +126,31 @@ fn run_id_from(output: &Output) -> String {
 }
 
 fn workflow_run_ids(home: &Path) -> BTreeSet<String> {
-    let runs_dir = home.join(".direclaw/workflows/runs");
-    if !runs_dir.exists() {
+    let workspace_root = home.join("workspace");
+    if !workspace_root.exists() {
         return BTreeSet::new();
     }
-    fs::read_dir(&runs_dir)
-        .expect("read runs dir")
-        .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().and_then(|v| v.to_str()) == Some("json"))
-        .filter_map(|path| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(|stem| stem.to_string())
-        })
-        .collect()
+
+    let mut ids = BTreeSet::new();
+    for workspace in fs::read_dir(&workspace_root).expect("read workspace root") {
+        let runs_dir = workspace
+            .expect("workspace entry")
+            .path()
+            .join("workflows/runs");
+        if !runs_dir.exists() {
+            continue;
+        }
+        for run in fs::read_dir(&runs_dir).expect("read runs dir") {
+            let path = run.expect("run entry").path();
+            if path.extension().and_then(|v| v.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    ids
 }
 
 #[test]
@@ -192,6 +203,15 @@ fn daemon_command_surface_works() {
     assert_ok(&run(temp.path(), &["stop"]));
     assert_ok(&run(temp.path(), &["restart"]));
     assert_ok(&run(temp.path(), &["stop"]));
+}
+
+#[test]
+fn start_missing_global_config_suggests_setup() {
+    let temp = tempdir().expect("tempdir");
+
+    let started = run(temp.path(), &["start"]);
+    assert_err_contains(&started, "failed to read file");
+    assert_err_contains(&started, "direclaw setup");
 }
 
 #[test]
@@ -495,7 +515,7 @@ fn workflow_commands_work() {
 
     let run_record_path = temp
         .path()
-        .join(".direclaw/workflows/runs")
+        .join("workspace/alpha/workflows/runs")
         .join(format!("{run_id}.json"));
     let run_record: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&run_record_path).expect("read run record"))
@@ -698,7 +718,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
 
     let invoc = |step: &str| -> serde_json::Value {
         let path = temp.path().join(format!(
-            ".direclaw/workflows/runs/{run_id}/steps/{step}/attempts/1/provider_invocation.json"
+            "workspace/alpha/workflows/runs/{run_id}/steps/{step}/attempts/1/provider_invocation.json"
         ));
         serde_json::from_str(&fs::read_to_string(path).expect("read invocation"))
             .expect("parse invocation")
@@ -941,7 +961,10 @@ fi
         serde_json::Value::String("succeeded".to_string())
     );
 
-    let run_root = temp.path().join(".direclaw/workflows/runs").join(&run_id);
+    let run_root = temp
+        .path()
+        .join("workspace/alpha/workflows/runs")
+        .join(&run_id);
     let plan_attempt_1: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(run_root.join("steps/plan/attempts/1/result.json"))
             .expect("plan attempt 1"),
@@ -1149,7 +1172,7 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
     let first_run_record: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(
             temp.path()
-                .join(".direclaw/workflows/runs")
+                .join("workspace/alpha/workflows/runs")
                 .join(format!("{first_new_run_id}.json")),
         )
         .expect("read first run record"),

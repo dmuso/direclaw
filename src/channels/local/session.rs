@@ -283,7 +283,7 @@ channels: {{}}
             create_local_chat_session(&state_root, &settings, "local-default").expect("session");
         assert_eq!(
             session.queue_paths.incoming,
-            PathBuf::from(&orchestrator_workspace).join(".direclaw/queue/incoming")
+            PathBuf::from(&orchestrator_workspace).join("queue/incoming")
         );
     }
 }

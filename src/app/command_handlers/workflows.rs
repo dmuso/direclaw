@@ -1,6 +1,5 @@
 use crate::app::command_support::{
-    ensure_runtime_root, load_orchestrator_or_err, load_settings, now_nanos, now_secs,
-    save_orchestrator_config,
+    load_orchestrator_or_err, load_settings, now_nanos, now_secs, save_orchestrator_config,
 };
 use crate::config::{
     normalize_workflow_input_key, WorkflowConfig, WorkflowId, WorkflowInputs, WorkflowStepConfig,
@@ -13,6 +12,8 @@ use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_scaffold,
 };
 use serde_json::{Map, Value};
+use std::fs;
+use std::path::Path;
 
 pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
     if args.is_empty() {
@@ -137,8 +138,12 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             }
 
             let input_map = parse_key_value_inputs(&args[3..])?;
-            let paths = ensure_runtime_root()?;
-            let store = WorkflowRunStore::new(&paths.root);
+            let runtime_root = settings
+                .resolve_orchestrator_runtime_root(orchestrator_id)
+                .map_err(|e| e.to_string())?;
+            fs::create_dir_all(&runtime_root)
+                .map_err(|e| format!("failed to create {}: {e}", runtime_root.display()))?;
+            let store = WorkflowRunStore::new(&runtime_root);
             let run_id = format!("run-{}-{}-{}", orchestrator_id, workflow_id, now_nanos());
             store
                 .create_run_with_inputs(run_id.clone(), workflow_id.clone(), input_map, now_secs())
@@ -154,8 +159,8 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             if args.len() != 2 {
                 return Err("usage: workflow status <run_id>".to_string());
             }
-            let paths = ensure_runtime_root()?;
-            let store = WorkflowRunStore::new(&paths.root);
+            let settings = load_settings()?;
+            let store = run_store_for_run_id(&settings, &args[1])?;
             let run = store.load_run(&args[1]).map_err(|e| e.to_string())?;
             let progress = store.load_progress(&args[1]).map_err(|e| e.to_string())?;
             let mut input_keys = run.inputs.keys().cloned().collect::<Vec<_>>();
@@ -173,8 +178,8 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             if args.len() != 2 {
                 return Err("usage: workflow progress <run_id>".to_string());
             }
-            let paths = ensure_runtime_root()?;
-            let store = WorkflowRunStore::new(&paths.root);
+            let settings = load_settings()?;
+            let store = run_store_for_run_id(&settings, &args[1])?;
             let progress = store.load_progress(&args[1]).map_err(|e| e.to_string())?;
             serde_json::to_string_pretty(&progress)
                 .map_err(|e| format!("failed to encode workflow progress: {e}"))
@@ -183,8 +188,8 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             if args.len() != 2 {
                 return Err("usage: workflow cancel <run_id>".to_string());
             }
-            let paths = ensure_runtime_root()?;
-            let store = WorkflowRunStore::new(&paths.root);
+            let settings = load_settings()?;
+            let store = run_store_for_run_id(&settings, &args[1])?;
             let mut run = store.load_run(&args[1]).map_err(|e| e.to_string())?;
             if !run.state.clone().is_terminal() {
                 store
@@ -231,4 +236,26 @@ fn parse_key_value_inputs(args: &[String]) -> Result<Map<String, Value>, String>
     }
 
     Ok(map)
+}
+
+fn run_store_for_run_id(
+    settings: &crate::config::Settings,
+    run_id: &str,
+) -> Result<WorkflowRunStore, String> {
+    for orchestrator_id in settings.orchestrators.keys() {
+        let runtime_root = settings
+            .resolve_orchestrator_runtime_root(orchestrator_id)
+            .map_err(|e| e.to_string())?;
+        if run_record_exists(&runtime_root, run_id) {
+            return Ok(WorkflowRunStore::new(runtime_root));
+        }
+    }
+    Err(format!("unknown workflow run `{run_id}`"))
+}
+
+fn run_record_exists(runtime_root: &Path, run_id: &str) -> bool {
+    runtime_root
+        .join("workflows/runs")
+        .join(format!("{run_id}.json"))
+        .is_file()
 }

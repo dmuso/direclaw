@@ -76,7 +76,20 @@ pub fn save_preferences(paths: &StatePaths, prefs: &RuntimePreferences) -> Resul
 
 pub fn load_settings() -> Result<Settings, String> {
     let path = default_global_config_path().map_err(map_config_err)?;
-    let settings = Settings::from_path(&path).map_err(map_config_err)?;
+    let settings = Settings::from_path(&path).map_err(|err| match err {
+        ConfigError::Read {
+            ref source,
+            path: read_path,
+        } if source.kind() == std::io::ErrorKind::NotFound => format!(
+            "{}\nremediation: run `direclaw setup` to create {}",
+            ConfigError::Read {
+                path: read_path.clone(),
+                source: std::io::Error::new(source.kind(), source.to_string()),
+            },
+            read_path
+        ),
+        other => map_config_err(other),
+    })?;
     settings
         .validate(ValidationOptions {
             require_shared_paths_exist: false,

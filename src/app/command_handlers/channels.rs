@@ -15,7 +15,7 @@ pub fn cmd_send(args: &[String]) -> Result<String, String> {
         .ok_or_else(|| format!("unknown channel profile `{profile_id}`"))?;
     let message = args[1..].join(" ");
 
-    let paths = ensure_runtime_root()?;
+    let _paths = ensure_runtime_root()?;
     let ts = now_secs();
     let msg_id = format!("msg-{}", now_nanos());
     let incoming = IncomingMessage {
@@ -32,10 +32,13 @@ pub fn cmd_send(args: &[String]) -> Result<String, String> {
         workflow_step_id: None,
     };
 
-    let queue_path = paths
-        .root
-        .join("queue/incoming")
-        .join(format!("{}.json", incoming.message_id));
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root(&profile_id)
+        .map_err(|e| e.to_string())?;
+    let queue_dir = runtime_root.join("queue/incoming");
+    fs::create_dir_all(&queue_dir)
+        .map_err(|e| format!("failed to create {}: {e}", queue_dir.display()))?;
+    let queue_path = queue_dir.join(format!("{}.json", incoming.message_id));
     let body = serde_json::to_vec_pretty(&incoming)
         .map_err(|e| format!("failed to encode queue message: {e}"))?;
     fs::write(&queue_path, body)

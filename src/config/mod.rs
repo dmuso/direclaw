@@ -108,7 +108,7 @@ channels: {}
         let resolved = settings
             .resolve_orchestrator_runtime_root("alpha")
             .expect("resolve runtime root");
-        assert_eq!(resolved, PathBuf::from("/tmp/custom-alpha/.direclaw"));
+        assert_eq!(resolved, PathBuf::from("/tmp/custom-alpha"));
     }
 
     #[test]
@@ -134,7 +134,7 @@ channels: {}
         let resolved = settings
             .resolve_channel_profile_runtime_root("local-default")
             .expect("resolve runtime root");
-        assert_eq!(resolved, PathBuf::from("/tmp/custom-alpha/.direclaw"));
+        assert_eq!(resolved, PathBuf::from("/tmp/custom-alpha"));
     }
 
     #[test]

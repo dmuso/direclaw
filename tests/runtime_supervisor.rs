@@ -527,7 +527,7 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
         "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"status\\\":\\\"complete\\\",\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
     );
 
-    let runtime_root = home.join("orch/.direclaw");
+    let runtime_root = home.join("orch");
     let processing_dir = runtime_root.join("queue/processing");
     fs::create_dir_all(runtime_root.join("queue/incoming")).expect("incoming dir");
     fs::create_dir_all(&processing_dir).expect("processing dir");

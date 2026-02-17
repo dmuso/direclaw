@@ -14,24 +14,11 @@ impl StatePaths {
 
     pub fn required_directories(&self) -> Vec<PathBuf> {
         vec![
-            self.root.join("queue/incoming"),
-            self.root.join("queue/processing"),
-            self.root.join("queue/outgoing"),
             self.root.join("files"),
             self.root.join("logs"),
-            self.root.join("orchestrator/messages"),
-            self.root.join("orchestrator/select/incoming"),
-            self.root.join("orchestrator/select/processing"),
-            self.root.join("orchestrator/select/results"),
-            self.root.join("orchestrator/select/logs"),
-            self.root.join("orchestrator/diagnostics/incoming"),
-            self.root.join("orchestrator/diagnostics/processing"),
-            self.root.join("orchestrator/diagnostics/context"),
-            self.root.join("orchestrator/diagnostics/results"),
-            self.root.join("orchestrator/diagnostics/logs"),
-            self.root.join("workflows/runs"),
             self.root.join("channels"),
             self.root.join("daemon"),
+            self.root.join("runtime"),
         ]
     }
 
@@ -57,6 +44,10 @@ impl StatePaths {
 
     pub fn runtime_log_path(&self) -> PathBuf {
         self.root.join("logs/runtime.log")
+    }
+
+    pub fn orchestrator_log_path(&self) -> PathBuf {
+        self.root.join("logs/orchestrator.log")
     }
 }
 

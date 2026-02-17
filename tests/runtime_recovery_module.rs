@@ -11,6 +11,8 @@ fn runtime_recovery_module_requeues_processing_entries_to_incoming() {
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
 
     let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
     fs::write(queue.processing.join("task.json"), b"{}").expect("write processing file");
 
     let recovered = recover_processing_queue_entries(&state_root).expect("recover entries");

@@ -37,10 +37,11 @@ channels: {{}}
     );
 
     let state_root = home.join(".direclaw");
-    assert!(state_root.join("queue/incoming").is_dir());
-    assert!(state_root.join("queue/processing").is_dir());
-    assert!(state_root.join("queue/outgoing").is_dir());
-    assert!(state_root.join("workflows/runs").is_dir());
+    assert!(state_root.join("logs").is_dir());
+    assert!(state_root.join("runtime/preferences.yaml").is_file());
+    assert!(!state_root.join("queue").exists());
+    assert!(!state_root.join("workflows/runs").exists());
+    assert!(!state_root.join("orchestrator").exists());
 }
 
 #[test]

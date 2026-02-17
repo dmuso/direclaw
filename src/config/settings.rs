@@ -288,9 +288,7 @@ impl Settings {
         &self,
         orchestrator_id: &str,
     ) -> Result<PathBuf, ConfigError> {
-        Ok(self
-            .resolve_private_workspace(orchestrator_id)?
-            .join(".direclaw"))
+        self.resolve_private_workspace(orchestrator_id)
     }
 
     pub fn resolve_channel_profile_runtime_root(
