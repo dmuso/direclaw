@@ -38,6 +38,8 @@ Source baseline: `docs/SPEC.md`.
     `docs/build/spec/11-heartbeat-service.md`
 12. Reliability, Compatibility, and Testing
     `docs/build/spec/12-reliability-compat-testing.md`
+13. Memory Subsystem
+    `docs/build/spec/14-memory.md`
 
 ## Working Decision Docs
 
