@@ -97,6 +97,24 @@ fn selector_start_inputs(
             Value::String(source_message_id.to_string()),
         );
     }
+    if let Some(memory_bulletin) = request.memory_bulletin.as_ref() {
+        inputs.insert(
+            "memory_bulletin".to_string(),
+            Value::String(memory_bulletin.clone()),
+        );
+    }
+    if !request.memory_bulletin_citations.is_empty() {
+        inputs.insert(
+            "memory_bulletin_citations".to_string(),
+            Value::Array(
+                request
+                    .memory_bulletin_citations
+                    .iter()
+                    .map(|value| Value::String(value.clone()))
+                    .collect(),
+            ),
+        );
+    }
     inputs
 }
 

@@ -1,4 +1,8 @@
 use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
+use crate::memory::{
+    generate_bulletin_for_message, HybridRecallRequest, MemoryBulletinOptions, MemoryPaths,
+    MemoryRecallOptions, MemoryRepository,
+};
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
@@ -132,6 +136,8 @@ where
                 message_id: inbound.message_id.clone(),
                 conversation_id: inbound.conversation_id.clone(),
                 user_message: inbound.message.clone(),
+                memory_bulletin: None,
+                memory_bulletin_citations: Vec::new(),
                 available_workflows: Vec::new(),
                 default_workflow: String::new(),
                 available_functions: functions.available_function_ids(),
@@ -250,6 +256,43 @@ where
         }
     };
 
+    let memory_bulletin = if settings.memory.enabled {
+        let paths = MemoryPaths::from_runtime_root(&runtime_root);
+        let maybe_repo = MemoryRepository::open(&paths.database, &orchestrator_id)
+            .and_then(|repo| repo.ensure_schema().map(|_| repo));
+        match maybe_repo {
+            Ok(repo) => {
+                let recall_options = MemoryRecallOptions {
+                    top_n: settings.memory.retrieval.top_n,
+                    rrf_k: settings.memory.retrieval.rrf_k,
+                    ..MemoryRecallOptions::default()
+                };
+                let bulletin_options = MemoryBulletinOptions {
+                    max_chars: 4_000,
+                    generated_at: now,
+                };
+                generate_bulletin_for_message(
+                    &repo,
+                    &paths,
+                    &inbound.message_id,
+                    &HybridRecallRequest {
+                        requesting_orchestrator_id: orchestrator_id.clone(),
+                        conversation_id: inbound.conversation_id.clone(),
+                        query_text: inbound.message.clone(),
+                        query_embedding: None,
+                    },
+                    &recall_options,
+                    &bulletin_options,
+                    Some(&workspace_context),
+                )
+                .ok()
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     let request = SelectorRequest {
         selector_id: format!("sel-{}", inbound.message_id),
         channel_profile_id: inbound
@@ -259,6 +302,17 @@ where
         message_id: inbound.message_id.clone(),
         conversation_id: inbound.conversation_id.clone(),
         user_message: inbound.message.clone(),
+        memory_bulletin: memory_bulletin.as_ref().map(|value| value.rendered.clone()),
+        memory_bulletin_citations: memory_bulletin
+            .as_ref()
+            .map(|value| {
+                value
+                    .citations
+                    .iter()
+                    .map(|citation| citation.memory_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default(),
         available_workflows: orchestrator
             .workflows
             .iter()

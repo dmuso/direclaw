@@ -200,6 +200,8 @@ pub fn render_step_prompt(
             "workflow.conversation_id" => Some("conversation_id"),
             "workflow.sender_id" => Some("sender_id"),
             "workflow.selector_id" => Some("selector_id"),
+            "workflow.memory_bulletin" => Some("memory_bulletin"),
+            "workflow.memory_bulletin_citations" => Some("memory_bulletin_citations"),
             _ => None,
         };
         if let Some(field) = input_field {

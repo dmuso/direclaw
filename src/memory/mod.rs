@@ -1,3 +1,4 @@
+pub mod bulletin;
 pub mod config;
 pub mod domain;
 pub mod extractor;
@@ -5,7 +6,13 @@ pub mod idempotency;
 pub mod ingest;
 pub mod paths;
 pub mod repository;
+pub mod retrieval;
 
+pub use bulletin::{
+    build_memory_bulletin, bulletin_to_section_map, generate_bulletin_for_message,
+    required_bulletin_section_names, BulletinSection, BulletinSectionName, MemoryBulletin,
+    MemoryBulletinOptions,
+};
 pub use config::{
     MemoryBulletinMode, MemoryConfig, MemoryIngestConfig, MemoryRetrievalConfig, MemoryScopeConfig,
 };
@@ -20,3 +27,9 @@ pub use paths::{
     bootstrap_memory_paths, bootstrap_memory_paths_for_runtime_root, MemoryPathError, MemoryPaths,
 };
 pub use repository::{MemoryRepository, MemoryRepositoryError, MemorySourceRecord, PersistOutcome};
+pub use retrieval::{
+    hybrid_recall, query_full_text, query_vector, FullTextCandidate, HybridRecallMemory,
+    HybridRecallRequest, HybridRecallResult, HybridRecallResultMode, MemoryCitation,
+    MemoryProvenanceHandle, MemoryRecallError, MemoryRecallOptions, VectorCandidate,
+    VectorQueryOutcome,
+};

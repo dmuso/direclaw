@@ -119,6 +119,8 @@ fn sample_selector_request() -> SelectorRequest {
         message_id: "message-1".to_string(),
         conversation_id: Some("thread-1".to_string()),
         user_message: "please fix this bug".to_string(),
+        memory_bulletin: None,
+        memory_bulletin_citations: Vec::new(),
         available_workflows: vec!["engineering_default".to_string(), "fix_issue".to_string()],
         default_workflow: "engineering_default".to_string(),
         available_functions: vec![
@@ -1112,6 +1114,8 @@ fn command_invoke_validation_enforces_schema_and_allowlist() {
         message_id: "message-1".to_string(),
         conversation_id: Some("thread-1".to_string()),
         user_message: "cancel".to_string(),
+        memory_bulletin: None,
+        memory_bulletin_citations: Vec::new(),
         available_workflows: vec!["engineering_default".to_string()],
         default_workflow: "engineering_default".to_string(),
         available_functions: vec!["workflow.cancel".to_string()],

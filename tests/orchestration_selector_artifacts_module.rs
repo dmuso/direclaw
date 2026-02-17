@@ -10,6 +10,8 @@ fn sample_request() -> SelectorRequest {
         message_id: "m1".to_string(),
         conversation_id: Some("c1".to_string()),
         user_message: "status".to_string(),
+        memory_bulletin: None,
+        memory_bulletin_citations: Vec::new(),
         available_workflows: vec!["default".to_string()],
         default_workflow: "default".to_string(),
         available_functions: vec!["workflow.status".to_string()],

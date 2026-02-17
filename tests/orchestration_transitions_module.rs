@@ -39,6 +39,8 @@ fn transitions_module_routes_status_without_active_run() {
         message_id: "m-1".to_string(),
         conversation_id: Some("thread-1".to_string()),
         user_message: "status".to_string(),
+        memory_bulletin: None,
+        memory_bulletin_citations: Vec::new(),
         available_workflows: Vec::new(),
         default_workflow: "default".to_string(),
         available_functions: Vec::new(),

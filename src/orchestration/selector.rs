@@ -199,6 +199,10 @@ pub struct SelectorRequest {
     #[serde(default)]
     pub conversation_id: Option<String>,
     pub user_message: String,
+    #[serde(default)]
+    pub memory_bulletin: Option<String>,
+    #[serde(default)]
+    pub memory_bulletin_citations: Vec<String>,
     pub available_workflows: Vec<String>,
     pub default_workflow: String,
     #[serde(default)]

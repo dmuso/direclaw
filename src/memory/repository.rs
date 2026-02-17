@@ -331,6 +331,40 @@ impl MemoryRepository {
         Ok(count as u64)
     }
 
+    pub fn orchestrator_id(&self) -> &str {
+        &self.orchestrator_id
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    pub fn upsert_embedding(
+        &self,
+        memory_id: &str,
+        embedding: &[f32],
+        updated_at: i64,
+    ) -> Result<(), MemoryRepositoryError> {
+        let connection = self.connect()?;
+        let payload =
+            serde_json::to_vec(embedding).map_err(|source| MemoryRepositoryError::Sql {
+                source: rusqlite::Error::ToSqlConversionFailure(Box::new(source)),
+            })?;
+        connection
+            .execute(
+                "
+                INSERT INTO memory_embeddings (orchestrator_id, memory_id, embedding, updated_at)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(orchestrator_id, memory_id) DO UPDATE SET
+                    embedding=excluded.embedding,
+                    updated_at=excluded.updated_at
+                ",
+                params![self.orchestrator_id, memory_id, payload, updated_at],
+            )
+            .map_err(|source| MemoryRepositoryError::Sql { source })?;
+        Ok(())
+    }
+
     pub fn list_sources(&self) -> Result<Vec<MemorySourceRecord>, MemoryRepositoryError> {
         let connection = self.connect()?;
         let mut statement = connection
