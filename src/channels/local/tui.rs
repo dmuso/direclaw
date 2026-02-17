@@ -402,28 +402,7 @@ fn draw_chat_ui(
             );
             frame.render_widget(header, sections[0]);
 
-            let transcript = state
-                .transcript
-                .iter()
-                .map(|line| {
-                    if line.speaker == "assistant" {
-                        Line::styled(
-                            format!("{}> {}", line.speaker, line.text),
-                            Style::default().fg(Color::Green),
-                        )
-                    } else if line.speaker == "you" {
-                        Line::styled(
-                            format!("{}> {}", line.speaker, line.text),
-                            Style::default().fg(Color::Yellow),
-                        )
-                    } else {
-                        Line::styled(
-                            format!("{}> {}", line.speaker, line.text),
-                            Style::default().fg(Color::Gray),
-                        )
-                    }
-                })
-                .collect::<Vec<_>>();
+            let transcript = render_transcript_lines(&state.transcript);
             let transcript_widget = Paragraph::new(transcript)
                 .block(Block::default().title("Transcript").borders(Borders::ALL))
                 .wrap(Wrap { trim: false });
@@ -453,6 +432,35 @@ fn draw_chat_ui(
     Ok(())
 }
 
+fn render_transcript_lines(transcript: &[ChatLine]) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    for line in transcript {
+        let prefix = format!("{}> ", line.speaker);
+        let continuation_prefix = " ".repeat(prefix.chars().count());
+        let style = speaker_style(line.speaker);
+        for (idx, segment) in line.text.split('\n').enumerate() {
+            let body = segment.trim_end_matches('\r');
+            let text = if idx == 0 {
+                format!("{prefix}{body}")
+            } else {
+                format!("{continuation_prefix}{body}")
+            };
+            rendered.push(Line::styled(text, style));
+        }
+    }
+    rendered
+}
+
+fn speaker_style(speaker: &str) -> Style {
+    if speaker == "assistant" {
+        Style::default().fg(Color::Green)
+    } else if speaker == "you" {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Gray)
+    }
+}
+
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>, String> {
     enable_raw_mode().map_err(|e| format!("failed to enable raw mode: {e}"))?;
     let mut stdout = io::stdout();
@@ -475,8 +483,8 @@ fn teardown_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::{
-        check_processing_result, render_progress_line, ProcessingWorker, TuiState,
-        CURSOR_BLINK_INTERVAL, PROCESSING_FRAMES,
+        check_processing_result, render_progress_line, render_transcript_lines, ChatLine,
+        ProcessingWorker, TuiState, CURSOR_BLINK_INTERVAL, PROCESSING_FRAMES,
     };
     use crate::channels::local::session::LocalChatSession;
     use crate::config::{ChannelKind, ChannelProfile, Settings};
@@ -590,5 +598,23 @@ mod tests {
         assert!(last
             .text
             .contains("chat processing failed: step `answer` output contract validation failed"));
+    }
+
+    #[test]
+    fn transcript_render_preserves_message_newlines() {
+        let transcript = vec![ChatLine {
+            speaker: "assistant",
+            text: "First line\nSecond line".to_string(),
+        }];
+
+        let lines = render_transcript_lines(&transcript);
+        let rendered = lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0], "assistant> First line");
+        assert_eq!(rendered[1], "           Second line");
     }
 }
