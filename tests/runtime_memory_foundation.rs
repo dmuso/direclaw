@@ -76,7 +76,7 @@ fn supervisor_registers_memory_worker_only_when_memory_enabled() {
 
             let log_body = fs::read_to_string(&log_file).expect("read memory log");
             assert!(
-                log_body.contains("memory worker bootstrap complete"),
+                log_body.contains("\"event\":\"memory.worker.bootstrap_complete\""),
                 "expected bootstrap line in memory log"
             );
         }
@@ -117,5 +117,65 @@ fn supervisor_surfaces_memory_worker_startup_failures_in_worker_health() {
             .is_some_and(|message| message.contains("failed to create memory path")),
         "expected path-aware memory worker error, got {:?}",
         worker.last_error
+    );
+}
+
+#[test]
+fn supervisor_reports_corrupt_memory_store_as_degraded_while_runtime_continues() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join("state");
+    let workspace = dir.path().join("workspaces");
+    let orch_root = workspace.join("alpha");
+    let memory_root = orch_root.join("memory");
+    fs::create_dir_all(&memory_root).expect("memory root");
+    fs::write(memory_root.join("memory.db"), b"not-a-sqlite-db").expect("corrupt db");
+
+    let settings = serde_yaml::from_str(&settings_yaml(&workspace, true)).expect("settings");
+    let stop_path = StatePaths::new(&state_root).stop_signal_path();
+
+    let handle = thread::spawn({
+        let state_root = state_root.clone();
+        move || run_supervisor(&state_root, settings)
+    });
+
+    thread::sleep(Duration::from_millis(800));
+    let running_state = load_supervisor_state(&StatePaths::new(&state_root)).expect("load state");
+    let memory = running_state
+        .workers
+        .get("memory_worker")
+        .expect("memory worker health");
+    assert_eq!(memory.state, WorkerState::Error);
+    assert!(
+        memory
+            .last_error
+            .as_ref()
+            .is_some_and(|message| message.contains("memory_db_corrupt")),
+        "expected corruption marker in error, got {:?}",
+        memory.last_error
+    );
+    assert_eq!(
+        running_state
+            .workers
+            .get("orchestrator_dispatcher")
+            .map(|worker| worker.state),
+        Some(WorkerState::Running),
+        "orchestrator dispatcher should continue while memory worker is degraded"
+    );
+
+    fs::write(&stop_path, "stop").expect("stop");
+    handle.join().expect("join").expect("supervisor");
+
+    let log_file = memory_root.join("logs/memory.log");
+    let log_body = fs::read_to_string(log_file).expect("read memory log");
+    assert!(
+        log_body.lines().any(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .is_some_and(|event| {
+                    event["event"] == "memory.worker.degraded"
+                        && event["reason_code"] == "memory_db_corrupt"
+                })
+        }),
+        "expected structured degraded event in memory log"
     );
 }

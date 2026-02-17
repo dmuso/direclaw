@@ -7,7 +7,7 @@ Deliver hybrid recall (vector + full-text + RRF), ranking controls, and determin
 
 ### P16-T01 Implement full-text and vector retrieval adapters
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Retrieval can independently query full-text and vector indexes.
   - Missing embeddings degrade gracefully to full-text-only behavior.
@@ -18,7 +18,7 @@ Deliver hybrid recall (vector + full-text + RRF), ranking controls, and determin
 
 ### P16-T02 Implement Reciprocal Rank Fusion merge and scoring modifiers
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - RRF merge uses configured parameters and is deterministic.
   - Importance, recency, confidence, and contradiction modifiers are applied consistently.
@@ -29,7 +29,7 @@ Deliver hybrid recall (vector + full-text + RRF), ranking controls, and determin
 
 ### P16-T03 Enforce memory recall scope and access controls
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Recall allows cross-conversation only within same orchestrator.
   - Cross-orchestrator recall is denied and logged.
@@ -40,7 +40,7 @@ Deliver hybrid recall (vector + full-text + RRF), ranking controls, and determin
 
 ### P16-T04 Implement per-message memory bulletin generation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Bulletin is generated for each message and includes required named sections.
   - Bulletin includes contributing `memoryId` citations.

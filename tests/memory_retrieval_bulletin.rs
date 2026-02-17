@@ -16,6 +16,15 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().expect("canonicalize")
 }
 
+fn parse_memory_log_events(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .expect("read memory log")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("memory log line must be json"))
+        .collect()
+}
+
 fn approx_eq(left: f64, right: f64) {
     let delta = (left - right).abs();
     assert!(
@@ -349,8 +358,12 @@ fn recall_scope_denies_cross_orchestrator_and_logs() {
         err,
         MemoryRecallError::CrossOrchestratorDenied { .. }
     ));
-    let log = fs::read_to_string(&paths.log_file).expect("log file");
-    assert!(log.contains("cross-orchestrator recall denied"));
+    let events = parse_memory_log_events(&paths.log_file);
+    assert!(events.iter().any(|event| {
+        event["event"] == "memory.recall.scope_denied"
+            && event["requested_orchestrator_id"] == "beta"
+            && event["available_orchestrator_id"] == "alpha"
+    }));
 }
 
 #[test]
@@ -421,9 +434,11 @@ fn recall_enforces_source_path_workspace_access() {
         err,
         MemoryRecallError::SourcePathAccessDenied { .. }
     ));
-    let log = fs::read_to_string(&paths.log_file).expect("log file");
-    assert!(log.contains("source-path recall denied"));
-    assert!(log.contains(&canonical(&denied_src).display().to_string()));
+    let denied_path = canonical(&denied_src).display().to_string();
+    let events = parse_memory_log_events(&paths.log_file);
+    assert!(events.iter().any(|event| {
+        event["event"] == "memory.recall.source_path_denied" && event["path"] == denied_path
+    }));
 }
 
 #[test]
@@ -630,8 +645,44 @@ fn bulletin_generation_falls_back_to_previous_snapshot_or_empty_payload() {
     .expect("empty fallback");
 
     assert!(empty.rendered.is_empty());
-    let log = fs::read_to_string(&paths.log_file).expect("memory log");
-    assert!(log.contains("memory bulletin generation failed"));
+    let events = parse_memory_log_events(&paths.log_file);
+    assert!(events.iter().any(|event| {
+        event["event"] == "memory.bulletin.fallback"
+            && event["fallback"] == "previous_snapshot"
+            && event["message_id"] == "msg-next"
+    }));
+    assert!(events.iter().any(|event| {
+        event["event"] == "memory.bulletin.fallback"
+            && event["fallback"] == "empty_bulletin"
+            && event["message_id"] == "msg-empty"
+    }));
+}
+
+#[test]
+fn recall_scope_denial_logs_structured_fields() {
+    let (_dir, repo, paths) = setup_repo();
+
+    let _ = hybrid_recall(
+        &repo,
+        &HybridRecallRequest {
+            requesting_orchestrator_id: "beta".to_string(),
+            conversation_id: None,
+            query_text: "wizard".to_string(),
+            query_embedding: None,
+        },
+        &MemoryRecallOptions::default(),
+        None,
+        &paths.log_file,
+    )
+    .expect_err("expected scope denial");
+
+    let events = parse_memory_log_events(&paths.log_file);
+    let denial = events
+        .iter()
+        .find(|event| event["event"] == "memory.recall.scope_denied")
+        .expect("missing scope denial event");
+    assert_eq!(denial["requested_orchestrator_id"], "beta");
+    assert_eq!(denial["available_orchestrator_id"], "alpha");
 }
 
 #[test]

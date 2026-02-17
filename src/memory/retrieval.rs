@@ -2,14 +2,14 @@ use super::domain::{
     MemoryCapturedBy, MemoryEdge, MemoryEdgeType, MemoryNode, MemoryNodeType, MemorySource,
     MemorySourceType, MemoryStatus,
 };
+use super::logging::append_memory_event;
 use super::repository::{MemoryRepository, MemoryRepositoryError};
 use crate::orchestration::workspace_access::{enforce_workspace_access, WorkspaceAccessContext};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -328,11 +328,17 @@ pub fn hybrid_recall(
     if request.requesting_orchestrator_id != repo.orchestrator_id() {
         append_memory_log(
             log_file,
-            &format!(
-                "cross-orchestrator recall denied requested={} available={}",
-                request.requesting_orchestrator_id,
-                repo.orchestrator_id()
-            ),
+            "memory.recall.scope_denied",
+            &[
+                (
+                    "requested_orchestrator_id",
+                    Value::String(request.requesting_orchestrator_id.clone()),
+                ),
+                (
+                    "available_orchestrator_id",
+                    Value::String(repo.orchestrator_id().to_string()),
+                ),
+            ],
         )?;
         return Err(MemoryRecallError::CrossOrchestratorDenied {
             requested: request.requesting_orchestrator_id.clone(),
@@ -375,7 +381,8 @@ pub fn hybrid_recall(
                 if enforce_workspace_access(context, std::slice::from_ref(path)).is_err() {
                     append_memory_log(
                         log_file,
-                        &format!("source-path recall denied path={}", path.display()),
+                        "memory.recall.source_path_denied",
+                        &[("path", Value::String(path.display().to_string()))],
                     )?;
                     return Err(MemoryRecallError::SourcePathAccessDenied {
                         path: path.display().to_string(),
@@ -769,22 +776,12 @@ fn cosine_similarity(a: &[f32], a_norm: f32, b: &[f32]) -> f32 {
     dot / (a_norm * b_norm)
 }
 
-pub(crate) fn append_memory_log(path: &Path, line: &str) -> Result<(), MemoryRecallError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| MemoryRecallError::LogWrite {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|source| MemoryRecallError::LogWrite {
-            path: path.display().to_string(),
-            source,
-        })?;
-    writeln!(file, "{line}").map_err(|source| MemoryRecallError::LogWrite {
+pub(crate) fn append_memory_log(
+    path: &Path,
+    event: &str,
+    fields: &[(&str, Value)],
+) -> Result<(), MemoryRecallError> {
+    append_memory_event(path, event, fields).map_err(|source| MemoryRecallError::LogWrite {
         path: path.display().to_string(),
         source,
     })

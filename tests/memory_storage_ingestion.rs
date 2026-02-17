@@ -44,6 +44,15 @@ fn canonical(path: &Path) -> PathBuf {
     path.canonicalize().expect("canonicalize")
 }
 
+fn parse_memory_log_events(path: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(path)
+        .expect("read memory log")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("memory log line must be json"))
+        .collect()
+}
+
 fn sample_source(path: &Path) -> MemorySource {
     MemorySource {
         source_type: MemorySourceType::IngestFile,
@@ -243,6 +252,92 @@ fn ingest_lifecycle_moves_supported_files_to_processed_and_unsupported_to_reject
     assert_eq!(value["error"]["code"], "unsupported_file_type");
     assert!(value["error"]["message"].is_string());
     assert!(value["sourcePath"].is_string());
+}
+
+#[test]
+fn ingest_logs_structured_parseable_outcome_events() {
+    let dir = tempdir().expect("tempdir");
+    let workspace = dir.path().join("workspaces");
+    fs::create_dir_all(workspace.join("alpha")).expect("workspace");
+    let settings: direclaw::config::Settings =
+        serde_yaml::from_str(&settings_yaml(&workspace)).expect("settings");
+
+    let runtime_root = workspace.join("alpha");
+    let paths = MemoryPaths::from_runtime_root(&runtime_root);
+    fs::create_dir_all(&paths.ingest).expect("ingest dir");
+
+    fs::write(paths.ingest.join("ok.md"), "# ok").expect("write md");
+    fs::write(paths.ingest.join("bad.csv"), "a,b").expect("write csv");
+
+    tick_memory_worker(&settings).expect("tick");
+
+    let events = parse_memory_log_events(&paths.log_file);
+    let processed = events
+        .iter()
+        .find(|event| event["event"] == "memory.ingest.processed")
+        .expect("missing processed event");
+    assert_eq!(processed["status"], "processed");
+    assert_eq!(processed["orchestrator_id"], "alpha");
+    assert!(processed["source_path"].as_str().is_some());
+
+    let rejected = events
+        .iter()
+        .find(|event| event["event"] == "memory.ingest.rejected")
+        .expect("missing rejected event");
+    assert_eq!(rejected["status"], "rejected");
+    assert_eq!(rejected["reason_code"], "unsupported_file_type");
+    assert_eq!(rejected["orchestrator_id"], "alpha");
+}
+
+#[test]
+fn replay_after_restart_is_idempotent_and_retains_ingest_order() {
+    let dir = tempdir().expect("tempdir");
+    let workspace = dir.path().join("workspaces");
+    fs::create_dir_all(workspace.join("alpha")).expect("workspace");
+    let settings: direclaw::config::Settings =
+        serde_yaml::from_str(&settings_yaml(&workspace)).expect("settings");
+
+    let runtime_root = workspace.join("alpha");
+    let paths = MemoryPaths::from_runtime_root(&runtime_root);
+    fs::create_dir_all(&paths.ingest).expect("ingest dir");
+
+    fs::write(paths.ingest.join("a-first.txt"), "alpha").expect("write first");
+    fs::write(paths.ingest.join("b-second.txt"), "beta").expect("write second");
+    tick_memory_worker(&settings).expect("first tick");
+
+    fs::write(paths.ingest.join("a-first.txt"), "alpha").expect("rewrite first");
+    fs::write(paths.ingest.join("b-second.txt"), "beta").expect("rewrite second");
+    tick_memory_worker(&settings).expect("second tick");
+
+    let repo = MemoryRepository::open(&paths.database, "alpha").expect("open repo");
+    assert_eq!(repo.count_memories().expect("count memories"), 2);
+    assert_eq!(repo.list_sources().expect("list sources").len(), 2);
+
+    let events = parse_memory_log_events(&paths.log_file);
+    let first_cycle = events
+        .iter()
+        .filter(|event| event["event"] == "memory.ingest.processed")
+        .take(2)
+        .collect::<Vec<_>>();
+    assert_eq!(first_cycle.len(), 2);
+    assert!(
+        first_cycle[0]["source_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("/a-first.txt")),
+        "expected first ingest artifact to process first"
+    );
+    assert!(
+        first_cycle[1]["source_path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("/b-second.txt")),
+        "expected second ingest artifact to process second"
+    );
+
+    let duplicate_count = events
+        .iter()
+        .filter(|event| event["event"] == "memory.ingest.duplicate")
+        .count();
+    assert_eq!(duplicate_count, 2);
 }
 
 #[test]

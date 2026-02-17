@@ -119,6 +119,84 @@ channels: {{}}
     .expect("settings")
 }
 
+fn write_memory_enabled_settings_with_two_profiles(
+    temp_root: &Path,
+    orchestrator_workspace: &Path,
+) -> Settings {
+    fs::create_dir_all(orchestrator_workspace).expect("orchestrator workspace");
+    fs::write(
+        orchestrator_workspace.join("orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    description: memory-aware triage workflow
+    tags: [triage, memory]
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: "memory_context={{inputs.memory_bulletin}}"
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
+"#,
+    )
+    .expect("write orchestrator");
+
+    serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {orchestrator_workspace}
+    shared_access: []
+channel_profiles:
+  eng:
+    channel: slack
+    orchestrator_id: eng_orchestrator
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+  support:
+    channel: slack
+    orchestrator_id: eng_orchestrator
+    slack_app_user_id: U456
+    require_mention_in_channels: true
+monitoring: {{}}
+channels: {{}}
+memory:
+  enabled: true
+  bulletin_mode: every_message
+  retrieval:
+    top_n: 20
+    rrf_k: 60
+  ingest:
+    enabled: true
+    max_file_size_mb: 25
+  scope:
+    cross_orchestrator: false
+"#,
+        workspace = temp_root.display(),
+        orchestrator_workspace = orchestrator_workspace.display()
+    ))
+    .expect("settings")
+}
+
 fn binaries(anthropic: impl Into<String>, openai: impl Into<String>) -> RunnerBinaries {
     RunnerBinaries {
         anthropic: anthropic.into(),
@@ -234,6 +312,83 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     )
     .expect("selector result");
     assert!(selector_result.contains("fallback_to_default_workflow_after_lexical_miss"));
+}
+
+#[test]
+fn memory_enabled_cross_channel_recall_changes_workflow_output() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let claude = dir.path().join("claude-selector-memory");
+    let codex = dir.path().join("codex-worker-memory");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-memory\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(
+        &codex,
+        r#"#!/bin/sh
+set -eu
+args="$*"
+if printf "%s" "$args" | grep -q "transcript-msg-memory-a"; then
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"memory_hit\",\"artifact\":\"memory_hit\"}[/workflow_result]"}}'
+else
+  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"memory_miss\",\"artifact\":\"memory_miss\"}[/workflow_result]"}}'
+fi
+"#,
+    );
+
+    let settings = write_memory_enabled_settings_with_two_profiles(
+        dir.path(),
+        &dir.path().join("orch-memory"),
+    );
+    let eng_queue = queue_for_profile(&settings, "eng");
+    let support_queue = queue_for_profile(&settings, "support");
+
+    let mut first = sample_message("msg-memory-a", "thread-eng");
+    first.message = "projectcycloneanchor".to_string();
+    write_incoming(&eng_queue, &first);
+    let processed_first = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        4,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain first");
+    assert_eq!(processed_first, 1);
+
+    let mut second = sample_message("msg-memory-b", "thread-support");
+    second.channel_profile_id = Some("support".to_string());
+    second.message = "projectcycloneanchor".to_string();
+    write_incoming(&support_queue, &second);
+    let processed_second = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        4,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain second");
+    assert_eq!(processed_second, 1);
+
+    let second_run_dir = latest_run_dir(&support_queue);
+    let run_id = second_run_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .expect("run id")
+        .to_string();
+    let prompt_path = second_run_dir.join(format!(
+        "steps/start/attempts/1/provider_prompts/{run_id}-start-1_prompt.md"
+    ));
+    let prompt_text = fs::read_to_string(prompt_path).expect("read step prompt");
+    assert!(
+        prompt_text.contains("projectcycloneanchor"),
+        "expected workflow step prompt to include recalled memory context; prompt={prompt_text}"
+    );
+    assert!(
+        prompt_text.contains("transcript-msg-memory-a"),
+        "expected workflow step prompt to include citation-ready memory id; prompt={prompt_text}"
+    );
 }
 
 #[test]

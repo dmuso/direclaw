@@ -1,11 +1,12 @@
 use super::extractor::{extract_candidates_from_ingest_file, MemoryExtractionError};
 use super::idempotency::compute_ingest_idempotency_key;
+use super::logging::append_memory_event;
 use super::repository::{MemoryRepository, MemorySourceRecord, PersistOutcome};
 use super::{MemoryCapturedBy, MemoryPaths, MemorySourceType};
 use serde::Serialize;
+use serde_json::Value;
 use std::ffi::OsStr;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
@@ -121,12 +122,22 @@ fn process_one_file(
             "file_too_large",
             &format!("file size exceeds configured {} MB", max_file_size_mb),
         )?;
-        append_memory_log(
+        append_ingest_event(
             &paths.log_file,
-            &format!(
-                "ingest rejected source={} reason=file_too_large",
-                ingest_path.display()
-            ),
+            "memory.ingest.rejected",
+            &[
+                ("status", Value::String("rejected".to_string())),
+                (
+                    "orchestrator_id",
+                    Value::String(orchestrator_id.to_string()),
+                ),
+                (
+                    "source_path",
+                    Value::String(ingest_path.display().to_string()),
+                ),
+                ("idempotency_key", Value::String(idempotency_key.clone())),
+                ("reason_code", Value::String("file_too_large".to_string())),
+            ],
         )?;
         return Ok(());
     }
@@ -144,12 +155,25 @@ fn process_one_file(
             "unsupported_file_type",
             &format!("unsupported ingest extension `{}`", extension),
         )?;
-        append_memory_log(
+        append_ingest_event(
             &paths.log_file,
-            &format!(
-                "ingest rejected source={} reason=unsupported_file_type",
-                ingest_path.display()
-            ),
+            "memory.ingest.rejected",
+            &[
+                ("status", Value::String("rejected".to_string())),
+                (
+                    "orchestrator_id",
+                    Value::String(orchestrator_id.to_string()),
+                ),
+                (
+                    "source_path",
+                    Value::String(ingest_path.display().to_string()),
+                ),
+                ("idempotency_key", Value::String(idempotency_key.clone())),
+                (
+                    "reason_code",
+                    Value::String("unsupported_file_type".to_string()),
+                ),
+            ],
         )?;
         return Ok(());
     }
@@ -168,13 +192,21 @@ fn process_one_file(
                 edges_written: 0,
             },
         )?;
-        append_memory_log(
+        append_ingest_event(
             &paths.log_file,
-            &format!(
-                "ingest duplicate source={} key={}",
-                processed_path.display(),
-                idempotency_key
-            ),
+            "memory.ingest.duplicate",
+            &[
+                ("status", Value::String("duplicate".to_string())),
+                (
+                    "orchestrator_id",
+                    Value::String(orchestrator_id.to_string()),
+                ),
+                (
+                    "source_path",
+                    Value::String(processed_path.display().to_string()),
+                ),
+                ("idempotency_key", Value::String(idempotency_key.clone())),
+            ],
         )?;
         return Ok(());
     }
@@ -193,13 +225,25 @@ fn process_one_file(
             Ok(value) => value,
             Err(err) => {
                 move_to_rejected_extraction(paths, &processed_path, Some(&idempotency_key), &err)?;
-                append_memory_log(
+                append_ingest_event(
                     &paths.log_file,
-                    &format!(
-                        "ingest rejected source={} reason={}",
-                        processed_path.display(),
-                        err
-                    ),
+                    "memory.ingest.rejected",
+                    &[
+                        ("status", Value::String("rejected".to_string())),
+                        (
+                            "orchestrator_id",
+                            Value::String(orchestrator_id.to_string()),
+                        ),
+                        (
+                            "source_path",
+                            Value::String(processed_path.display().to_string()),
+                        ),
+                        ("idempotency_key", Value::String(idempotency_key.clone())),
+                        (
+                            "reason_code",
+                            Value::String(rejection_code(&err).to_string()),
+                        ),
+                    ],
                 )?;
                 return Ok(());
             }
@@ -227,14 +271,23 @@ fn process_one_file(
                     edges_written: extracted.edges.len(),
                 },
             )?;
-            append_memory_log(
+            append_ingest_event(
                 &paths.log_file,
-                &format!(
-                    "ingest processed source={} memories={} edges={}",
-                    processed_path.display(),
-                    extracted.nodes.len(),
-                    extracted.edges.len()
-                ),
+                "memory.ingest.processed",
+                &[
+                    ("status", Value::String("processed".to_string())),
+                    (
+                        "orchestrator_id",
+                        Value::String(orchestrator_id.to_string()),
+                    ),
+                    (
+                        "source_path",
+                        Value::String(processed_path.display().to_string()),
+                    ),
+                    ("idempotency_key", Value::String(idempotency_key.clone())),
+                    ("memories_written", Value::from(extracted.nodes.len())),
+                    ("edges_written", Value::from(extracted.edges.len())),
+                ],
             )?;
             Ok(())
         }
@@ -248,13 +301,21 @@ fn process_one_file(
                     edges_written: 0,
                 },
             )?;
-            append_memory_log(
+            append_ingest_event(
                 &paths.log_file,
-                &format!(
-                    "ingest duplicate source={} key={}",
-                    processed_path.display(),
-                    idempotency_key
-                ),
+                "memory.ingest.duplicate",
+                &[
+                    ("status", Value::String("duplicate".to_string())),
+                    (
+                        "orchestrator_id",
+                        Value::String(orchestrator_id.to_string()),
+                    ),
+                    (
+                        "source_path",
+                        Value::String(processed_path.display().to_string()),
+                    ),
+                    ("idempotency_key", Value::String(idempotency_key.clone())),
+                ],
             )?;
             Ok(())
         }
@@ -266,13 +327,22 @@ fn process_one_file(
                 "repository_error",
                 &err.to_string(),
             )?;
-            append_memory_log(
+            append_ingest_event(
                 &paths.log_file,
-                &format!(
-                    "ingest rejected source={} repository_error={}",
-                    processed_path.display(),
-                    err
-                ),
+                "memory.ingest.rejected",
+                &[
+                    ("status", Value::String("rejected".to_string())),
+                    (
+                        "orchestrator_id",
+                        Value::String(orchestrator_id.to_string()),
+                    ),
+                    (
+                        "source_path",
+                        Value::String(processed_path.display().to_string()),
+                    ),
+                    ("idempotency_key", Value::String(idempotency_key.clone())),
+                    ("reason_code", Value::String("repository_error".to_string())),
+                ],
             )?;
             Ok(())
         }
@@ -435,22 +505,12 @@ fn max_bytes(max_file_size_mb: u64) -> usize {
     usize::try_from(bytes).unwrap_or(usize::MAX)
 }
 
-fn append_memory_log(path: &Path, line: &str) -> Result<(), MemoryIngestError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| MemoryIngestError::WriteManifest {
-            path: parent.display().to_string(),
-            source,
-        })?;
-    }
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|source| MemoryIngestError::WriteManifest {
-            path: path.display().to_string(),
-            source,
-        })?;
-    writeln!(file, "{line}").map_err(|source| MemoryIngestError::WriteManifest {
+fn append_ingest_event(
+    path: &Path,
+    event: &str,
+    fields: &[(&str, Value)],
+) -> Result<(), MemoryIngestError> {
+    append_memory_event(path, event, fields).map_err(|source| MemoryIngestError::WriteManifest {
         path: path.display().to_string(),
         source,
     })

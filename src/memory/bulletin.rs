@@ -6,6 +6,7 @@ use super::retrieval::{
 use super::MemoryRepository;
 use crate::orchestration::workspace_access::WorkspaceAccessContext;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -168,10 +169,22 @@ pub fn generate_bulletin_for_message(
         Err(err) => {
             append_memory_log(
                 &paths.log_file,
-                &format!("memory bulletin generation failed for message `{message_id}`: {err}"),
+                "memory.bulletin.generation_failed",
+                &[
+                    ("message_id", Value::String(message_id.to_string())),
+                    ("error", Value::String(err.to_string())),
+                ],
             )?;
 
             if let Some(previous) = load_latest_bulletin(&paths.bulletins, Some(&target))? {
+                append_memory_log(
+                    &paths.log_file,
+                    "memory.bulletin.fallback",
+                    &[
+                        ("message_id", Value::String(message_id.to_string())),
+                        ("fallback", Value::String("previous_snapshot".to_string())),
+                    ],
+                )?;
                 persist_bulletin(&target, &previous)?;
                 return Ok(previous);
             }
@@ -188,6 +201,14 @@ pub fn generate_bulletin_for_message(
                     .collect(),
                 generated_at: bulletin_options.generated_at,
             };
+            append_memory_log(
+                &paths.log_file,
+                "memory.bulletin.fallback",
+                &[
+                    ("message_id", Value::String(message_id.to_string())),
+                    ("fallback", Value::String("empty_bulletin".to_string())),
+                ],
+            )?;
             persist_bulletin(&target, &empty)?;
             Ok(empty)
         }

@@ -4,6 +4,7 @@ pub mod domain;
 pub mod extractor;
 pub mod idempotency;
 pub mod ingest;
+mod logging;
 pub mod paths;
 pub mod repository;
 pub mod retrieval;
