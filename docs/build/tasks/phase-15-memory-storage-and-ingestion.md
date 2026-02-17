@@ -7,7 +7,7 @@ Implement canonical SQLite-backed persistence, ingestion pipeline lifecycle, and
 
 ### P15-T01 Implement SQLite schema and transactional repository layer
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - `memory.db` is created per orchestrator with required tables/indexes.
   - Node and edge upserts execute transactionally.
@@ -18,7 +18,7 @@ Implement canonical SQLite-backed persistence, ingestion pipeline lifecycle, and
 
 ### P15-T02 Implement memory idempotency and provenance persistence
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Ingestion/persistence uses deterministic idempotency keys for source artifacts.
   - Duplicate source processing does not create duplicate memory records.
@@ -29,7 +29,7 @@ Implement canonical SQLite-backed persistence, ingestion pipeline lifecycle, and
 
 ### P15-T03 Build ingest file discovery and lifecycle transitions
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Worker discovers supported files in `ingest/` and routes outcomes to `processed/` or `rejected/`.
   - Rejected artifacts include machine-readable error manifests.
@@ -40,7 +40,7 @@ Implement canonical SQLite-backed persistence, ingestion pipeline lifecycle, and
 
 ### P15-T04 Implement typed extraction from `.txt`, `.md`, and `.json`
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Extractor emits validated typed memory candidates and optional edges.
   - Extraction failures do not crash the worker and are logged per artifact.

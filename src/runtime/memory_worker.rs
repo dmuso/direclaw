@@ -1,5 +1,5 @@
 use crate::config::Settings;
-use crate::memory::{bootstrap_memory_paths, MemoryPaths};
+use crate::memory::{bootstrap_memory_paths, process_ingest_once, MemoryPaths, MemoryRepository};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -11,6 +11,9 @@ pub fn bootstrap_memory_runtime_paths(settings: &Settings) -> Result<(), String>
             .map_err(|e| e.to_string())?;
         let paths = MemoryPaths::from_runtime_root(&runtime_root);
         bootstrap_memory_paths(&paths).map_err(|e| e.to_string())?;
+        MemoryRepository::open(&paths.database, orchestrator_id)
+            .and_then(|repo| repo.ensure_schema())
+            .map_err(|e| e.to_string())?;
         append_memory_log(&paths.log_file, "memory worker bootstrap complete")?;
     }
     Ok(())
@@ -26,6 +29,12 @@ pub fn tick_memory_worker(settings: &Settings) -> Result<(), String> {
             .resolve_orchestrator_runtime_root(orchestrator_id)
             .map_err(|e| e.to_string())?;
         let paths = MemoryPaths::from_runtime_root(&runtime_root);
+        process_ingest_once(
+            &paths,
+            orchestrator_id,
+            settings.memory.ingest.max_file_size_mb,
+        )
+        .map_err(|e| e.to_string())?;
         append_memory_log(&paths.log_file, "memory worker heartbeat")?;
     }
     Ok(())
