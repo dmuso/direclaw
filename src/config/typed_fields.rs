@@ -93,6 +93,50 @@ pub fn normalize_workflow_input_key(raw: &str) -> Result<String, String> {
     Ok(normalized.to_string())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct WorkflowTag(String);
+
+impl WorkflowTag {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let normalized = normalize_workflow_tag(raw)?;
+        Ok(Self(normalized))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for WorkflowTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkflowTag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        parse_via_string(deserializer, "workflow tag", Self::parse)
+    }
+}
+
+impl std::str::FromStr for WorkflowTag {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+pub fn normalize_workflow_tag(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    validate_identifier_value("workflow tag", &normalized)?;
+    Ok(normalized)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OutputKey {
     pub name: String,
@@ -210,4 +254,21 @@ pub type OutputContractKey = OutputKey;
 
 pub fn parse_output_contract_key(raw: &str) -> Result<OutputContractKey, String> {
     OutputKey::parse(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_workflow_tag, WorkflowTag};
+
+    #[test]
+    fn workflow_tag_normalizes_to_lowercase_identifier() {
+        let tag = WorkflowTag::parse("  Deploy_Pipeline ").expect("tag");
+        assert_eq!(tag.as_str(), "deploy_pipeline");
+    }
+
+    #[test]
+    fn workflow_tag_rejects_invalid_identifier() {
+        let err = normalize_workflow_tag("not valid").expect_err("invalid");
+        assert!(err.contains("workflow tag"));
+    }
 }

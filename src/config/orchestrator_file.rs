@@ -1,6 +1,6 @@
 use super::{
     AgentId, ConfigError, OrchestratorId, OutputKey, PathTemplate, Settings, StepId, WorkflowId,
-    WorkflowInputs,
+    WorkflowInputs, WorkflowTag,
 };
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -184,6 +184,10 @@ impl AgentConfig {
 pub struct WorkflowConfig {
     pub id: String,
     pub version: u32,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<WorkflowTag>,
     #[serde(default)]
     pub inputs: WorkflowInputs,
     #[serde(default)]
@@ -379,6 +383,27 @@ impl OrchestratorConfig {
 
         for workflow in &self.workflows {
             WorkflowId::parse(&workflow.id).map_err(ConfigError::Orchestrator)?;
+            if workflow.description.trim().is_empty() {
+                return Err(ConfigError::Orchestrator(format!(
+                    "workflow `{}` requires non-empty `description`",
+                    workflow.id
+                )));
+            }
+            if workflow.tags.is_empty() {
+                return Err(ConfigError::Orchestrator(format!(
+                    "workflow `{}` requires non-empty `tags`",
+                    workflow.id
+                )));
+            }
+            let mut seen_tags = HashSet::new();
+            for tag in &workflow.tags {
+                if !seen_tags.insert(tag.as_str()) {
+                    return Err(ConfigError::Orchestrator(format!(
+                        "workflow `{}` has duplicate tag `{}`",
+                        workflow.id, tag
+                    )));
+                }
+            }
             for step in &workflow.steps {
                 StepId::parse(&step.id).map_err(ConfigError::Orchestrator)?;
                 AgentId::parse(&step.agent).map_err(ConfigError::Orchestrator)?;

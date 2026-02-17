@@ -29,7 +29,7 @@ pub(crate) use setup_draft::{OrchestrationLimitField, SetupDraft};
 pub use typed_fields::{
     normalize_workflow_input_key, parse_output_contract_key, AgentId, OrchestratorId,
     OutputContractKey, OutputKey, PathTemplate, StepId, WorkflowId, WorkflowInputKey,
-    WorkflowInputs,
+    WorkflowInputs, WorkflowTag,
 };
 pub use validate::{validate_orchestrator_config, validate_settings};
 

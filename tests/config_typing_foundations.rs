@@ -360,6 +360,8 @@ agents:
 workflows:
   - id: deliver
     version: 1
+    description: deliver user request
+    tags: [deliver]
     inputs: []
     steps:
       - id: bad id

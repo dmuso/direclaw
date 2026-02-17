@@ -13,6 +13,8 @@ fn sample_workflow() -> WorkflowConfig {
         r#"
 id: fix_issue
 version: 1
+description: fix issue flow
+tags: [fix, issue]
 steps:
   - id: plan
     type: agent_task
@@ -70,6 +72,8 @@ agents:
 workflows:
   - id: fix_issue
     version: 1
+    description: fix issue flow
+    tags: [fix, issue]
     steps:
       - id: plan
         type: agent_task

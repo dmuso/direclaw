@@ -17,6 +17,8 @@ agents:
 workflows:
   - id: product_default
     version: 1
+    description: Product workflow for direct user-facing product requests
+    tags: [product, default]
     inputs: [user_message]
     steps:
       - id: answer

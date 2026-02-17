@@ -587,6 +587,8 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
     orchestrator.workflows = vec![WorkflowConfig {
         id: "cwd_modes".to_string(),
         version: 1,
+        description: "validate workspace mode routing".to_string(),
+        tags: vec!["workspace".parse().expect("tag")],
         inputs: WorkflowInputs::default(),
         limits: None,
         steps: vec![
@@ -769,6 +771,8 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
     orchestrator.workflows = vec![WorkflowConfig {
         id: "triage_roundtrip".to_string(),
         version: 1,
+        description: "roundtrip typed workflow fields across runtime".to_string(),
+        tags: vec!["roundtrip".parse().expect("tag")],
         inputs: WorkflowInputs::parse_keys(["ticket", "priority"]).expect("valid workflow inputs"),
         limits: Some(WorkflowLimitsConfig {
             max_total_iterations: Some(7),
@@ -1070,6 +1074,8 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
     orchestrator.workflows = vec![WorkflowConfig {
         id: "timeout_roundtrip".to_string(),
         version: 1,
+        description: "exercise per-step timeout limits".to_string(),
+        tags: vec!["timeout".parse().expect("tag")],
         inputs: WorkflowInputs::default(),
         limits: None,
         steps: vec![WorkflowStepConfig {

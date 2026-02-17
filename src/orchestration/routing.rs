@@ -2,10 +2,11 @@ use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
+use crate::orchestration::lexical_router::{resolve_lexical_decision, LexicalRoutingConfig};
 use crate::orchestration::run_store::WorkflowRunStore;
 use crate::orchestration::selector::{
-    resolve_orchestrator_id, resolve_selector_with_retries, SelectorAction, SelectorRequest,
-    SelectorResult, SelectorStatus,
+    resolve_orchestrator_id, resolve_selector_with_retries, SelectionResolution, SelectorAction,
+    SelectorRequest, SelectorResult, SelectorStatus,
 };
 use crate::orchestration::selector_artifacts::SelectorArtifactStore;
 use crate::orchestration::transitions::{
@@ -271,9 +272,22 @@ where
     artifact_store.persist_selector_request(&request)?;
     let _ = artifact_store.move_request_to_processing(&request.selector_id)?;
 
-    let selection = resolve_selector_with_retries(&orchestrator, &request, |attempt| {
-        next_selector_attempt(attempt, &request, &orchestrator)
-    });
+    let selection = if let Some(lexical) = resolve_lexical_decision(
+        &request,
+        &orchestrator,
+        functions,
+        &LexicalRoutingConfig::balanced(),
+    ) {
+        SelectionResolution {
+            result: lexical.result,
+            retries_used: 0,
+            fell_back_to_default_workflow: false,
+        }
+    } else {
+        resolve_selector_with_retries(&orchestrator, &request, |attempt| {
+            next_selector_attempt(attempt, &request, &orchestrator)
+        })
+    };
     artifact_store.persist_selector_result(&selection.result)?;
     artifact_store.persist_selector_log(
         &request.selector_id,

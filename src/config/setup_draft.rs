@@ -3,7 +3,7 @@ use crate::config::{
     OrchestratorConfig, OutputKey, PathTemplate, Settings, SettingsOrchestrator, StepLimitsConfig,
     ValidationOptions, WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig,
     WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
-    WorkflowStepWorkspaceMode,
+    WorkflowStepWorkspaceMode, WorkflowTag,
 };
 use crate::templates::orchestrator_templates::{
     initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate,
@@ -331,6 +331,8 @@ impl SetupDraft {
         cfg.workflows.push(WorkflowConfig {
             id: workflow_id.to_string(),
             version: 1,
+            description: format!("{workflow_id} workflow"),
+            tags: vec![WorkflowTag::parse(workflow_id)?],
             inputs: WorkflowInputs::default(),
             limits: None,
             steps: vec![WorkflowStepConfig {

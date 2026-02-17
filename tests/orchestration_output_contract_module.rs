@@ -48,6 +48,8 @@ fn output_contract_module_parses_envelope_and_resolves_paths() {
     let workflow = WorkflowConfig {
         id: "wf".to_string(),
         version: 1,
+        description: "output contract evaluation".to_string(),
+        tags: vec!["outputs".parse().expect("tag")],
         inputs: WorkflowInputs::default(),
         limits: None,
         steps: vec![step.clone(), done],

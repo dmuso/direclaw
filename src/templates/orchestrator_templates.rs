@@ -1,6 +1,7 @@
 use crate::config::{
     AgentConfig, ConfigProviderKind, OrchestratorConfig, WorkflowConfig, WorkflowInputs,
     WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
+    WorkflowTag,
 };
 use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_prompt,
@@ -57,6 +58,10 @@ fn agent_config(
     }
 }
 
+fn workflow_tag(value: &str) -> WorkflowTag {
+    WorkflowTag::parse(value).expect("default workflow tag is valid")
+}
+
 pub fn initial_orchestrator_config(
     id: &str,
     provider: &str,
@@ -88,6 +93,8 @@ artifact -> {{workflow.output_paths.artifact}}",
                 vec![WorkflowConfig {
                     id: workflow_id,
                     version: 1,
+                    description: "General purpose workflow for direct requests".to_string(),
+                    tags: vec![workflow_tag("default")],
                     inputs: WorkflowInputs::default(),
                     limits: None,
                     steps,
@@ -140,6 +147,14 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "feature_delivery".to_string(),
                         version: 1,
+                        description:
+                            "Plan, implement, and review engineering work before final summary"
+                                .to_string(),
+                        tags: vec![
+                            workflow_tag("engineering"),
+                            workflow_tag("implementation"),
+                            workflow_tag("review"),
+                        ],
                         inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![
@@ -172,6 +187,13 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "quick_answer".to_string(),
                         version: 1,
+                        description: "Short direct engineering responses without multi-step review"
+                            .to_string(),
+                        tags: vec![
+                            workflow_tag("engineering"),
+                            workflow_tag("quick"),
+                            workflow_tag("answer"),
+                        ],
                         inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![workflow_step(
@@ -203,6 +225,12 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "prd_draft".to_string(),
                         version: 1,
+                        description: "Research and draft a product requirements document".to_string(),
+                        tags: vec![
+                            workflow_tag("product"),
+                            workflow_tag("prd"),
+                            workflow_tag("research"),
+                        ],
                         inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![
@@ -233,6 +261,13 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "release_notes".to_string(),
                         version: 1,
+                        description:
+                            "Compose customer-facing release notes grouped by impact".to_string(),
+                        tags: vec![
+                            workflow_tag("product"),
+                            workflow_tag("release"),
+                            workflow_tag("notes"),
+                        ],
                         inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![workflow_step(

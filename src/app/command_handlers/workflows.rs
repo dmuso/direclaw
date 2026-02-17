@@ -3,8 +3,8 @@ use crate::app::command_support::{
     save_orchestrator_config,
 };
 use crate::config::{
-    normalize_workflow_input_key, WorkflowConfig, WorkflowInputs, WorkflowStepConfig,
-    WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
+    normalize_workflow_input_key, WorkflowConfig, WorkflowId, WorkflowInputs, WorkflowStepConfig,
+    WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode, WorkflowTag,
 };
 use crate::orchestration::run_store::{RunState, WorkflowRunStore};
 use crate::orchestration::workflow_engine::WorkflowEngine;
@@ -55,6 +55,7 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             let settings = load_settings()?;
             let orchestrator_id = &args[1];
             let workflow_id = args[2].clone();
+            WorkflowId::parse(&workflow_id)?;
             let mut orchestrator = load_orchestrator_or_err(&settings, orchestrator_id)?;
             if orchestrator.workflows.iter().any(|w| w.id == workflow_id) {
                 return Err(format!("workflow `{workflow_id}` already exists"));
@@ -63,6 +64,8 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             orchestrator.workflows.push(WorkflowConfig {
                 id: workflow_id.clone(),
                 version: 1,
+                description: format!("{workflow_id} workflow"),
+                tags: vec![WorkflowTag::parse(&workflow_id)?],
                 inputs: WorkflowInputs::default(),
                 limits: None,
                 steps: vec![WorkflowStepConfig {

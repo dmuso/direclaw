@@ -54,6 +54,8 @@ agents:
 workflows:
   - id: engineering_default
     version: 1
+    description: engineering default workflow
+    tags: [engineering, default]
     limits:
       run_timeout_seconds: 40
     steps:
@@ -69,6 +71,8 @@ workflows:
           max_retries: 3
   - id: fix_issue
     version: 1
+    description: fix issue workflow
+    tags: [engineering, fix]
     limits:
       max_total_iterations: 5
       run_timeout_seconds: 50
@@ -1030,10 +1034,12 @@ channels: {{}}
         "run-diag".to_string(),
     );
 
+    let mut inbound = sample_incoming();
+    inbound.message = "what is the latest status update?".to_string();
     let action = process_queued_message(
         &state_root,
         &settings,
-        &sample_incoming(),
+        &inbound,
         300,
         &active,
         &functions,
@@ -1157,6 +1163,8 @@ agents:
 workflows:
   - id: engineering_default
     version: 1
+    description: engineering default workflow
+    tags: [engineering, default]
     steps:
       - id: start
         type: agent_task
@@ -1259,6 +1267,8 @@ agents:
 workflows:
   - id: fix_issue
     version: 1
+    description: fix issue workflow
+    tags: [engineering, fix]
     steps:
       - id: plan
         type: agent_task

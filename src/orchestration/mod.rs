@@ -1,6 +1,7 @@
 pub mod diagnostics;
 pub mod error;
 pub mod function_registry;
+pub mod lexical_router;
 pub mod output_contract;
 pub mod progress;
 pub mod prompt_render;

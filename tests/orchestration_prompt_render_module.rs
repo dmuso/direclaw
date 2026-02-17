@@ -57,6 +57,8 @@ fn prompt_render_module_renders_inputs_state_and_output_paths() {
     let workflow = WorkflowConfig {
         id: "wf-default".to_string(),
         version: 1,
+        description: "default prompt render workflow".to_string(),
+        tags: vec!["prompt".parse().expect("tag")],
         inputs: WorkflowInputs::default(),
         limits: None,
         steps: vec![step.clone()],

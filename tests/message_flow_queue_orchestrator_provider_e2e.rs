@@ -79,6 +79,8 @@ agents:
 workflows:
   - id: triage
     version: 1
+    description: default triage workflow
+    tags: [triage, default]
     steps:
       - id: start
         type: agent_task
@@ -252,6 +254,8 @@ agents:
 workflows:
   - id: triage
     version: 1
+    description: triage with review loop
+    tags: [triage, review]
     inputs: [ticket]
     limits:
       max_total_iterations: 6
@@ -638,6 +642,8 @@ agents:
 workflows:
   - id: triage
     version: 1
+    description: triage workflow for limit validation
+    tags: [triage, limits]
     limits:
       max_total_iterations: 1
     steps:
@@ -863,6 +869,8 @@ agents:
 workflows:
   - id: triage
     version: 1
+    description: triage workflow for output path validation
+    tags: [triage, security]
     steps:
       - id: start
         type: agent_task

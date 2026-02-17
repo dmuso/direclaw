@@ -17,6 +17,8 @@ agents:
 workflows:
   - id: minimal_single_agent
     version: 1
+    description: Minimal single-agent workflow for direct request handling
+    tags: [minimal, default]
     inputs: [user_prompt]
     steps:
       - id: generate

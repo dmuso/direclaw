@@ -129,6 +129,8 @@ agents:
 workflows:
   - id: triage
     version: 1
+    description: triage workflow for supervisor recovery tests
+    tags: [triage, recovery]
     steps:
       - id: start
         type: agent_task

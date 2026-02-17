@@ -37,6 +37,8 @@ agents:
 workflows:
   - id: engineering_default
     version: 1
+    description: General engineering request handling workflow
+    tags: [engineering, default]
     inputs: [user_prompt]
     steps:
       - id: default_execute
@@ -59,6 +61,8 @@ workflows:
 
   - id: code_with_reviews
     version: 1
+    description: Multi-step code delivery with planning and review loops
+    tags: [engineering, code, review]
     inputs: [user_prompt, repository_url, base_branch, feature_branch]
     limits:
       max_total_iterations: 12
