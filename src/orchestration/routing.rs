@@ -1,7 +1,7 @@
 use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
 use crate::memory::{
-    generate_bulletin_for_message, HybridRecallRequest, MemoryBulletinOptions, MemoryPaths,
-    MemoryRecallOptions, MemoryRepository,
+    generate_bulletin_for_message, persist_transcript_observation, HybridRecallRequest,
+    MemoryBulletin, MemoryBulletinOptions, MemoryPaths, MemoryRecallOptions, MemoryRepository,
 };
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
@@ -22,6 +22,15 @@ use crate::provider::RunnerBinaries;
 use crate::queue::IncomingMessage;
 use std::collections::BTreeMap;
 use std::path::Path;
+
+fn empty_bulletin(now: i64) -> MemoryBulletin {
+    MemoryBulletin {
+        rendered: String::new(),
+        citations: Vec::new(),
+        sections: Vec::new(),
+        generated_at: now,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusResolutionInput {
@@ -174,6 +183,7 @@ where
                     },
                     workspace_access_context: None,
                     runner_binaries: Some(runner_binaries.clone()),
+                    memory_enabled: false,
                     source_message_id: Some(&inbound.message_id),
                     now,
                 },
@@ -201,7 +211,8 @@ where
 
         let engine = WorkflowEngine::new(run_store.clone(), orchestrator.clone())
             .with_runner_binaries(runner_binaries.clone())
-            .with_workspace_access_context(workspace_context);
+            .with_workspace_access_context(workspace_context)
+            .with_memory_enabled(settings.memory.enabled);
         let resumed = match engine
             .resume(run_id, now)
             .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
@@ -262,6 +273,28 @@ where
             .and_then(|repo| repo.ensure_schema().map(|_| repo));
         match maybe_repo {
             Ok(repo) => {
+                if let Some(conversation_id) = inbound
+                    .conversation_id
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    if let Err(err) = persist_transcript_observation(
+                        &repo,
+                        &orchestrator_id,
+                        &inbound.message_id,
+                        conversation_id,
+                        &inbound.message,
+                        now,
+                    ) {
+                        append_security_log(
+                            &runtime_root,
+                            &format!(
+                                "memory transcript write-back failed for message `{}`: {err}",
+                                inbound.message_id
+                            ),
+                        );
+                    }
+                }
                 let recall_options = MemoryRecallOptions {
                     top_n: settings.memory.retrieval.top_n,
                     rrf_k: settings.memory.retrieval.rrf_k,
@@ -271,7 +304,7 @@ where
                     max_chars: 4_000,
                     generated_at: now,
                 };
-                generate_bulletin_for_message(
+                match generate_bulletin_for_message(
                     &repo,
                     &paths,
                     &inbound.message_id,
@@ -284,10 +317,30 @@ where
                     &recall_options,
                     &bulletin_options,
                     Some(&workspace_context),
-                )
-                .ok()
+                ) {
+                    Ok(bulletin) => Some(bulletin),
+                    Err(err) => {
+                        append_security_log(
+                            &runtime_root,
+                            &format!(
+                                "memory bulletin generation failed for message `{}`: {err}",
+                                inbound.message_id
+                            ),
+                        );
+                        Some(empty_bulletin(now))
+                    }
+                }
             }
-            Err(_) => None,
+            Err(err) => {
+                append_security_log(
+                    &runtime_root,
+                    &format!(
+                        "memory repository unavailable for message `{}`: {err}",
+                        inbound.message_id
+                    ),
+                );
+                Some(empty_bulletin(now))
+            }
         }
     } else {
         None
@@ -382,6 +435,7 @@ where
             orchestrator: &orchestrator,
             workspace_access_context: Some(workspace_context),
             runner_binaries: Some(runner_binaries),
+            memory_enabled: settings.memory.enabled,
             source_message_id: Some(&inbound.message_id),
             now,
         },

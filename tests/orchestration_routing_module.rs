@@ -5,6 +5,8 @@ use direclaw::orchestration::routing::{
 use direclaw::orchestration::transitions::RoutedSelectorAction;
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
+use direclaw::runtime::bootstrap_memory_runtime_paths;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -317,4 +319,251 @@ channels: {{}}
         }
         other => panic!("expected workflow start route, got {other:?}"),
     }
+}
+
+#[test]
+fn routing_memory_failure_still_routes_and_persists_bulletin_payload_fields() {
+    let temp = tempdir().expect("tempdir");
+    let workspace_root = temp.path().join("workspaces");
+    let private_workspace = workspace_root.join("main");
+    fs::create_dir_all(&private_workspace).expect("create private workspace");
+    fs::write(
+        private_workspace.join("orchestrator.yaml"),
+        r#"
+id: main
+selector_agent: default
+default_workflow: quick_answer
+selection_max_retries: 2
+selector_timeout_seconds: 30
+agents:
+  default:
+    provider: openai
+    model: gpt-5.3-codex
+    can_orchestrate_workflows: true
+workflows:
+  - id: quick_answer
+    version: 1
+    description: quick answer
+    tags: [quick]
+    inputs: []
+    steps:
+      - id: answer
+        type: agent_task
+        agent: default
+        prompt: answer directly
+        outputs: [summary, artifact]
+        output_files:
+          summary: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.txt
+"#,
+    )
+    .expect("write orchestrator yaml");
+
+    let settings = serde_yaml::from_str::<direclaw::config::Settings>(&format!(
+        r#"
+workspaces_path: {}
+shared_workspaces: {{}}
+orchestrators:
+  main:
+    private_workspace: {}
+    shared_access: []
+channel_profiles:
+  local-default:
+    channel: local
+    orchestrator_id: main
+monitoring: {{}}
+channels: {{}}
+memory:
+  enabled: true
+"#,
+        workspace_root.display(),
+        private_workspace.display()
+    ))
+    .expect("settings");
+
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root("local-default")
+        .expect("runtime root");
+    fs::create_dir_all(&runtime_root).expect("runtime");
+    fs::write(runtime_root.join("memory"), "block memory dir").expect("write blocker");
+
+    let codex_mock = temp.path().join("codex-mock");
+    write_script(
+        &codex_mock,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"summary\\\":\\\"ok\\\",\\\"artifact\\\":\\\"ok\\\"}[/workflow_result]\"}}'\n",
+    );
+    let claude_mock = temp.path().join("claude-mock");
+    write_script(&claude_mock, "#!/bin/sh\necho 'ok'\n");
+    let binaries = RunnerBinaries {
+        anthropic: claude_mock.display().to_string(),
+        openai: codex_mock.display().to_string(),
+    };
+
+    let inbound = IncomingMessage {
+        channel: "local".to_string(),
+        channel_profile_id: Some("local-default".to_string()),
+        sender: "cli".to_string(),
+        sender_id: "cli".to_string(),
+        message: "what capabilities do you currently expose?".to_string(),
+        timestamp: 1,
+        message_id: "msg-mem-1".to_string(),
+        conversation_id: Some("chat-1".to_string()),
+        files: vec![],
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+
+    let action = process_queued_message_with_runner_binaries(
+        temp.path(),
+        &settings,
+        &inbound,
+        1,
+        &BTreeMap::new(),
+        &FunctionRegistry::v1_defaults(
+            direclaw::orchestration::run_store::WorkflowRunStore::new(runtime_root.clone()),
+            &settings,
+        ),
+        Some(binaries),
+        |_attempt, _request, _orchestrator| None,
+    )
+    .expect("route inbound message");
+    assert!(matches!(action, RoutedSelectorAction::WorkflowStart { .. }));
+
+    let request_path =
+        runtime_root.join("orchestrator/artifacts/selector-processing-sel-msg-mem-1.json");
+    let request_json: Value =
+        serde_json::from_str(&fs::read_to_string(request_path).expect("read selector request"))
+            .expect("parse selector request");
+    assert!(
+        request_json
+            .get("memoryBulletin")
+            .and_then(Value::as_str)
+            .is_some(),
+        "expected memoryBulletin string payload"
+    );
+    assert!(
+        request_json
+            .get("memoryBulletinCitations")
+            .and_then(Value::as_array)
+            .is_some(),
+        "expected memoryBulletinCitations array payload"
+    );
+}
+
+#[test]
+fn routing_persists_transcript_and_workflow_output_memories() {
+    let temp = tempdir().expect("tempdir");
+    let workspace_root = temp.path().join("workspaces");
+    let private_workspace = workspace_root.join("main");
+    fs::create_dir_all(&private_workspace).expect("create private workspace");
+    fs::write(
+        private_workspace.join("orchestrator.yaml"),
+        r#"
+id: main
+selector_agent: default
+default_workflow: quick_answer
+selection_max_retries: 2
+selector_timeout_seconds: 30
+agents:
+  default:
+    provider: openai
+    model: gpt-5.3-codex
+    can_orchestrate_workflows: true
+workflows:
+  - id: quick_answer
+    version: 1
+    description: quick answer
+    tags: [quick]
+    inputs: []
+    steps:
+      - id: answer
+        type: agent_task
+        agent: default
+        prompt: answer directly
+        outputs: [summary, decision, todo]
+        output_files:
+          summary: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          decision: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-decision.txt
+          todo: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-todo.txt
+"#,
+    )
+    .expect("write orchestrator yaml");
+
+    let settings = serde_yaml::from_str::<direclaw::config::Settings>(&format!(
+        r#"
+workspaces_path: {}
+shared_workspaces: {{}}
+orchestrators:
+  main:
+    private_workspace: {}
+    shared_access: []
+channel_profiles:
+  local-default:
+    channel: local
+    orchestrator_id: main
+monitoring: {{}}
+channels: {{}}
+memory:
+  enabled: true
+"#,
+        workspace_root.display(),
+        private_workspace.display()
+    ))
+    .expect("settings");
+    bootstrap_memory_runtime_paths(&settings).expect("bootstrap memory runtime");
+
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root("local-default")
+        .expect("runtime root");
+    let codex_mock = temp.path().join("codex-mock");
+    write_script(
+        &codex_mock,
+        "#!/bin/sh\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"[workflow_result]{\\\"summary\\\":\\\"implemented\\\",\\\"decision\\\":\\\"approve\\\",\\\"todo\\\":\\\"add regression test\\\"}[/workflow_result]\"}}'\n",
+    );
+    let claude_mock = temp.path().join("claude-mock");
+    write_script(&claude_mock, "#!/bin/sh\necho 'ok'\n");
+    let binaries = RunnerBinaries {
+        anthropic: claude_mock.display().to_string(),
+        openai: codex_mock.display().to_string(),
+    };
+
+    let inbound = IncomingMessage {
+        channel: "local".to_string(),
+        channel_profile_id: Some("local-default".to_string()),
+        sender: "cli".to_string(),
+        sender_id: "cli".to_string(),
+        message: "Please ship this".to_string(),
+        timestamp: 1,
+        message_id: "msg-writeback-1".to_string(),
+        conversation_id: Some("chat-1".to_string()),
+        files: vec![],
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+
+    let _ = process_queued_message_with_runner_binaries(
+        temp.path(),
+        &settings,
+        &inbound,
+        1,
+        &BTreeMap::new(),
+        &FunctionRegistry::v1_defaults(
+            direclaw::orchestration::run_store::WorkflowRunStore::new(runtime_root.clone()),
+            &settings,
+        ),
+        Some(binaries),
+        |_attempt, _request, _orchestrator| None,
+    )
+    .expect("route and execute");
+
+    let repo =
+        direclaw::memory::MemoryRepository::open(&runtime_root.join("memory/memory.db"), "main")
+            .expect("open repo");
+    let sources = repo.list_sources().expect("list sources");
+    assert!(sources
+        .iter()
+        .any(|source| source.source_type == direclaw::memory::MemorySourceType::ChannelTranscript));
+    assert!(sources
+        .iter()
+        .any(|source| source.source_type == direclaw::memory::MemorySourceType::WorkflowOutput));
 }

@@ -73,6 +73,7 @@ fn transitions_module_routes_status_without_active_run() {
             orchestrator: &sample_orchestrator(),
             workspace_access_context: None,
             runner_binaries: None,
+            memory_enabled: false,
             source_message_id: None,
             now: 100,
         },

@@ -5,10 +5,58 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+const MEMORY_CONTEXT_MAX_BULLETIN_CHARS: usize = 4_000;
+const MEMORY_CONTEXT_MAX_CITATIONS: usize = 32;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepPromptRender {
     pub prompt: String,
     pub context: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MemoryContextBundle {
+    bulletin: String,
+    citations: Vec<String>,
+    truncated: bool,
+}
+
+fn build_memory_context_bundle(inputs: &Map<String, Value>) -> MemoryContextBundle {
+    let mut truncated = false;
+    let mut bulletin = inputs
+        .get("memory_bulletin")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if bulletin.chars().count() > MEMORY_CONTEXT_MAX_BULLETIN_CHARS {
+        bulletin = bulletin
+            .chars()
+            .take(MEMORY_CONTEXT_MAX_BULLETIN_CHARS)
+            .collect();
+        truncated = true;
+    }
+
+    let mut citations = inputs
+        .get("memory_bulletin_citations")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if citations.len() > MEMORY_CONTEXT_MAX_CITATIONS {
+        citations.truncate(MEMORY_CONTEXT_MAX_CITATIONS);
+        truncated = true;
+    }
+
+    MemoryContextBundle {
+        bulletin,
+        citations,
+        truncated,
+    }
 }
 
 fn resolve_json_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -70,6 +118,7 @@ pub fn render_step_prompt(
     output_paths: &BTreeMap<String, PathBuf>,
     step_outputs: &BTreeMap<String, Map<String, Value>>,
 ) -> Result<StepPromptRender, OrchestratorError> {
+    let memory_context = build_memory_context_bundle(&run.inputs);
     let input_value = Value::Object(run.inputs.clone());
     let mut state_map = Map::from_iter([
         (
@@ -184,6 +233,43 @@ pub fn render_step_prompt(
         if token == "workflow.output_paths_json" {
             return Ok(output_paths_json.clone());
         }
+        if token == "workflow.memory_context_bulletin" {
+            return Ok(memory_context.bulletin.clone());
+        }
+        if token == "workflow.memory_context_citations" {
+            return serde_json::to_string(&memory_context.citations).map_err(|err| {
+                OrchestratorError::StepPromptRender {
+                    step_id: step.id.clone(),
+                    reason: format!("failed to render memory context citations: {err}"),
+                }
+            });
+        }
+        if token == "workflow.memory_context_json" {
+            return serde_json::to_string(&Value::Object(Map::from_iter([
+                (
+                    "bulletin".to_string(),
+                    Value::String(memory_context.bulletin.clone()),
+                ),
+                (
+                    "citations".to_string(),
+                    Value::Array(
+                        memory_context
+                            .citations
+                            .iter()
+                            .map(|value| Value::String(value.clone()))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "truncated".to_string(),
+                    Value::Bool(memory_context.truncated),
+                ),
+            ])))
+            .map_err(|err| OrchestratorError::StepPromptRender {
+                step_id: step.id.clone(),
+                reason: format!("failed to render memory context json: {err}"),
+            });
+        }
         if let Some(path_key) = token.strip_prefix("workflow.output_paths.") {
             let Some(path) = output_paths.get(path_key) else {
                 return Err(OrchestratorError::StepPromptRender {
@@ -242,6 +328,33 @@ pub fn render_step_prompt(
             Value::Object(Map::from_iter(output_paths.iter().map(|(k, path)| {
                 (k.clone(), Value::String(path.display().to_string()))
             }))),
+        ),
+        (
+            "memoryContext".to_string(),
+            Value::Object(Map::from_iter([
+                (
+                    "bulletin".to_string(),
+                    Value::String(memory_context.bulletin.clone()),
+                ),
+                (
+                    "citations".to_string(),
+                    Value::Array(
+                        memory_context
+                            .citations
+                            .iter()
+                            .map(|value| Value::String(value.clone()))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "truncated".to_string(),
+                    Value::Bool(memory_context.truncated),
+                ),
+                (
+                    "maxBulletinChars".to_string(),
+                    Value::from(MEMORY_CONTEXT_MAX_BULLETIN_CHARS as u64),
+                ),
+            ])),
         ),
     ])))
     .map_err(|err| OrchestratorError::StepPromptRender {

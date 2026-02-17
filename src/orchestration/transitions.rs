@@ -1,4 +1,7 @@
 use crate::config::OrchestratorConfig;
+use crate::memory::{
+    hybrid_recall, HybridRecallRequest, MemoryPaths, MemoryRecallOptions, MemoryRepository,
+};
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
@@ -18,6 +21,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+const DIAGNOSTICS_MEMORY_TOP_N: usize = 8;
+
 fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
     OrchestratorError::Io {
         path: path.display().to_string(),
@@ -30,6 +35,27 @@ fn json_error(path: &Path, source: serde_json::Error) -> OrchestratorError {
         path: path.display().to_string(),
         source,
     }
+}
+
+fn diagnostics_memory_evidence_path(
+    diagnostics_root: &Path,
+    diagnostics_id: &str,
+) -> std::path::PathBuf {
+    diagnostics_root.join(format!("diagnostics-memory-evidence-{diagnostics_id}.json"))
+}
+
+fn persist_diagnostics_memory_evidence(
+    diagnostics_root: &Path,
+    diagnostics_id: &str,
+    payload: &Value,
+) -> Result<(), OrchestratorError> {
+    let evidence_path = diagnostics_memory_evidence_path(diagnostics_root, diagnostics_id);
+    fs::write(
+        &evidence_path,
+        serde_json::to_vec_pretty(payload).map_err(|e| json_error(&evidence_path, e))?,
+    )
+    .map_err(|e| io_error(&evidence_path, e))?;
+    Ok(())
 }
 
 fn missing_run_for_io(run_id: &str, err: &OrchestratorError) -> Option<OrchestratorError> {
@@ -146,6 +172,7 @@ pub struct RouteContext<'a> {
     pub orchestrator: &'a OrchestratorConfig,
     pub workspace_access_context: Option<WorkspaceAccessContext>,
     pub runner_binaries: Option<RunnerBinaries>,
+    pub memory_enabled: bool,
     pub source_message_id: Option<&'a str>,
     pub now: i64,
 }
@@ -222,6 +249,7 @@ pub fn route_selector_action(
             if let Some(binaries) = ctx.runner_binaries.clone() {
                 engine = engine.with_runner_binaries(binaries);
             }
+            engine = engine.with_memory_enabled(ctx.memory_enabled);
             engine.start(&run_id, ctx.now)?;
 
             Ok(RoutedSelectorAction::WorkflowStart {
@@ -287,7 +315,7 @@ pub fn route_selector_action(
             let diagnostics_root = ctx.run_store.state_root().join("orchestrator/artifacts");
             fs::create_dir_all(&diagnostics_root).map_err(|e| io_error(&diagnostics_root, e))?;
 
-            let (findings, context_bundle) = if let Some(run_id_value) = run_id.clone() {
+            let (mut findings, context_bundle) = if let Some(run_id_value) = run_id.clone() {
                 match ctx.run_store.load_progress(&run_id_value) {
                     Ok(progress) => (
                         format!(
@@ -340,6 +368,221 @@ pub fn route_selector_action(
                     ])),
                 )
             };
+            let mut context_bundle_map = match context_bundle {
+                Value::Object(map) => map,
+                _ => Map::new(),
+            };
+
+            if ctx.memory_enabled && run_id.is_some() {
+                let memory_paths = MemoryPaths::from_runtime_root(ctx.run_store.state_root());
+                match MemoryRepository::open(&memory_paths.database, &ctx.orchestrator.id)
+                    .and_then(|repo| repo.ensure_schema().map(|_| repo))
+                {
+                    Ok(repo) => {
+                        let recall_request = HybridRecallRequest {
+                            requesting_orchestrator_id: ctx.orchestrator.id.clone(),
+                            conversation_id: request.conversation_id.clone(),
+                            query_text: request.user_message.clone(),
+                            query_embedding: None,
+                        };
+                        let recall_options = MemoryRecallOptions {
+                            top_n: DIAGNOSTICS_MEMORY_TOP_N,
+                            ..MemoryRecallOptions::default()
+                        };
+                        match hybrid_recall(
+                            &repo,
+                            &recall_request,
+                            &recall_options,
+                            ctx.workspace_access_context.as_ref(),
+                            &memory_paths.log_file,
+                        ) {
+                            Ok(recall) => {
+                                let evidence_payload = Value::Object(Map::from_iter([
+                                    (
+                                        "diagnosticsId".to_string(),
+                                        Value::String(diagnostics_id.clone()),
+                                    ),
+                                    (
+                                        "mode".to_string(),
+                                        Value::String(
+                                            format!("{:?}", recall.mode).to_ascii_lowercase(),
+                                        ),
+                                    ),
+                                    (
+                                        "memories".to_string(),
+                                        Value::Array(
+                                            recall
+                                                .memories
+                                                .iter()
+                                                .map(|entry| {
+                                                    Value::Object(Map::from_iter([
+                                                        (
+                                                            "memoryId".to_string(),
+                                                            Value::String(
+                                                                entry.memory.memory_id.clone(),
+                                                            ),
+                                                        ),
+                                                        (
+                                                            "type".to_string(),
+                                                            Value::String(format!(
+                                                                "{:?}",
+                                                                entry.memory.node_type
+                                                            )),
+                                                        ),
+                                                        (
+                                                            "summary".to_string(),
+                                                            Value::String(
+                                                                entry.memory.summary.clone(),
+                                                            ),
+                                                        ),
+                                                        (
+                                                            "importance".to_string(),
+                                                            Value::from(entry.memory.importance),
+                                                        ),
+                                                        (
+                                                            "confidence".to_string(),
+                                                            Value::from(entry.memory.confidence),
+                                                        ),
+                                                        (
+                                                            "sourceType".to_string(),
+                                                            Value::String(
+                                                                entry.citation.source_type.clone(),
+                                                            ),
+                                                        ),
+                                                        (
+                                                            "sourcePath".to_string(),
+                                                            entry
+                                                                .citation
+                                                                .source_path
+                                                                .as_ref()
+                                                                .map(|p| {
+                                                                    Value::String(
+                                                                        p.display().to_string(),
+                                                                    )
+                                                                })
+                                                                .unwrap_or(Value::Null),
+                                                        ),
+                                                        (
+                                                            "conversationId".to_string(),
+                                                            entry
+                                                                .citation
+                                                                .conversation_id
+                                                                .as_ref()
+                                                                .map(|v| Value::String(v.clone()))
+                                                                .unwrap_or(Value::Null),
+                                                        ),
+                                                        (
+                                                            "workflowRunId".to_string(),
+                                                            entry
+                                                                .citation
+                                                                .workflow_run_id
+                                                                .as_ref()
+                                                                .map(|v| Value::String(v.clone()))
+                                                                .unwrap_or(Value::Null),
+                                                        ),
+                                                        (
+                                                            "stepId".to_string(),
+                                                            entry
+                                                                .citation
+                                                                .step_id
+                                                                .as_ref()
+                                                                .map(|v| Value::String(v.clone()))
+                                                                .unwrap_or(Value::Null),
+                                                        ),
+                                                        (
+                                                            "finalScore".to_string(),
+                                                            Value::from(entry.final_score),
+                                                        ),
+                                                        (
+                                                            "unresolvedContradiction".to_string(),
+                                                            Value::Bool(
+                                                                entry.unresolved_contradiction,
+                                                            ),
+                                                        ),
+                                                    ]))
+                                                })
+                                                .collect(),
+                                        ),
+                                    ),
+                                    (
+                                        "edges".to_string(),
+                                        serde_json::to_value(&recall.edges).map_err(|e| {
+                                            OrchestratorError::SelectorJson(e.to_string())
+                                        })?,
+                                    ),
+                                ]));
+                                context_bundle_map
+                                    .insert("memoryEvidence".to_string(), evidence_payload.clone());
+                                findings.push_str(&format!(
+                                    " Included {} memory evidence item(s).",
+                                    recall.memories.len()
+                                ));
+                                persist_diagnostics_memory_evidence(
+                                    &diagnostics_root,
+                                    &diagnostics_id,
+                                    &evidence_payload,
+                                )?;
+                            }
+                            Err(err) => {
+                                append_security_log(
+                                    ctx.run_store.state_root(),
+                                    &format!(
+                                        "diagnostics memory evidence recall failed diagnostics_id={diagnostics_id}: {err}"
+                                    ),
+                                );
+                                let failure_payload = Value::Object(Map::from_iter([
+                                    (
+                                        "diagnosticsId".to_string(),
+                                        Value::String(diagnostics_id.clone()),
+                                    ),
+                                    ("status".to_string(), Value::String("failure".to_string())),
+                                    (
+                                        "failureKind".to_string(),
+                                        Value::String("recall".to_string()),
+                                    ),
+                                    ("reason".to_string(), Value::String(err.to_string())),
+                                    ("timestamp".to_string(), Value::from(ctx.now)),
+                                ]));
+                                context_bundle_map
+                                    .insert("memoryEvidence".to_string(), failure_payload.clone());
+                                persist_diagnostics_memory_evidence(
+                                    &diagnostics_root,
+                                    &diagnostics_id,
+                                    &failure_payload,
+                                )?;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        append_security_log(
+                            ctx.run_store.state_root(),
+                            &format!(
+                                "diagnostics memory repository unavailable diagnostics_id={diagnostics_id}: {err}"
+                            ),
+                        );
+                        let failure_payload = Value::Object(Map::from_iter([
+                            (
+                                "diagnosticsId".to_string(),
+                                Value::String(diagnostics_id.clone()),
+                            ),
+                            ("status".to_string(), Value::String("failure".to_string())),
+                            (
+                                "failureKind".to_string(),
+                                Value::String("repository".to_string()),
+                            ),
+                            ("reason".to_string(), Value::String(err.to_string())),
+                            ("timestamp".to_string(), Value::from(ctx.now)),
+                        ]));
+                        context_bundle_map
+                            .insert("memoryEvidence".to_string(), failure_payload.clone());
+                        persist_diagnostics_memory_evidence(
+                            &diagnostics_root,
+                            &diagnostics_id,
+                            &failure_payload,
+                        )?;
+                    }
+                }
+            }
 
             let context_path =
                 diagnostics_root.join(format!("diagnostics-context-{diagnostics_id}.json"));
@@ -348,7 +591,7 @@ pub fn route_selector_action(
 
             fs::write(
                 &context_path,
-                serde_json::to_vec_pretty(&context_bundle)
+                serde_json::to_vec_pretty(&Value::Object(context_bundle_map))
                     .map_err(|e| json_error(&context_path, e))?,
             )
             .map_err(|e| io_error(&context_path, e))?;

@@ -7,7 +7,7 @@ Integrate memory read/write flows into selector, workflow-step, and diagnostics 
 
 ### P17-T01 Integrate bulletin and recall into selector context builder
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Selector request context includes memory bulletin payload for each message.
   - Memory integration does not alter selector action/result schema contracts.
@@ -18,7 +18,7 @@ Integrate memory read/write flows into selector, workflow-step, and diagnostics 
 
 ### P17-T02 Integrate memory context into workflow step prompt rendering
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Step prompt rendering receives bounded memory context bundle.
   - Context injection respects prompt size constraints and ordering rules.
@@ -29,7 +29,7 @@ Integrate memory read/write flows into selector, workflow-step, and diagnostics 
 
 ### P17-T03 Add memory write-back from workflow outputs and transcripts
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Parsed workflow outputs can create/update typed memory records.
   - Channel transcript capture path can create memory observations/facts with provenance.
@@ -40,7 +40,7 @@ Integrate memory read/write flows into selector, workflow-step, and diagnostics 
 
 ### P17-T04 Integrate diagnostics retrieval with memory evidence bundle
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Diagnostics flows can query bounded memory evidence and include provenance.
   - Diagnostics scope limits and existing safeguards remain enforced.

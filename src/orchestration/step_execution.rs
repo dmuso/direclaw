@@ -1,6 +1,9 @@
 use crate::config::{
     OrchestratorConfig, WorkflowConfig, WorkflowStepConfig, WorkflowStepWorkspaceMode,
 };
+use crate::memory::{
+    persist_workflow_output_memories, MemoryPaths, MemoryRepository, WorkflowOutputWriteback,
+};
 use crate::orchestration::diagnostics::{
     append_security_log, persist_provider_invocation_log, provider_error_log,
 };
@@ -29,6 +32,7 @@ pub(crate) struct StepExecutionContext<'a> {
     pub workspace_access_context: Option<&'a WorkspaceAccessContext>,
     pub runner_binaries: &'a RunnerBinaries,
     pub step_timeout_seconds: u64,
+    pub memory_enabled: bool,
 }
 
 pub(crate) fn execute_step_attempt(
@@ -209,6 +213,43 @@ pub(crate) fn execute_step_attempt(
     let mut evaluation =
         evaluate_step_result(workflow, step, &provider_output.message, &output_paths)?;
     evaluation.output_files = materialize_output_files(step, &evaluation.outputs, &output_paths)?;
+    if context.memory_enabled {
+        let memory_paths = MemoryPaths::from_runtime_root(context.run_store.state_root());
+        match MemoryRepository::open(&memory_paths.database, &context.orchestrator.id)
+            .and_then(|repo| repo.ensure_schema().map(|_| repo))
+        {
+            Ok(repo) => {
+                if let Err(err) = persist_workflow_output_memories(
+                    &repo,
+                    &WorkflowOutputWriteback {
+                        orchestrator_id: &context.orchestrator.id,
+                        run_id: &run.run_id,
+                        step_id: &step.id,
+                        attempt,
+                        conversation_id: run.inputs.get("conversation_id").and_then(Value::as_str),
+                        outputs: &evaluation.outputs,
+                        output_files: &evaluation.output_files,
+                        captured_at: now,
+                    },
+                ) {
+                    append_security_log(
+                        context.run_store.state_root(),
+                        &format!(
+                            "memory output write-back failed run_id={} step_id={} attempt={attempt}: {err}",
+                            run.run_id, step.id
+                        ),
+                    );
+                }
+            }
+            Err(err) => append_security_log(
+                context.run_store.state_root(),
+                &format!(
+                    "memory repository unavailable for run_id={} step_id={} attempt={attempt}: {err}",
+                    run.run_id, step.id
+                ),
+            ),
+        }
+    }
     context.run_store.append_engine_log(
         &run.run_id,
         now,

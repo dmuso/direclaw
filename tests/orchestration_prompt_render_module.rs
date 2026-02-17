@@ -90,3 +90,87 @@ fn prompt_render_module_renders_inputs_state_and_output_paths() {
     assert!(rendered.context.contains("\"workflowId\": \"wf-default\""));
     assert!(rendered.context.contains("\"stepId\": \"plan\""));
 }
+
+#[test]
+fn prompt_render_module_injects_memory_context_bundle_with_bounded_citations() {
+    let long_bulletin = "goal ".repeat(1500);
+    let run = WorkflowRunRecord {
+        run_id: "run-mem".to_string(),
+        workflow_id: "wf-default".to_string(),
+        state: RunState::Running,
+        inputs: Map::from_iter([
+            (
+                "user_message".to_string(),
+                Value::String("plan next steps".to_string()),
+            ),
+            ("memory_bulletin".to_string(), Value::String(long_bulletin)),
+            (
+                "memory_bulletin_citations".to_string(),
+                Value::Array(vec![
+                    Value::String("m-1".to_string()),
+                    Value::String("m-2".to_string()),
+                    Value::String("m-3".to_string()),
+                ]),
+            ),
+        ]),
+        current_step_id: Some("plan".to_string()),
+        current_attempt: Some(1),
+        started_at: 10,
+        updated_at: 11,
+        total_iterations: 1,
+        source_message_id: None,
+        selector_id: None,
+        selected_workflow: None,
+        status_conversation_id: None,
+        terminal_reason: None,
+    };
+
+    let step = WorkflowStepConfig {
+        id: "plan".to_string(),
+        step_type: WorkflowStepType::AgentTask,
+        agent: "worker".to_string(),
+        prompt: "memory={{workflow.memory_context_bulletin}}\ncitations={{workflow.memory_context_citations}}".to_string(),
+        prompt_type: WorkflowStepPromptType::FileOutput,
+        workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
+        next: None,
+        on_approve: None,
+        on_reject: None,
+        outputs: vec![OutputKey::parse("summary").expect("key")],
+        output_files: BTreeMap::from_iter([(
+            OutputKey::parse_output_file_key("summary").expect("key"),
+            PathTemplate::parse("summary.md").expect("template"),
+        )]),
+        final_output_priority: vec![OutputKey::parse("summary").expect("key")],
+        limits: None,
+    };
+    let workflow = WorkflowConfig {
+        id: "wf-default".to_string(),
+        version: 1,
+        description: "workflow".to_string(),
+        tags: vec![],
+        inputs: WorkflowInputs::default(),
+        limits: None,
+        steps: vec![step.clone()],
+    };
+    let output_paths = BTreeMap::from_iter([(
+        "summary".to_string(),
+        Path::new("/tmp/run-mem/summary.md").to_path_buf(),
+    )]);
+
+    let rendered = render_step_prompt(
+        &run,
+        &workflow,
+        &step,
+        1,
+        Path::new("/tmp/run-mem/workspace"),
+        &output_paths,
+        &BTreeMap::new(),
+    )
+    .expect("render prompt");
+
+    assert!(rendered
+        .prompt
+        .contains("citations=[\"m-1\",\"m-2\",\"m-3\"]"));
+    assert!(rendered.context.contains("\"memoryContext\""));
+    assert!(rendered.prompt.len() < 5000);
+}

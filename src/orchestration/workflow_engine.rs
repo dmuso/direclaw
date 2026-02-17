@@ -168,6 +168,7 @@ pub struct WorkflowEngine {
     orchestrator: OrchestratorConfig,
     runner_binaries: RunnerBinaries,
     workspace_access_context: Option<WorkspaceAccessContext>,
+    memory_enabled: bool,
 }
 
 impl WorkflowEngine {
@@ -177,6 +178,7 @@ impl WorkflowEngine {
             orchestrator,
             runner_binaries: resolve_runner_binaries(),
             workspace_access_context: None,
+            memory_enabled: false,
         }
     }
 
@@ -190,6 +192,11 @@ impl WorkflowEngine {
         workspace_access_context: WorkspaceAccessContext,
     ) -> Self {
         self.workspace_access_context = Some(workspace_access_context);
+        self
+    }
+
+    pub fn with_memory_enabled(mut self, memory_enabled: bool) -> Self {
+        self.memory_enabled = memory_enabled;
         self
     }
 
@@ -298,6 +305,7 @@ impl WorkflowEngine {
             workspace_access_context: self.workspace_access_context.as_ref(),
             runner_binaries: &self.runner_binaries,
             step_timeout_seconds: limits.step_timeout_seconds,
+            memory_enabled: self.memory_enabled,
         };
         let mut attempt = pointer.attempt;
         let step_clock_started = Instant::now();

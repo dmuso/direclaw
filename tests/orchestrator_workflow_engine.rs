@@ -1,4 +1,8 @@
 use direclaw::config::{OrchestratorConfig, OutputKey, PathTemplate, Settings};
+use direclaw::memory::{
+    bootstrap_memory_paths, MemoryCapturedBy, MemoryNode, MemoryNodeType, MemoryPaths,
+    MemoryRepository, MemorySource, MemorySourceRecord, MemorySourceType, MemoryStatus,
+};
 use direclaw::orchestration::function_registry::FunctionRegistry;
 use direclaw::orchestration::output_contract::{
     evaluate_step_result, parse_workflow_result_envelope, resolve_step_output_paths,
@@ -284,6 +288,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             orchestrator: &orchestrator,
             workspace_access_context: None,
             runner_binaries: Some(runner_binaries.clone()),
+            memory_enabled: false,
             source_message_id: Some("message-1"),
             now: 100,
         },
@@ -397,6 +402,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             orchestrator: &orchestrator,
             workspace_access_context: None,
             runner_binaries: Some(runner_binaries.clone()),
+            memory_enabled: false,
             source_message_id: Some("message-1"),
             now: 101,
         },
@@ -448,6 +454,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             orchestrator: &orchestrator,
             workspace_access_context: None,
             runner_binaries: Some(runner_binaries),
+            memory_enabled: false,
             source_message_id: Some("message-1"),
             now: 102,
         },
@@ -1010,6 +1017,7 @@ channels: {{}}
             orchestrator: &sample_orchestrator(),
             workspace_access_context: None,
             runner_binaries: Some(runner_binaries),
+            memory_enabled: false,
             source_message_id: Some("message-1"),
             now: 200,
         },
@@ -1077,6 +1085,304 @@ channels: {{}}
         }
         other => panic!("unexpected dispatched route: {other:?}"),
     }
+}
+
+#[test]
+fn diagnostics_persists_memory_evidence_bundle_with_provenance() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store
+        .create_run("run-diag-mem", "fix_issue", 5)
+        .expect("create run");
+
+    let paths = MemoryPaths::from_runtime_root(&state_root);
+    bootstrap_memory_paths(&paths).expect("bootstrap memory paths");
+    let repo = MemoryRepository::open(&paths.database, "engineering_orchestrator").expect("repo");
+    repo.ensure_schema().expect("schema");
+    let node = MemoryNode {
+        memory_id: "mem-1".to_string(),
+        orchestrator_id: "engineering_orchestrator".to_string(),
+        node_type: MemoryNodeType::Fact,
+        importance: 80,
+        content: "Please fix this bug: deployment blocked by a failing integration test"
+            .to_string(),
+        summary: "Please fix this bug - deployment blocked".to_string(),
+        confidence: 0.9,
+        source: MemorySource {
+            source_type: MemorySourceType::Diagnostics,
+            source_path: None,
+            conversation_id: Some("thread-1".to_string()),
+            workflow_run_id: Some("run-diag-mem".to_string()),
+            step_id: None,
+            captured_by: MemoryCapturedBy::System,
+        },
+        status: MemoryStatus::Active,
+        created_at: 10,
+        updated_at: 10,
+    };
+    repo.upsert_nodes_and_edges(
+        &MemorySourceRecord {
+            orchestrator_id: "engineering_orchestrator".to_string(),
+            idempotency_key: "diag-evidence-1".to_string(),
+            source_type: MemorySourceType::Diagnostics,
+            source_path: None,
+            conversation_id: Some("thread-1".to_string()),
+            workflow_run_id: Some("run-diag-mem".to_string()),
+            step_id: None,
+            captured_by: MemoryCapturedBy::System,
+        },
+        &[node],
+        &[],
+    )
+    .expect("persist memory");
+
+    let request = sample_selector_request();
+    let functions = FunctionRegistry::with_run_store(
+        vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ],
+        store.clone(),
+    );
+    let diag_result = SelectorResult {
+        selector_id: "selector-1".to_string(),
+        status: SelectorStatus::Selected,
+        action: Some(SelectorAction::DiagnosticsInvestigate),
+        selected_workflow: None,
+        diagnostics_scope: Some(Map::from_iter([(
+            "runId".to_string(),
+            Value::String("run-diag-mem".to_string()),
+        )])),
+        function_id: None,
+        function_args: None,
+        reason: None,
+    };
+
+    let _ = route_selector_action(
+        &request,
+        &diag_result,
+        RouteContext {
+            status_input: &StatusResolutionInput {
+                explicit_run_id: None,
+                inbound_workflow_run_id: None,
+                channel_profile_id: Some("engineering".to_string()),
+                conversation_id: Some("thread-1".to_string()),
+            },
+            active_conversation_runs: &BTreeMap::new(),
+            functions: &functions,
+            run_store: &store,
+            orchestrator: &sample_orchestrator(),
+            workspace_access_context: None,
+            runner_binaries: None,
+            memory_enabled: true,
+            source_message_id: Some("message-1"),
+            now: 400,
+        },
+    )
+    .expect("diag route");
+
+    let evidence_path = state_root
+        .join("orchestrator/artifacts/diagnostics-memory-evidence-diag-selector-1-400.json");
+    assert!(
+        evidence_path.is_file(),
+        "missing diagnostics memory evidence"
+    );
+    let evidence = fs::read_to_string(&evidence_path).expect("read evidence");
+    assert!(evidence.contains("memoryId"));
+    assert!(evidence.contains("sourceType"));
+    assert!(evidence.contains("finalScore"));
+}
+
+#[test]
+fn diagnostics_does_not_recall_memory_when_scope_is_unresolved() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+
+    let paths = MemoryPaths::from_runtime_root(&state_root);
+    bootstrap_memory_paths(&paths).expect("bootstrap memory paths");
+    let repo = MemoryRepository::open(&paths.database, "engineering_orchestrator").expect("repo");
+    repo.ensure_schema().expect("schema");
+    let node = MemoryNode {
+        memory_id: "mem-1".to_string(),
+        orchestrator_id: "engineering_orchestrator".to_string(),
+        node_type: MemoryNodeType::Fact,
+        importance: 80,
+        content: "Any text that would match diagnostics recall".to_string(),
+        summary: "recall candidate".to_string(),
+        confidence: 0.9,
+        source: MemorySource {
+            source_type: MemorySourceType::Diagnostics,
+            source_path: None,
+            conversation_id: Some("thread-1".to_string()),
+            workflow_run_id: None,
+            step_id: None,
+            captured_by: MemoryCapturedBy::System,
+        },
+        status: MemoryStatus::Active,
+        created_at: 10,
+        updated_at: 10,
+    };
+    repo.upsert_nodes_and_edges(
+        &MemorySourceRecord {
+            orchestrator_id: "engineering_orchestrator".to_string(),
+            idempotency_key: "diag-unresolved-1".to_string(),
+            source_type: MemorySourceType::Diagnostics,
+            source_path: None,
+            conversation_id: Some("thread-1".to_string()),
+            workflow_run_id: None,
+            step_id: None,
+            captured_by: MemoryCapturedBy::System,
+        },
+        &[node],
+        &[],
+    )
+    .expect("persist memory");
+
+    let request = sample_selector_request();
+    let functions = FunctionRegistry::with_run_store(
+        vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ],
+        store.clone(),
+    );
+    let unresolved_diag = SelectorResult {
+        selector_id: "selector-1".to_string(),
+        status: SelectorStatus::Selected,
+        action: Some(SelectorAction::DiagnosticsInvestigate),
+        selected_workflow: None,
+        diagnostics_scope: Some(Map::from_iter([(
+            "runId".to_string(),
+            Value::String(" ".to_string()),
+        )])),
+        function_id: None,
+        function_args: None,
+        reason: None,
+    };
+
+    let routed = route_selector_action(
+        &request,
+        &unresolved_diag,
+        RouteContext {
+            status_input: &StatusResolutionInput {
+                explicit_run_id: None,
+                inbound_workflow_run_id: None,
+                channel_profile_id: None,
+                conversation_id: None,
+            },
+            active_conversation_runs: &BTreeMap::new(),
+            functions: &functions,
+            run_store: &store,
+            orchestrator: &sample_orchestrator(),
+            workspace_access_context: None,
+            runner_binaries: None,
+            memory_enabled: true,
+            source_message_id: Some("message-1"),
+            now: 410,
+        },
+    )
+    .expect("diag route");
+
+    match routed {
+        RoutedSelectorAction::DiagnosticsInvestigate {
+            run_id: None,
+            findings,
+        } => assert!(findings.contains("scope is ambiguous")),
+        other => panic!("unexpected diagnostics route: {other:?}"),
+    }
+
+    let evidence_path = state_root
+        .join("orchestrator/artifacts/diagnostics-memory-evidence-diag-selector-1-410.json");
+    assert!(
+        !evidence_path.is_file(),
+        "unexpected diagnostics evidence for unresolved scope"
+    );
+
+    let context_path =
+        state_root.join("orchestrator/artifacts/diagnostics-context-diag-selector-1-410.json");
+    let context: Value =
+        serde_json::from_str(&fs::read_to_string(context_path).expect("read context json"))
+            .expect("parse context json");
+    assert!(
+        context.get("memoryEvidence").is_none(),
+        "memory evidence must be omitted for unresolved diagnostics scope"
+    );
+}
+
+#[test]
+fn diagnostics_persists_memory_evidence_failure_artifact() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store
+        .create_run("run-diag-fail", "fix_issue", 5)
+        .expect("create run");
+
+    let db_path = MemoryPaths::from_runtime_root(&state_root).database;
+    fs::create_dir_all(&db_path).expect("create invalid sqlite directory");
+
+    let request = sample_selector_request();
+    let functions = FunctionRegistry::with_run_store(
+        vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ],
+        store.clone(),
+    );
+    let diag_result = SelectorResult {
+        selector_id: "selector-1".to_string(),
+        status: SelectorStatus::Selected,
+        action: Some(SelectorAction::DiagnosticsInvestigate),
+        selected_workflow: None,
+        diagnostics_scope: Some(Map::from_iter([(
+            "runId".to_string(),
+            Value::String("run-diag-fail".to_string()),
+        )])),
+        function_id: None,
+        function_args: None,
+        reason: None,
+    };
+
+    let _ = route_selector_action(
+        &request,
+        &diag_result,
+        RouteContext {
+            status_input: &StatusResolutionInput {
+                explicit_run_id: None,
+                inbound_workflow_run_id: None,
+                channel_profile_id: Some("engineering".to_string()),
+                conversation_id: Some("thread-1".to_string()),
+            },
+            active_conversation_runs: &BTreeMap::new(),
+            functions: &functions,
+            run_store: &store,
+            orchestrator: &sample_orchestrator(),
+            workspace_access_context: None,
+            runner_binaries: None,
+            memory_enabled: true,
+            source_message_id: Some("message-1"),
+            now: 420,
+        },
+    )
+    .expect("diag route");
+
+    let evidence_path = state_root
+        .join("orchestrator/artifacts/diagnostics-memory-evidence-diag-selector-1-420.json");
+    assert!(
+        evidence_path.is_file(),
+        "missing diagnostics memory evidence failure artifact"
+    );
+    let evidence = fs::read_to_string(evidence_path).expect("read evidence");
+    assert!(evidence.contains("failure"));
+    assert!(evidence.contains("diagnosticsId"));
 }
 
 #[test]

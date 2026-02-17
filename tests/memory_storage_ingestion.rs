@@ -1,10 +1,13 @@
 use direclaw::memory::{
-    compute_ingest_idempotency_key, extract_candidates_from_ingest_file, MemoryCapturedBy,
-    MemoryEdge, MemoryEdgeType, MemoryNode, MemoryNodeType, MemoryPaths, MemoryRepository,
-    MemorySource, MemorySourceRecord, MemorySourceType, MemoryStatus,
+    compute_ingest_idempotency_key, extract_candidates_from_ingest_file,
+    persist_workflow_output_memories, MemoryCapturedBy, MemoryEdge, MemoryEdgeType, MemoryNode,
+    MemoryNodeType, MemoryPaths, MemoryRepository, MemorySource, MemorySourceRecord,
+    MemorySourceType, MemoryStatus, WorkflowOutputWriteback,
 };
 use direclaw::runtime::tick_memory_worker;
 use rusqlite::Connection;
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
@@ -388,4 +391,75 @@ fn repository_memory_fts_supports_match_queries() {
         )
         .expect("fts match query");
     assert_eq!(matched, "mem-fts-1");
+}
+
+#[test]
+fn workflow_output_writeback_updates_existing_memory_for_later_attempts() {
+    let dir = tempdir().expect("tempdir");
+    let repo = MemoryRepository::open(&dir.path().join("memory.db"), "alpha").expect("open");
+    repo.ensure_schema().expect("schema");
+
+    let mut outputs_v1 = Map::new();
+    outputs_v1.insert("decision".to_string(), Value::String("approve".to_string()));
+    let output_files = BTreeMap::from_iter([(
+        "decision".to_string(),
+        dir.path()
+            .join("decision.txt")
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().join("decision.txt"))
+            .display()
+            .to_string(),
+    )]);
+
+    persist_workflow_output_memories(
+        &repo,
+        &WorkflowOutputWriteback {
+            orchestrator_id: "alpha",
+            run_id: "run-1",
+            step_id: "review",
+            attempt: 1,
+            conversation_id: Some("thread-1"),
+            outputs: &outputs_v1,
+            output_files: &output_files,
+            captured_at: 100,
+        },
+    )
+    .expect("persist first attempt");
+
+    let mut outputs_v2 = Map::new();
+    outputs_v2.insert("decision".to_string(), Value::String("reject".to_string()));
+    persist_workflow_output_memories(
+        &repo,
+        &WorkflowOutputWriteback {
+            orchestrator_id: "alpha",
+            run_id: "run-1",
+            step_id: "review",
+            attempt: 2,
+            conversation_id: Some("thread-1"),
+            outputs: &outputs_v2,
+            output_files: &output_files,
+            captured_at: 200,
+        },
+    )
+    .expect("persist second attempt");
+
+    assert_eq!(repo.count_memories().expect("count memories"), 1);
+    assert_eq!(repo.list_sources().expect("list sources").len(), 2);
+
+    let db = Connection::open(dir.path().join("memory.db")).expect("open sqlite");
+    let (memory_id, content, updated_at): (String, String, i64) = db
+        .query_row(
+            "
+            SELECT memory_id, content, updated_at
+            FROM memories
+            WHERE orchestrator_id = 'alpha'
+            LIMIT 1
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read memory");
+    assert_eq!(memory_id, "workflow-run-1-review-decision");
+    assert_eq!(content, "reject");
+    assert_eq!(updated_at, 200);
 }

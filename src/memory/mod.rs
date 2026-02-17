@@ -7,6 +7,7 @@ pub mod ingest;
 pub mod paths;
 pub mod repository;
 pub mod retrieval;
+pub mod writeback;
 
 pub use bulletin::{
     build_memory_bulletin, bulletin_to_section_map, generate_bulletin_for_message,
@@ -32,4 +33,7 @@ pub use retrieval::{
     HybridRecallRequest, HybridRecallResult, HybridRecallResultMode, MemoryCitation,
     MemoryProvenanceHandle, MemoryRecallError, MemoryRecallOptions, VectorCandidate,
     VectorQueryOutcome,
+};
+pub use writeback::{
+    persist_transcript_observation, persist_workflow_output_memories, WorkflowOutputWriteback,
 };
