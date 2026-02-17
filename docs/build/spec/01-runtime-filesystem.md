@@ -33,26 +33,36 @@ Supervisor behavior:
 
 Default state root: `~/.direclaw`
 
-Required filesystem structure:
+Global control-plane structure (runtime-only):
 
-- `~/.direclaw/queue/incoming`
-- `~/.direclaw/queue/processing`
-- `~/.direclaw/queue/outgoing`
-- `~/.direclaw/files`
-- `~/.direclaw/logs/*.log`
 - `~/.direclaw/config.yaml`
 - `~/.direclaw/config-orchestrators.yaml`
-- `~/.direclaw/orchestrator/messages`
-- `~/.direclaw/orchestrator/select/incoming`
-- `~/.direclaw/orchestrator/select/processing`
-- `~/.direclaw/orchestrator/select/results`
-- `~/.direclaw/orchestrator/select/logs`
-- `~/.direclaw/orchestrator/diagnostics/incoming`
-- `~/.direclaw/orchestrator/diagnostics/processing`
-- `~/.direclaw/orchestrator/diagnostics/context`
-- `~/.direclaw/orchestrator/diagnostics/results`
-- `~/.direclaw/orchestrator/diagnostics/logs`
-- `~/.direclaw/workflows/runs`
+- `~/.direclaw/daemon/runtime.json`
+- `~/.direclaw/daemon/supervisor.lock`
+- `~/.direclaw/logs/runtime.log`
+- `~/.direclaw/runtime/preferences.yaml`
+- `~/.direclaw/channels/*` (adapter-global runtime state)
+
+Per-orchestrator execution structure:
+
+- `<orchestrator_runtime_root>/queue/incoming`
+- `<orchestrator_runtime_root>/queue/processing`
+- `<orchestrator_runtime_root>/queue/outgoing`
+- `<orchestrator_runtime_root>/files`
+- `<orchestrator_runtime_root>/logs/orchestrator.log`
+- `<orchestrator_runtime_root>/orchestrator/messages`
+- `<orchestrator_runtime_root>/orchestrator/select/incoming`
+- `<orchestrator_runtime_root>/orchestrator/select/processing`
+- `<orchestrator_runtime_root>/orchestrator/select/results`
+- `<orchestrator_runtime_root>/orchestrator/select/logs`
+- `<orchestrator_runtime_root>/orchestrator/diagnostics/incoming`
+- `<orchestrator_runtime_root>/orchestrator/diagnostics/processing`
+- `<orchestrator_runtime_root>/orchestrator/diagnostics/context`
+- `<orchestrator_runtime_root>/orchestrator/diagnostics/results`
+- `<orchestrator_runtime_root>/orchestrator/diagnostics/logs`
+- `<orchestrator_runtime_root>/workflows/runs`
+
+`<orchestrator_runtime_root>` resolves to the orchestrator private workspace root.
 
 Configuration layering model:
 

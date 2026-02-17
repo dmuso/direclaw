@@ -56,9 +56,9 @@ Queue worker behavior:
 4. For new channel messages, orchestrator must:
    - resolve `orchestrator_id` from `~/.direclaw/config.yaml` channel profile mapping
    - load `<orchestrator_private_workspace>/orchestrator.yaml`
-   - write selector request file under `~/.direclaw/orchestrator/select/incoming`
+   - write selector request file under `<orchestrator_runtime_root>/orchestrator/select/incoming`
    - run selector agent via provider CLI
-   - persist selector output under `~/.direclaw/orchestrator/select/results`
+   - persist selector output under `<orchestrator_runtime_root>/orchestrator/select/results`
    - execute selector-chosen action:
      - `workflow_start`: select workflow and start new run
      - `workflow_status`: resolve run in precedence order and return run progress snapshot without advancing workflow steps:
@@ -70,6 +70,8 @@ Queue worker behavior:
 5. Orchestrator executes workflow step(s) and returns response payload fields.
 6. On success, write an outgoing payload file.
 7. On failure, attempt requeue `processing -> incoming`.
+
+`<orchestrator_runtime_root>` resolves to the orchestrator private workspace root.
 
 Output file naming:
 

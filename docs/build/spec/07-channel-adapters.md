@@ -16,7 +16,7 @@ Discord, Telegram, and WhatsApp are deferred after v1 and remain documented here
 When implemented, each adapter must:
 
 - Accept text and media
-- Save inbound media to `~/.direclaw/files`
+- Save inbound media to `<orchestrator_runtime_root>/files` for the resolved orchestrator
 - Add `[file: /abs/path]` tags to queued message text
 - Include `channelProfileId` in queued payload when channel integration uses multiple channel identities
 - Track pending requests for response correlation
@@ -24,6 +24,8 @@ When implemented, each adapter must:
 - Send files before text
 - Cleanup pending entries older than 10 minutes
 - Support `!agent` and `/agent` commands for configured-agent listing
+
+`<orchestrator_runtime_root>` resolves to the orchestrator private workspace root for the message's resolved channel profile.
 
 ## Slack Adapter
 

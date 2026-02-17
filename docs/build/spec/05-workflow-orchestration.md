@@ -9,6 +9,7 @@ Defines orchestrator-owned workflow execution across agents, definition schema, 
 - Workflows are orchestrator-managed.
 - All channel-originated messages are orchestrator-dispatched.
 - Agents do not directly message each other as a standalone feature.
+- `<orchestrator_runtime_root>` resolves to the orchestrator private workspace root.
 - Orchestrator controls:
   - step ordering
   - step input/output mapping
@@ -17,12 +18,12 @@ Defines orchestrator-owned workflow execution across agents, definition schema, 
 
 Persisted run state:
 
-- `~/.direclaw/workflows/runs/<run_id>.json`
+- `<orchestrator_runtime_root>/workflows/runs/<run_id>.json`
 - Valid run states: `queued`, `running`, `waiting`, `succeeded`, `failed`, `canceled`
 
 Run progress snapshot:
 
-- `~/.direclaw/workflows/runs/<run_id>/progress.json`
+- `<orchestrator_runtime_root>/workflows/runs/<run_id>/progress.json`
 - Must be updated at workflow start, step-attempt start/end, state transitions, and periodic heartbeat ticks while `state=running|waiting`
 - Must include:
   - `runId`
@@ -171,14 +172,14 @@ Recommended selected-workflow `inputs` for channel dispatch:
 
 Selector request persistence:
 
-- `~/.direclaw/orchestrator/messages/<message_id>.json` (canonical normalized message snapshot)
-- `~/.direclaw/orchestrator/select/incoming/<selector_id>.json`
-- `~/.direclaw/orchestrator/select/processing/<selector_id>.json`
+- `<orchestrator_runtime_root>/orchestrator/messages/<message_id>.json` (canonical normalized message snapshot)
+- `<orchestrator_runtime_root>/orchestrator/select/incoming/<selector_id>.json`
+- `<orchestrator_runtime_root>/orchestrator/select/processing/<selector_id>.json`
 
 Selector result persistence:
 
-- `~/.direclaw/orchestrator/select/results/<selector_id>.json`
-- `~/.direclaw/orchestrator/select/logs/<selector_id>.log`
+- `<orchestrator_runtime_root>/orchestrator/select/results/<selector_id>.json`
+- `<orchestrator_runtime_root>/orchestrator/select/logs/<selector_id>.log`
 
 Selector request JSON must include:
 
@@ -277,9 +278,9 @@ Scope rules:
   3. active run association for `(channelProfileId, conversationId)`
 - If scope cannot be resolved, runtime must ask a clarifying question instead of guessing target run.
 - All file reads must be restricted to:
-  - `~/.direclaw/workflows/runs/<run_id>`
-  - `~/.direclaw/orchestrator/select`
-  - `~/.direclaw/logs`
+  - `<orchestrator_runtime_root>/workflows/runs/<run_id>`
+  - `<orchestrator_runtime_root>/orchestrator/select`
+  - `<orchestrator_runtime_root>/logs`
   - resolved orchestrator private workspace
 - Path traversal outside allowed roots is invalid and must be blocked and logged.
 
@@ -292,7 +293,7 @@ Deterministic context gathering:
   - relevant result artifacts (`progress.json`, step `result.json`, selector result)
   - bounded log excerpts filtered by run/conversation identifiers and recent window
 - Persist gathered bundle at:
-  - `~/.direclaw/orchestrator/diagnostics/context/<diagnostics_id>.json`
+  - `<orchestrator_runtime_root>/orchestrator/diagnostics/context/<diagnostics_id>.json`
 
 Retrieval policy:
 
@@ -317,7 +318,7 @@ Tool contracts (orchestrator-internal):
 
 All tool outputs must be serializable JSON and persisted under:
 
-- `~/.direclaw/orchestrator/diagnostics/results/<diagnostics_id>.json`
+- `<orchestrator_runtime_root>/orchestrator/diagnostics/results/<diagnostics_id>.json`
 
 Looping and fallback controls:
 
@@ -338,17 +339,17 @@ Auditability:
   - tool call trace and selected excerpts
   - final user-facing response
 - Diagnostics logs must be written to:
-  - `~/.direclaw/orchestrator/diagnostics/logs/<diagnostics_id>.log`
+  - `<orchestrator_runtime_root>/orchestrator/diagnostics/logs/<diagnostics_id>.log`
 
 ## Execution Workspace Model
 
 Run workspace root:
 
-- `~/.direclaw/workflows/runs/<run_id>/workspace/`
+- `<orchestrator_runtime_root>/workflows/runs/<run_id>/workspace/`
 
 Per-step attempt output root:
 
-- `~/.direclaw/workflows/runs/<run_id>/steps/<step_id>/attempts/<attempt>/outputs/`
+- `<orchestrator_runtime_root>/workflows/runs/<run_id>/steps/<step_id>/attempts/<attempt>/outputs/`
 
 Rules:
 
@@ -413,7 +414,7 @@ Invalid JSON envelope, missing outputs, invalid paths, or unreadable files:
 
 Control payload persistence:
 
-- `~/.direclaw/workflows/runs/<run_id>/steps/<step_id>/result.json`
+- `<orchestrator_runtime_root>/workflows/runs/<run_id>/steps/<step_id>/result.json`
 
 ## Deterministic Routing Rules
 
