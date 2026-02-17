@@ -1,7 +1,8 @@
 use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
 use crate::memory::{
-    generate_bulletin_for_message, persist_transcript_observation, HybridRecallRequest,
-    MemoryBulletin, MemoryBulletinOptions, MemoryPaths, MemoryRecallOptions, MemoryRepository,
+    embed_query_text, generate_bulletin_for_message, persist_transcript_observation,
+    HybridRecallRequest, MemoryBulletin, MemoryBulletinOptions, MemoryPaths, MemoryRecallOptions,
+    MemoryRepository,
 };
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
@@ -312,7 +313,7 @@ where
                         requesting_orchestrator_id: orchestrator_id.clone(),
                         conversation_id: inbound.conversation_id.clone(),
                         query_text: inbound.message.clone(),
-                        query_embedding: None,
+                        query_embedding: embed_query_text(&inbound.message),
                     },
                     &recall_options,
                     &bulletin_options,

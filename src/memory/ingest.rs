@@ -1,3 +1,4 @@
+use super::embedding::upsert_embeddings_for_nodes_best_effort;
 use super::extractor::{extract_candidates_from_ingest_file, MemoryExtractionError};
 use super::idempotency::compute_ingest_idempotency_key;
 use super::logging::append_memory_event;
@@ -262,6 +263,7 @@ fn process_one_file(
 
     match repo.upsert_nodes_and_edges(&source, &extracted.nodes, &extracted.edges) {
         Ok(PersistOutcome::Inserted) => {
+            upsert_embeddings_for_nodes_best_effort(repo, &extracted.nodes, timestamp_now());
             write_processed_manifest(
                 &processed_path,
                 &ProcessedManifest {
@@ -503,6 +505,13 @@ fn max_bytes(max_file_size_mb: u64) -> usize {
     let one_mb = 1024u64 * 1024u64;
     let bytes = max_file_size_mb.saturating_mul(one_mb);
     usize::try_from(bytes).unwrap_or(usize::MAX)
+}
+
+fn timestamp_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn append_ingest_event(

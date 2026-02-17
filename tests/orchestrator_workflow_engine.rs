@@ -1,7 +1,8 @@
 use direclaw::config::{OrchestratorConfig, OutputKey, PathTemplate, Settings};
 use direclaw::memory::{
-    bootstrap_memory_paths, MemoryCapturedBy, MemoryNode, MemoryNodeType, MemoryPaths,
-    MemoryRepository, MemorySource, MemorySourceRecord, MemorySourceType, MemoryStatus,
+    bootstrap_memory_paths, embed_query_text, MemoryCapturedBy, MemoryNode, MemoryNodeType,
+    MemoryPaths, MemoryRepository, MemorySource, MemorySourceRecord, MemorySourceType,
+    MemoryStatus,
 };
 use direclaw::orchestration::function_registry::FunctionRegistry;
 use direclaw::orchestration::output_contract::{
@@ -1137,6 +1138,9 @@ fn diagnostics_persists_memory_evidence_bundle_with_provenance() {
         &[],
     )
     .expect("persist memory");
+    let query_embedding = embed_query_text("please fix this bug").expect("query embedding");
+    repo.upsert_embedding("mem-1", &query_embedding, 10)
+        .expect("persist embedding");
 
     let request = sample_selector_request();
     let functions = FunctionRegistry::with_run_store(
@@ -1194,6 +1198,97 @@ fn diagnostics_persists_memory_evidence_bundle_with_provenance() {
     assert!(evidence.contains("memoryId"));
     assert!(evidence.contains("sourceType"));
     assert!(evidence.contains("finalScore"));
+    assert!(evidence.contains("\"mode\": \"hybrid\""));
+}
+
+#[test]
+fn diagnostics_persists_findings_back_into_memory_graph() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store
+        .create_run("run-diag-writeback", "fix_issue", 5)
+        .expect("create run");
+
+    let paths = MemoryPaths::from_runtime_root(&state_root);
+    bootstrap_memory_paths(&paths).expect("bootstrap memory paths");
+    let repo = MemoryRepository::open(&paths.database, "engineering_orchestrator").expect("repo");
+    repo.ensure_schema().expect("schema");
+
+    let request = sample_selector_request();
+    let functions = FunctionRegistry::with_run_store(
+        vec![
+            "workflow.status".to_string(),
+            "workflow.cancel".to_string(),
+            "orchestrator.list".to_string(),
+        ],
+        store.clone(),
+    );
+    let diag_result = SelectorResult {
+        selector_id: "selector-1".to_string(),
+        status: SelectorStatus::Selected,
+        action: Some(SelectorAction::DiagnosticsInvestigate),
+        selected_workflow: None,
+        diagnostics_scope: Some(Map::from_iter([(
+            "runId".to_string(),
+            Value::String("run-diag-writeback".to_string()),
+        )])),
+        function_id: None,
+        function_args: None,
+        reason: None,
+    };
+
+    let _ = route_selector_action(
+        &request,
+        &diag_result,
+        RouteContext {
+            status_input: &StatusResolutionInput {
+                explicit_run_id: None,
+                inbound_workflow_run_id: None,
+                channel_profile_id: Some("engineering".to_string()),
+                conversation_id: Some("thread-1".to_string()),
+            },
+            active_conversation_runs: &BTreeMap::new(),
+            functions: &functions,
+            run_store: &store,
+            orchestrator: &sample_orchestrator(),
+            workspace_access_context: None,
+            runner_binaries: None,
+            memory_enabled: true,
+            source_message_id: Some("message-1"),
+            now: 430,
+        },
+    )
+    .expect("diag route");
+
+    let db = rusqlite::Connection::open(&paths.database).expect("open sqlite");
+    let (count, memory_id): (i64, String) = db
+        .query_row(
+            "
+            SELECT COUNT(*), COALESCE(MAX(memory_id), '')
+            FROM memories
+            WHERE orchestrator_id = 'engineering_orchestrator'
+              AND source_type = 'diagnostics'
+            ",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("query diagnostics memories");
+    assert!(count >= 1, "expected diagnostics memory to be persisted");
+    assert!(
+        memory_id.starts_with("diagnostics-diag-selector-1-430"),
+        "unexpected diagnostics memory id: {memory_id}"
+    );
+
+    let embedding_count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?1",
+            rusqlite::params![memory_id],
+            |row| row.get(0),
+        )
+        .expect("count diagnostics embeddings");
+    assert_eq!(embedding_count, 1);
 }
 
 #[test]

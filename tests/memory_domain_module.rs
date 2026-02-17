@@ -130,6 +130,40 @@ fn memory_domain_module_requires_ingest_source_path_to_be_canonical() {
 }
 
 #[test]
+fn memory_domain_module_requires_workflow_output_source_path_to_be_canonical_when_present() {
+    let root = tempdir().expect("tempdir");
+    let output_file = root.path().join("out.txt");
+    fs::write(&output_file, "hello").expect("write output file");
+    fs::create_dir_all(root.path().join("nested")).expect("nested dir");
+
+    let canonical = output_file.canonicalize().expect("canonical output file");
+    let valid = MemorySource {
+        source_type: MemorySourceType::WorkflowOutput,
+        source_path: Some(canonical.clone()),
+        conversation_id: None,
+        workflow_run_id: Some("run-1".to_string()),
+        step_id: Some("step-1".to_string()),
+        captured_by: MemoryCapturedBy::System,
+    };
+    valid.validate().expect("canonical path should validate");
+
+    let non_canonical = MemorySource {
+        source_type: MemorySourceType::WorkflowOutput,
+        source_path: Some(
+            canonical
+                .parent()
+                .expect("parent")
+                .join("nested/../out.txt"),
+        ),
+        conversation_id: None,
+        workflow_run_id: Some("run-1".to_string()),
+        step_id: Some("step-1".to_string()),
+        captured_by: MemoryCapturedBy::System,
+    };
+    assert!(non_canonical.validate().is_err());
+}
+
+#[test]
 fn memory_domain_module_validates_memory_node_required_fields_and_bounds() {
     let node = MemoryNode {
         memory_id: "mem-1".to_string(),

@@ -6,6 +6,7 @@ use direclaw::orchestration::transitions::RoutedSelectorAction;
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::bootstrap_memory_runtime_paths;
+use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -566,4 +567,15 @@ memory:
     assert!(sources
         .iter()
         .any(|source| source.source_type == direclaw::memory::MemorySourceType::WorkflowOutput));
+
+    let db = Connection::open(runtime_root.join("memory/memory.db")).expect("open sqlite");
+    let embeddings_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM memory_embeddings", [], |row| {
+            row.get(0)
+        })
+        .expect("count embeddings");
+    assert!(
+        embeddings_count > 0,
+        "expected embedding rows to be persisted"
+    );
 }

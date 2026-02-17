@@ -659,6 +659,44 @@ fn bulletin_generation_falls_back_to_previous_snapshot_or_empty_payload() {
 }
 
 #[test]
+fn bulletin_fallback_uses_latest_generated_at_not_filename_order() {
+    let (_dir, repo, paths) = setup_repo();
+    fs::create_dir_all(&paths.bulletins).expect("bulletins dir");
+
+    fs::write(
+        paths.bulletins.join("zzz-older-name.json"),
+        r#"{"rendered":"older","citations":[],"sections":[],"generatedAt":10}"#,
+    )
+    .expect("write older bulletin");
+    fs::write(
+        paths.bulletins.join("aaa-newer-name.json"),
+        r#"{"rendered":"newer","citations":[],"sections":[],"generatedAt":20}"#,
+    )
+    .expect("write newer bulletin");
+
+    let fallback = generate_bulletin_for_message(
+        &repo,
+        &paths,
+        "msg-fallback",
+        &HybridRecallRequest {
+            requesting_orchestrator_id: "beta".to_string(),
+            conversation_id: None,
+            query_text: "will fail".to_string(),
+            query_embedding: None,
+        },
+        &MemoryRecallOptions::default(),
+        &MemoryBulletinOptions {
+            max_chars: 500,
+            generated_at: 30,
+        },
+        None,
+    )
+    .expect("fallback bulletin");
+
+    assert_eq!(fallback.rendered, "newer");
+}
+
+#[test]
 fn recall_scope_denial_logs_structured_fields() {
     let (_dir, repo, paths) = setup_repo();
 
@@ -1229,6 +1267,116 @@ fn recall_returns_error_for_invalid_edge_type_in_database() {
     .expect_err("invalid edge type should fail");
 
     assert!(matches!(err, MemoryRecallError::InvalidEdgeType { .. }));
+}
+
+#[test]
+fn recall_returns_error_for_invalid_numeric_shapes_in_database() {
+    let (dir, repo, paths) = setup_repo();
+    let src = dir.path().join("source.txt");
+    fs::write(&src, "x").expect("write source");
+
+    let node = memory_node(
+        "bad-num",
+        "alpha",
+        MemoryNodeType::Fact,
+        "wizard",
+        "wizard",
+        10,
+        0.8,
+        1_800_000_000,
+        Some(canonical(&src)),
+        None,
+    );
+    repo.upsert_nodes_and_edges(
+        &source_record("alpha", "k-bad-num", Some(canonical(&src))),
+        &[node],
+        &[],
+    )
+    .expect("persist");
+
+    let connection = rusqlite::Connection::open(repo.database_path()).expect("open sqlite");
+
+    connection
+        .execute(
+            "UPDATE memories SET importance = 150 WHERE memory_id = 'bad-num'",
+            [],
+        )
+        .expect("set invalid importance");
+    let err = hybrid_recall(
+        &repo,
+        &HybridRecallRequest {
+            requesting_orchestrator_id: "alpha".to_string(),
+            conversation_id: None,
+            query_text: "wizard".to_string(),
+            query_embedding: None,
+        },
+        &MemoryRecallOptions::default(),
+        None,
+        &paths.log_file,
+    )
+    .expect_err("invalid importance should fail");
+    assert!(matches!(err, MemoryRecallError::Sql { .. }));
+    assert!(err.to_string().contains("invalid importance"));
+
+    connection
+        .execute(
+            "UPDATE memories SET importance = 50, confidence = 1.5 WHERE memory_id = 'bad-num'",
+            [],
+        )
+        .expect("set invalid confidence");
+    let err = hybrid_recall(
+        &repo,
+        &HybridRecallRequest {
+            requesting_orchestrator_id: "alpha".to_string(),
+            conversation_id: None,
+            query_text: "wizard".to_string(),
+            query_embedding: None,
+        },
+        &MemoryRecallOptions::default(),
+        None,
+        &paths.log_file,
+    )
+    .expect_err("invalid confidence should fail");
+    assert!(matches!(err, MemoryRecallError::Sql { .. }));
+    assert!(err.to_string().contains("invalid confidence"));
+
+    connection
+        .execute(
+            "INSERT INTO memory_edges (
+                orchestrator_id, edge_id, from_memory_id, to_memory_id, edge_type, weight, created_at, reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                "alpha",
+                "bad-weight",
+                "bad-num",
+                "bad-num",
+                "RelatedTo",
+                2.0_f32,
+                1_800_000_000_i64,
+                "bad"
+            ],
+        )
+        .expect("insert invalid edge weight");
+    connection
+        .execute(
+            "UPDATE memories SET confidence = 0.9 WHERE memory_id = 'bad-num'",
+            [],
+        )
+        .expect("restore confidence");
+    let err = hybrid_recall(
+        &repo,
+        &HybridRecallRequest {
+            requesting_orchestrator_id: "alpha".to_string(),
+            conversation_id: None,
+            query_text: "wizard".to_string(),
+            query_embedding: None,
+        },
+        &MemoryRecallOptions::default(),
+        None,
+        &paths.log_file,
+    )
+    .expect_err("invalid edge weight should fail");
+    assert!(matches!(err, MemoryRecallError::InvalidEdgeWeight { .. }));
 }
 
 #[test]

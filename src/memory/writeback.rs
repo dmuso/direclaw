@@ -1,11 +1,14 @@
 use super::domain::{
-    MemoryCapturedBy, MemoryNode, MemoryNodeType, MemorySource, MemorySourceType, MemoryStatus,
+    MemoryCapturedBy, MemoryEdge, MemoryEdgeType, MemoryNode, MemoryNodeType, MemorySource,
+    MemorySourceType, MemoryStatus,
 };
+use super::embedding::upsert_embeddings_for_nodes_best_effort;
 use super::repository::{
     MemoryRepository, MemoryRepositoryError, MemorySourceRecord, PersistOutcome,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 
 pub fn persist_transcript_observation(
@@ -53,7 +56,12 @@ pub fn persist_transcript_observation(
         captured_by: MemoryCapturedBy::User,
     };
 
-    repo.upsert_nodes_and_edges(&source_record, &[node], &[])
+    let nodes = vec![node];
+    let outcome = repo.upsert_nodes_and_edges(&source_record, &nodes, &[])?;
+    if outcome == PersistOutcome::Inserted {
+        upsert_embeddings_for_nodes_best_effort(repo, &nodes, captured_at);
+    }
+    Ok(outcome)
 }
 
 pub fn persist_workflow_output_memories(
@@ -67,14 +75,10 @@ pub fn persist_workflow_output_memories(
             continue;
         }
 
-        let source_path = input.output_files.get(key).and_then(|path| {
-            let path = PathBuf::from(path);
-            if path.is_absolute() {
-                Some(path)
-            } else {
-                None
-            }
-        });
+        let source_path = input
+            .output_files
+            .get(key)
+            .and_then(|path| canonicalize_if_absolute_file_path(path));
         let source = MemorySource {
             source_type: MemorySourceType::WorkflowOutput,
             source_path,
@@ -121,7 +125,83 @@ pub fn persist_workflow_output_memories(
         step_id: Some(input.step_id.to_string()),
         captured_by: MemoryCapturedBy::System,
     };
-    repo.upsert_nodes_and_edges(&source_record, &nodes, &[])
+    let outcome = repo.upsert_nodes_and_edges(&source_record, &nodes, &[])?;
+    if outcome == PersistOutcome::Inserted {
+        upsert_embeddings_for_nodes_best_effort(repo, &nodes, input.captured_at);
+    }
+    Ok(outcome)
+}
+
+pub fn persist_diagnostics_findings(
+    repo: &MemoryRepository,
+    input: &DiagnosticsFindingWriteback<'_>,
+) -> Result<PersistOutcome, MemoryRepositoryError> {
+    let content = normalize_text(input.findings);
+    if content.is_empty() {
+        return Ok(PersistOutcome::DuplicateSource);
+    }
+
+    let summary = summarize(&content, 120);
+    let diagnostics_memory_id = format!("diagnostics-{}", input.diagnostics_id);
+    let node = MemoryNode {
+        memory_id: diagnostics_memory_id.clone(),
+        orchestrator_id: input.orchestrator_id.to_string(),
+        node_type: MemoryNodeType::Observation,
+        importance: 70,
+        content,
+        summary,
+        confidence: 0.8,
+        source: MemorySource {
+            source_type: MemorySourceType::Diagnostics,
+            source_path: None,
+            conversation_id: input.conversation_id.map(|value| value.to_string()),
+            workflow_run_id: input.run_id.map(|value| value.to_string()),
+            step_id: None,
+            captured_by: MemoryCapturedBy::System,
+        },
+        status: MemoryStatus::Active,
+        created_at: input.captured_at,
+        updated_at: input.captured_at,
+    };
+
+    let mut edges = Vec::new();
+    for related_memory_id in input.related_memory_ids {
+        let related = related_memory_id.trim();
+        if related.is_empty() {
+            continue;
+        }
+        edges.push(MemoryEdge {
+            edge_id: format!(
+                "diag-{}-{}",
+                sanitize_id_component(input.diagnostics_id),
+                related
+            ),
+            from_memory_id: related.to_string(),
+            to_memory_id: diagnostics_memory_id.clone(),
+            edge_type: MemoryEdgeType::RelatedTo,
+            weight: 0.7,
+            created_at: input.captured_at,
+            reason: Some(format!("diagnostics:{}", input.diagnostics_id)),
+        });
+    }
+
+    let source_record = MemorySourceRecord {
+        orchestrator_id: input.orchestrator_id.to_string(),
+        idempotency_key: format!("diagnostics:{}", input.diagnostics_id),
+        source_type: MemorySourceType::Diagnostics,
+        source_path: None,
+        conversation_id: input.conversation_id.map(|value| value.to_string()),
+        workflow_run_id: input.run_id.map(|value| value.to_string()),
+        step_id: None,
+        captured_by: MemoryCapturedBy::System,
+    };
+
+    let nodes = vec![node];
+    let outcome = repo.upsert_nodes_and_edges(&source_record, &nodes, &edges)?;
+    if outcome == PersistOutcome::Inserted {
+        upsert_embeddings_for_nodes_best_effort(repo, &nodes, input.captured_at);
+    }
+    Ok(outcome)
 }
 
 pub struct WorkflowOutputWriteback<'a> {
@@ -133,6 +213,28 @@ pub struct WorkflowOutputWriteback<'a> {
     pub outputs: &'a Map<String, Value>,
     pub output_files: &'a BTreeMap<String, String>,
     pub captured_at: i64,
+}
+
+pub struct DiagnosticsFindingWriteback<'a> {
+    pub orchestrator_id: &'a str,
+    pub diagnostics_id: &'a str,
+    pub run_id: Option<&'a str>,
+    pub conversation_id: Option<&'a str>,
+    pub findings: &'a str,
+    pub related_memory_ids: &'a [String],
+    pub captured_at: i64,
+}
+
+fn canonicalize_if_absolute_file_path(path: &str) -> Option<PathBuf> {
+    let candidate = PathBuf::from(path);
+    if !candidate.is_absolute() {
+        return None;
+    }
+    let metadata = fs::metadata(&candidate).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    fs::canonicalize(&candidate).ok()
 }
 
 fn node_type_for_output_key(key: &str) -> MemoryNodeType {

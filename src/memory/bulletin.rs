@@ -360,20 +360,35 @@ fn load_latest_bulletin(
         .filter_map(|entry| entry.ok().map(|e| e.path()))
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
         .collect();
-    candidates.sort();
-
     if let Some(path) = exclude {
         candidates.retain(|candidate| candidate != path);
     }
 
-    for path in candidates.into_iter().rev() {
+    let mut parsed = Vec::new();
+    for path in candidates {
         let raw = fs::read_to_string(&path).map_err(|source| MemoryRecallError::LogWrite {
             path: path.display().to_string(),
             source,
         })?;
         if let Ok(value) = serde_json::from_str::<MemoryBulletin>(&raw) {
-            return Ok(Some(value));
+            let modified = fs::metadata(&path)
+                .ok()
+                .and_then(|meta| meta.modified().ok())
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs() as i64)
+                .unwrap_or(0);
+            parsed.push((value, modified));
         }
+    }
+
+    parsed.sort_by(|(a, a_modified), (b, b_modified)| {
+        a.generated_at
+            .cmp(&b.generated_at)
+            .then_with(|| a_modified.cmp(b_modified))
+    });
+
+    if let Some((latest, _)) = parsed.pop() {
+        return Ok(Some(latest));
     }
 
     Ok(None)

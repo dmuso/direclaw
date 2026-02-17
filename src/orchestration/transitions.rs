@@ -1,6 +1,7 @@
 use crate::config::OrchestratorConfig;
 use crate::memory::{
-    hybrid_recall, HybridRecallRequest, MemoryPaths, MemoryRecallOptions, MemoryRepository,
+    embed_query_text, hybrid_recall, persist_diagnostics_findings, DiagnosticsFindingWriteback,
+    HybridRecallRequest, MemoryPaths, MemoryRecallOptions, MemoryRepository,
 };
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
@@ -373,6 +374,7 @@ pub fn route_selector_action(
                 _ => Map::new(),
             };
 
+            let mut diagnostics_related_memory_ids: Vec<String> = Vec::new();
             if ctx.memory_enabled && run_id.is_some() {
                 let memory_paths = MemoryPaths::from_runtime_root(ctx.run_store.state_root());
                 match MemoryRepository::open(&memory_paths.database, &ctx.orchestrator.id)
@@ -383,7 +385,7 @@ pub fn route_selector_action(
                             requesting_orchestrator_id: ctx.orchestrator.id.clone(),
                             conversation_id: request.conversation_id.clone(),
                             query_text: request.user_message.clone(),
-                            query_embedding: None,
+                            query_embedding: embed_query_text(&request.user_message),
                         };
                         let recall_options = MemoryRecallOptions {
                             top_n: DIAGNOSTICS_MEMORY_TOP_N,
@@ -513,6 +515,11 @@ pub fn route_selector_action(
                                 ]));
                                 context_bundle_map
                                     .insert("memoryEvidence".to_string(), evidence_payload.clone());
+                                diagnostics_related_memory_ids = recall
+                                    .memories
+                                    .iter()
+                                    .map(|entry| entry.memory.memory_id.clone())
+                                    .collect();
                                 findings.push_str(&format!(
                                     " Included {} memory evidence item(s).",
                                     recall.memories.len()
@@ -608,6 +615,41 @@ pub fn route_selector_action(
                 .map_err(|e| json_error(&result_path, e))?,
             )
             .map_err(|e| io_error(&result_path, e))?;
+
+            if ctx.memory_enabled {
+                let memory_paths = MemoryPaths::from_runtime_root(ctx.run_store.state_root());
+                match MemoryRepository::open(&memory_paths.database, &ctx.orchestrator.id)
+                    .and_then(|repo| repo.ensure_schema().map(|_| repo))
+                {
+                    Ok(repo) => {
+                        if let Err(err) = persist_diagnostics_findings(
+                            &repo,
+                            &DiagnosticsFindingWriteback {
+                                orchestrator_id: &ctx.orchestrator.id,
+                                diagnostics_id: &diagnostics_id,
+                                run_id: run_id.as_deref(),
+                                conversation_id: request.conversation_id.as_deref(),
+                                findings: &findings,
+                                related_memory_ids: &diagnostics_related_memory_ids,
+                                captured_at: ctx.now,
+                            },
+                        ) {
+                            append_security_log(
+                                ctx.run_store.state_root(),
+                                &format!(
+                                    "diagnostics findings write-back failed diagnostics_id={diagnostics_id}: {err}"
+                                ),
+                            );
+                        }
+                    }
+                    Err(err) => append_security_log(
+                        ctx.run_store.state_root(),
+                        &format!(
+                            "diagnostics findings repository unavailable diagnostics_id={diagnostics_id}: {err}"
+                        ),
+                    ),
+                }
+            }
 
             Ok(RoutedSelectorAction::DiagnosticsInvestigate { run_id, findings })
         }

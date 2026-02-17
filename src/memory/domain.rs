@@ -14,9 +14,9 @@ pub enum MemoryDomainError {
     MissingField { field: &'static str },
     #[error("source_path must be absolute when provided")]
     SourcePathMustBeAbsolute,
-    #[error("source_path must be canonical when source_type is ingest_file")]
+    #[error("source_path must be canonical when source_path is provided")]
     SourcePathMustBeCanonical,
-    #[error("source_path must resolve to an existing file when source_type is ingest_file")]
+    #[error("source_path must resolve to an existing file when source_path is provided")]
     SourcePathCanonicalizeFailed,
     #[error("source type `workflow_output` requires workflow_run_id")]
     MissingWorkflowRunId,
@@ -117,6 +117,11 @@ impl MemorySource {
             if !path.is_absolute() {
                 return Err(MemoryDomainError::SourcePathMustBeAbsolute);
             }
+            let canonical = fs::canonicalize(path)
+                .map_err(|_| MemoryDomainError::SourcePathCanonicalizeFailed)?;
+            if canonical != *path {
+                return Err(MemoryDomainError::SourcePathMustBeCanonical);
+            }
         }
 
         match self.source_type {
@@ -146,15 +151,9 @@ impl MemorySource {
                 }
             }
             MemorySourceType::IngestFile => {
-                let path = self
-                    .source_path
+                self.source_path
                     .as_ref()
                     .ok_or(MemoryDomainError::MissingSourcePath)?;
-                let canonical = fs::canonicalize(path)
-                    .map_err(|_| MemoryDomainError::SourcePathCanonicalizeFailed)?;
-                if canonical != *path {
-                    return Err(MemoryDomainError::SourcePathMustBeCanonical);
-                }
             }
             MemorySourceType::Diagnostics | MemorySourceType::Manual => {}
         }

@@ -1,6 +1,6 @@
 use super::domain::{
-    MemoryCapturedBy, MemoryEdge, MemoryEdgeType, MemoryNode, MemoryNodeType, MemorySource,
-    MemorySourceType, MemoryStatus,
+    validate_confidence, validate_edge_weight, MemoryCapturedBy, MemoryEdge, MemoryEdgeType,
+    MemoryNode, MemoryNodeType, MemorySource, MemorySourceType, MemoryStatus,
 };
 use super::logging::append_memory_event;
 use super::repository::{MemoryRepository, MemoryRepositoryError};
@@ -45,6 +45,12 @@ pub enum MemoryRecallError {
     InvalidCapturedBy { value: String },
     #[error("invalid edge type `{value}` in database")]
     InvalidEdgeType { value: String },
+    #[error("invalid importance `{value}` in database for memory `{memory_id}`")]
+    InvalidImportance { memory_id: String, value: i64 },
+    #[error("invalid confidence `{value}` in database for memory `{memory_id}`")]
+    InvalidConfidence { memory_id: String, value: f32 },
+    #[error("invalid edge weight `{value}` in database for edge `{edge_id}`")]
+    InvalidEdgeWeight { edge_id: String, value: f32 },
     #[error("failed to decode embedding for memory `{memory_id}`")]
     InvalidEmbedding { memory_id: String },
 }
@@ -530,6 +536,14 @@ fn load_edges_for_memory_ids(
             created_at,
             reason,
         });
+        if let Some(last) = out.last() {
+            validate_edge_weight(last.weight).map_err(|_| {
+                MemoryRecallError::InvalidEdgeWeight {
+                    edge_id: last.edge_id.clone(),
+                    value: last.weight,
+                }
+            })?;
+        }
     }
 
     Ok(out)
@@ -636,6 +650,19 @@ fn map_memory_row(
         step_id: step_id.clone(),
         captured_by,
     };
+
+    if !(0..=100).contains(&importance) {
+        return Err(to_from_sql_err(MemoryRecallError::InvalidImportance {
+            memory_id: memory_id.clone(),
+            value: importance,
+        }));
+    }
+    validate_confidence(confidence).map_err(|_| {
+        to_from_sql_err(MemoryRecallError::InvalidConfidence {
+            memory_id: memory_id.clone(),
+            value: confidence,
+        })
+    })?;
 
     let memory = MemoryNode {
         memory_id,
