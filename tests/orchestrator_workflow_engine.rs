@@ -228,10 +228,10 @@ fn selector_flow_persists_artifacts_and_supports_retry_and_default_fallback() {
     );
 
     assert!(state_root
-        .join("orchestrator/messages/message-1.json")
+        .join("orchestrator/artifacts/message-message-1.json")
         .is_file());
     assert!(state_root
-        .join("orchestrator/select/processing/selector-1.json")
+        .join("orchestrator/artifacts/selector-processing-selector-1.json")
         .is_file());
 }
 
@@ -352,7 +352,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             "workflows/runs/{run_id}/steps/done/attempts/1/result.json"
         ))
         .is_file());
-    let engine_log_path = state_root.join(format!("workflows/runs/{run_id}/engine.log"));
+    let engine_log_path = state_root.join("logs/orchestrator.log");
     assert!(engine_log_path.is_file());
     let engine_log = fs::read_to_string(engine_log_path).expect("read engine log");
     assert!(engine_log.contains(&format!("run_id={run_id}")));
@@ -1025,10 +1025,10 @@ channels: {{}}
     }
 
     assert!(runtime_root
-        .join("orchestrator/diagnostics/context/diag-selector-1-200.json")
+        .join("orchestrator/artifacts/diagnostics-context-diag-selector-1-200.json")
         .is_file());
     assert!(runtime_root
-        .join("orchestrator/diagnostics/results/diag-selector-1-200.json")
+        .join("orchestrator/artifacts/diagnostics-result-diag-selector-1-200.json")
         .is_file());
 
     let mut active = BTreeMap::new();
@@ -1220,8 +1220,8 @@ channels: {{}}
     .expect_err("workspace check must fail");
     assert!(err.to_string().contains("workspace access denied"));
 
-    let security_log =
-        fs::read_to_string(runtime_root.join("logs/security.log")).expect("read security log");
+    let security_log = fs::read_to_string(runtime_root.join("logs/orchestrator.log"))
+        .expect("read orchestrator log");
     assert!(security_log.contains("workspace access denied"));
 }
 
@@ -1322,8 +1322,8 @@ workflows:
     .expect_err("malicious output path should fail");
     assert!(err.to_string().contains("output path validation failed"));
 
-    let security_log =
-        fs::read_to_string(runtime_root.join("logs/security.log")).expect("read security log");
+    let security_log = fs::read_to_string(runtime_root.join("logs/orchestrator.log"))
+        .expect("read orchestrator log");
     assert!(security_log.contains("output path validation denied"));
 }
 
@@ -1957,8 +1957,8 @@ workflows:
     assert_eq!(run.state, RunState::Failed);
     assert!(!run_workspace.exists());
     assert!(!denied_agent_workspace.exists());
-    let security_log =
-        fs::read_to_string(state_root.join("logs/security.log")).expect("read security");
+    let security_log = fs::read_to_string(state_root.join("logs/orchestrator.log"))
+        .expect("read orchestrator log");
     assert!(security_log.contains("workspace access denied"));
 }
 

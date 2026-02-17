@@ -174,6 +174,17 @@ fn read_outgoing_messages(queue: &QueuePaths) -> Vec<OutgoingMessage> {
         .collect()
 }
 
+fn latest_run_dir(queue: &QueuePaths) -> PathBuf {
+    let run_root = queue.root.join("workflows/runs");
+    let mut run_dirs: Vec<PathBuf> = fs::read_dir(&run_root)
+        .expect("run root")
+        .map(|e| e.expect("entry").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    run_dirs.sort();
+    run_dirs.pop().expect("run dir")
+}
+
 #[test]
 fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifacts() {
     let dir = tempdir().expect("tempdir");
@@ -206,16 +217,23 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
     assert!(outgoing.contains("ok"));
     assert!(queue
         .root
-        .join("orchestrator/messages/msg-1.json")
+        .join("orchestrator/artifacts/message-msg-1.json")
         .is_file());
     assert!(queue
         .root
-        .join("orchestrator/select/results/sel-msg-1.json")
+        .join("orchestrator/artifacts/selector-result-sel-msg-1.json")
         .is_file());
-    assert!(queue
+    assert!(!queue
         .root
         .join("orchestrator/select/logs/sel-msg-1_attempt_0.invocation.json")
         .is_file());
+    let selector_result = fs::read_to_string(
+        queue
+            .root
+            .join("orchestrator/artifacts/selector-result-sel-msg-1.json"),
+    )
+    .expect("selector result");
+    assert!(selector_result.contains("fallback_to_default_workflow_after_lexical_miss"));
 }
 
 #[test]
@@ -363,10 +381,11 @@ workflows:
         .join(format!("workflows/runs/{run_id}.json"))
         .is_file());
     assert!(run_root.join("progress.json").is_file());
-    assert!(run_root.join("engine.log").is_file());
+    assert!(queue.root.join("logs/orchestrator.log").is_file());
     let progress = fs::read_to_string(run_root.join("progress.json")).expect("progress");
     assert!(progress.contains("\"state\": \"succeeded\""));
-    let engine_log = fs::read_to_string(run_root.join("engine.log")).expect("engine log");
+    let engine_log =
+        fs::read_to_string(queue.root.join("logs/orchestrator.log")).expect("orchestrator log");
     assert!(engine_log.contains("transition=succeeded"));
 
     for step in ["plan", "review", "done"] {
@@ -728,7 +747,8 @@ workflows:
     let progress = fs::read_to_string(run_dir.join("progress.json")).expect("read progress");
     assert!(progress.contains("\"state\": \"failed\""));
     assert!(progress.contains("max total iterations"));
-    let engine_log = fs::read_to_string(run_dir.join("engine.log")).expect("engine log");
+    let engine_log =
+        fs::read_to_string(queue.root.join("logs/orchestrator.log")).expect("orchestrator log");
     assert!(engine_log.contains("transition=failed"));
 }
 
@@ -738,10 +758,13 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
 
-    let claude_fail = dir.path().join("claude-fail");
-    let codex_ok = dir.path().join("codex-ok");
-    write_script(&claude_fail, "#!/bin/sh\necho fail 1>&2\nexit 7\n");
-    write_openai_success_script(&codex_ok);
+    let claude_ok = dir.path().join("claude-ok");
+    let codex_fail = dir.path().join("codex-fail");
+    write_script(
+        &claude_ok,
+        "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(&codex_fail, "#!/bin/sh\necho fail 1>&2\nexit 7\n");
     let settings_fail = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-fail"),
@@ -751,24 +774,22 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
     );
     let queue = queue_for_profile(&settings_fail, "eng");
     write_incoming(&queue, &sample_message("msg-fail", "thread-1"));
-    let processed = drain_queue_once_with_binaries(
+    let err = drain_queue_once_with_binaries(
         &state_root,
         &settings_fail,
         2,
         &binaries(
-            claude_fail.display().to_string(),
-            codex_ok.display().to_string(),
+            claude_ok.display().to_string(),
+            codex_fail.display().to_string(),
         ),
     )
-    .expect("drain non-zero");
-    assert_eq!(processed, 1);
+    .expect_err("drain non-zero");
+    assert!(err.to_string().contains("exit code 7"));
     let non_zero_log = fs::read_to_string(
-        queue
-            .root
-            .join("orchestrator/select/logs/sel-msg-fail_attempt_0.invocation.json"),
+        latest_run_dir(&queue).join("steps/start/attempts/1/provider_invocation.json"),
     )
     .expect("non-zero log");
-    assert!(non_zero_log.contains("\"status\": \"failed\""));
+    assert!(non_zero_log.contains("\"provider\": \"openai\""));
     assert!(non_zero_log.contains("\"exitCode\": 7"));
 
     let codex_bad = dir.path().join("codex-bad");
@@ -777,11 +798,7 @@ fn provider_non_zero_and_parse_failures_are_logged_and_fall_back_deterministical
         r#"#!/bin/sh
 set -eu
 args="$*"
-if printf "%s" "$args" | grep -q "sel-msg-parse_attempt_"; then
-  echo '{not-json}'
-else
-  echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]"}}'
-fi
+echo '{not-json}'
 "#,
     );
     let settings_parse = write_settings_and_orchestrator(
@@ -793,28 +810,23 @@ fi
     );
     let queue_parse = queue_for_profile(&settings_parse, "eng");
     write_incoming(&queue_parse, &sample_message("msg-parse", "thread-2"));
-    let processed = drain_queue_once_with_binaries(
+    let err = drain_queue_once_with_binaries(
         &state_root,
         &settings_parse,
         2,
         &binaries(
-            codex_ok.display().to_string(),
+            claude_ok.display().to_string(),
             codex_bad.display().to_string(),
         ),
     )
-    .expect("drain parse failure");
-    assert_eq!(processed, 1);
+    .expect_err("drain parse failure");
+    assert!(err.to_string().contains("output parse failure"));
     let parse_log = fs::read_to_string(
-        queue_parse
-            .root
-            .join("orchestrator/select/logs/sel-msg-parse_attempt_0.invocation.json"),
+        latest_run_dir(&queue_parse).join("steps/start/attempts/1/provider_invocation.json"),
     )
     .expect("parse log");
-    assert!(parse_log.contains("\"status\": \"failed\""));
-    assert!(
-        parse_log.contains("invalid jsonl event")
-            || parse_log.contains("missing terminal agent_message")
-    );
+    assert!(parse_log.contains("\"provider\": \"openai\""));
+    assert!(parse_log.contains("\"timedOut\": false"));
 }
 
 #[test]
@@ -823,10 +835,13 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
 
-    let claude_timeout = dir.path().join("claude-timeout");
-    let codex = dir.path().join("codex-timeout-ok");
-    write_script(&claude_timeout, "#!/bin/sh\nsleep 2\necho too-late\n");
-    write_openai_success_script(&codex);
+    let claude = dir.path().join("claude-timeout-ok");
+    let codex_timeout = dir.path().join("codex-timeout");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(&codex_timeout, "#!/bin/sh\nsleep 2\necho too-late\n");
     let settings = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-timeout"),
@@ -834,30 +849,63 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
         1,
         1,
     );
+    fs::write(
+        dir.path().join("orch-timeout/orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 1
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    description: default triage workflow
+    tags: [triage, default]
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
+workflow_orchestration:
+  default_step_timeout_seconds: 1
+  max_step_timeout_seconds: 1
+"#,
+    )
+    .expect("rewrite orchestrator for step timeout");
     let queue = queue_for_profile(&settings, "eng");
     write_incoming(&queue, &sample_message("msg-timeout", "thread-timeout"));
 
-    let processed = drain_queue_once_with_binaries(
+    let err = drain_queue_once_with_binaries(
         &state_root,
         &settings,
         1,
         &binaries(
-            claude_timeout.display().to_string(),
-            codex.display().to_string(),
+            claude.display().to_string(),
+            codex_timeout.display().to_string(),
         ),
     )
-    .expect("drain timeout fallback");
-    assert_eq!(processed, 1);
+    .expect_err("drain timeout failure");
+    assert!(err.to_string().contains("timed out"));
 
     let timeout_log = fs::read_to_string(
-        queue
-            .root
-            .join("orchestrator/select/logs/sel-msg-timeout_attempt_0.invocation.json"),
+        latest_run_dir(&queue).join("steps/start/attempts/1/provider_invocation.json"),
     )
     .expect("timeout log");
-    assert!(timeout_log.contains("\"status\": \"failed\""));
+    assert!(timeout_log.contains("\"provider\": \"openai\""));
     assert!(timeout_log.contains("\"timedOut\": true"));
-    assert!(timeout_log.contains("timed out"));
 }
 
 #[test]
@@ -929,7 +977,7 @@ workflows:
     );
 
     let security_log =
-        fs::read_to_string(queue.root.join("logs/security.log")).expect("security log");
+        fs::read_to_string(queue.root.join("logs/orchestrator.log")).expect("orchestrator log");
     assert!(security_log.contains("output path validation denied"));
     assert!(security_log.contains("sel-msg-malicious"));
     assert!(fs::read_dir(&queue.processing)
@@ -1159,20 +1207,23 @@ fn queue_runtime_enforces_same_key_ordering_and_cross_key_concurrency() {
     let codex = dir.path().join("codex-order");
     write_script(
         &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(
+        &codex,
         r#"#!/bin/sh
 set -eu
-line=$(printf "%s\n" "$@" | tr ' ' '\n' | grep -o 'sel-[^/[:space:]]*_attempt_[0-9]*_prompt.md' | head -n1 || true)
-selector_id=$(printf "%s" "$line" | sed 's/_attempt_.*$//')
-if [ -z "$selector_id" ]; then
-  selector_id="unknown"
+line=$(printf "%s\n" "$@" | tr ' ' '\n' | grep -o 'run-sel-[^/[:space:]]*' | head -n1 || true)
+run_id=$(printf "%s" "$line")
+if [ -z "$run_id" ]; then
+  run_id="unknown"
 fi
-echo "start $selector_id" >> "$PWD/trace.log"
+echo "start $run_id" >> "$PWD/trace.log"
 sleep 1
-echo "end $selector_id" >> "$PWD/trace.log"
-echo "{\"selectorId\":\"$selector_id\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}"
+echo "end $run_id" >> "$PWD/trace.log"
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]"}}'
 "#,
     );
-    write_openai_success_script(&codex);
 
     write_incoming(&queue, &sample_message("a1", "thread-a"));
     write_incoming(&queue, &sample_message("a2", "thread-a"));
@@ -1187,7 +1238,7 @@ echo "{\"selectorId\":\"$selector_id\",\"status\":\"selected\",\"action\":\"work
     .expect("drain");
     assert_eq!(processed, 3);
 
-    let trace = fs::read_to_string(orch_ws.join("agents/router/trace.log")).expect("trace");
+    let trace = fs::read_to_string(orch_ws.join("trace.log")).expect("trace");
     let lines: Vec<&str> = trace.lines().collect();
     let idx = |needle: &str| -> usize {
         lines
@@ -1196,10 +1247,10 @@ echo "{\"selectorId\":\"$selector_id\",\"status\":\"selected\",\"action\":\"work
             .unwrap_or_else(|| panic!("missing `{needle}` in trace:\n{trace}"))
     };
 
-    let start_a1 = idx("start sel-a1");
-    let end_a1 = idx("end sel-a1");
-    let start_a2 = idx("start sel-a2");
-    let start_b1 = idx("start sel-b1");
+    let start_a1 = idx("start run-sel-a1");
+    let end_a1 = idx("end run-sel-a1");
+    let start_a2 = idx("start run-sel-a2");
+    let start_b1 = idx("start run-sel-b1");
 
     assert!(start_a1 < end_a1);
     assert!(

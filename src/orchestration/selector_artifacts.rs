@@ -1,6 +1,7 @@
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::selector::{SelectorRequest, SelectorResult};
 use crate::queue::IncomingMessage;
+use crate::shared::logging::{append_orchestrator_log_line, orchestrator_log_path};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,8 +23,8 @@ impl SelectorArtifactStore {
     ) -> Result<PathBuf, OrchestratorError> {
         let path = self
             .state_root
-            .join("orchestrator/messages")
-            .join(format!("{}.json", inbound.message_id));
+            .join("orchestrator/artifacts")
+            .join(format!("message-{}.json", inbound.message_id));
         self.write_json(&path, inbound)
     }
 
@@ -33,8 +34,8 @@ impl SelectorArtifactStore {
     ) -> Result<PathBuf, OrchestratorError> {
         let path = self
             .state_root
-            .join("orchestrator/select/incoming")
-            .join(format!("{}.json", request.selector_id));
+            .join("orchestrator/artifacts")
+            .join(format!("selector-request-{}.json", request.selector_id));
         self.write_json(&path, request)
     }
 
@@ -44,12 +45,12 @@ impl SelectorArtifactStore {
     ) -> Result<PathBuf, OrchestratorError> {
         let incoming = self
             .state_root
-            .join("orchestrator/select/incoming")
-            .join(format!("{selector_id}.json"));
+            .join("orchestrator/artifacts")
+            .join(format!("selector-request-{selector_id}.json"));
         let processing = self
             .state_root
-            .join("orchestrator/select/processing")
-            .join(format!("{selector_id}.json"));
+            .join("orchestrator/artifacts")
+            .join(format!("selector-processing-{selector_id}.json"));
         if let Some(parent) = processing.parent() {
             fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
         }
@@ -63,8 +64,8 @@ impl SelectorArtifactStore {
     ) -> Result<PathBuf, OrchestratorError> {
         let path = self
             .state_root
-            .join("orchestrator/select/results")
-            .join(format!("{}.json", result.selector_id));
+            .join("orchestrator/artifacts")
+            .join(format!("selector-result-{}.json", result.selector_id));
         self.write_json(&path, result)
     }
 
@@ -73,14 +74,11 @@ impl SelectorArtifactStore {
         selector_id: &str,
         content: &str,
     ) -> Result<PathBuf, OrchestratorError> {
-        let path = self
-            .state_root
-            .join("orchestrator/select/logs")
-            .join(format!("{selector_id}.log"));
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
-        }
-        fs::write(&path, content).map_err(|source| io_error(&path, source))?;
+        let line = format!("selector_id={selector_id} {content}");
+        append_orchestrator_log_line(&self.state_root, &line).map_err(|source| {
+            io_error(orchestrator_log_path(&self.state_root).as_path(), source)
+        })?;
+        let path = orchestrator_log_path(&self.state_root);
         Ok(path)
     }
 

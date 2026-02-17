@@ -65,11 +65,10 @@ pub fn run_selector_attempt_with_provider(
     fs::create_dir_all(&cwd).map_err(|err| err.to_string())?;
 
     let request_json = serde_json::to_string_pretty(request).map_err(|err| err.to_string())?;
-    let selector_result_path = cwd
-        .join("orchestrator")
-        .join("select")
-        .join("results")
-        .join(format!("{}_attempt_{attempt}.json", request.selector_id));
+    let selector_result_path = cwd.join("orchestrator/artifacts").join(format!(
+        "selector-provider-result-{}_attempt_{attempt}.json",
+        request.selector_id
+    ));
     if let Some(parent) = selector_result_path.parent() {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }

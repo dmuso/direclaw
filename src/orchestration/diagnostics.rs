@@ -1,19 +1,12 @@
 use crate::provider::{InvocationLog, ProviderError};
+use crate::shared::logging::append_orchestrator_log_line;
 use serde_json::{Map, Value};
 use std::fs;
-use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn append_security_log(state_root: &Path, line: &str) {
-    let path = state_root.join("logs/security.log");
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) else {
-        return;
-    };
-    let _ = file.write_all(format!("{line}\n").as_bytes());
+    let _ = append_orchestrator_log_line(state_root, line);
 }
 
 pub fn provider_error_log(error: &ProviderError) -> Option<&InvocationLog> {
@@ -81,14 +74,11 @@ pub fn persist_selector_invocation_log(
     log: Option<&InvocationLog>,
     error: Option<&str>,
 ) {
-    let path = state_root
-        .join("orchestrator/select/logs")
-        .join(format!("{selector_id}_attempt_{attempt}.invocation.json"));
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
     let mut payload = Map::new();
+    payload.insert(
+        "event".to_string(),
+        Value::String("selector.invocation".to_string()),
+    );
     payload.insert(
         "selectorId".to_string(),
         Value::String(selector_id.to_string()),
@@ -148,11 +138,11 @@ pub fn persist_selector_invocation_log(
         payload.insert("timedOut".to_string(), Value::Bool(log.timed_out));
     }
 
-    let body = match serde_json::to_vec_pretty(&Value::Object(payload)) {
-        Ok(body) => body,
+    let line = match serde_json::to_string(&Value::Object(payload)) {
+        Ok(line) => line,
         Err(_) => return,
     };
-    let _ = fs::write(path, body);
+    let _ = append_orchestrator_log_line(state_root, &line);
 }
 
 fn now_secs() -> i64 {

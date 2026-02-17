@@ -183,7 +183,7 @@ fn complete_success_enforces_send_file_stripping_truncation_and_file_validation(
     assert!(saved.message.ends_with("\n\n[Response truncated...]"));
     assert_eq!(saved.files, vec![sendable.display().to_string()]);
 
-    let log_path = dir.path().join("logs/security.log");
+    let log_path = dir.path().join("logs/orchestrator.log");
     let log = fs::read_to_string(log_path).expect("read security log");
     assert!(log.contains("omitted invalid/unreadable files"));
 }

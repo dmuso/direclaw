@@ -266,13 +266,8 @@ pub fn route_selector_action(
                 });
 
             let diagnostics_id = format!("diag-{}-{}", request.selector_id, ctx.now);
-            let diagnostics_root = ctx.run_store.state_root().join("orchestrator/diagnostics");
-            fs::create_dir_all(diagnostics_root.join("context"))
-                .map_err(|e| io_error(&diagnostics_root, e))?;
-            fs::create_dir_all(diagnostics_root.join("results"))
-                .map_err(|e| io_error(&diagnostics_root, e))?;
-            fs::create_dir_all(diagnostics_root.join("logs"))
-                .map_err(|e| io_error(&diagnostics_root, e))?;
+            let diagnostics_root = ctx.run_store.state_root().join("orchestrator/artifacts");
+            fs::create_dir_all(&diagnostics_root).map_err(|e| io_error(&diagnostics_root, e))?;
 
             let (findings, context_bundle) = if let Some(run_id_value) = run_id.clone() {
                 match ctx.run_store.load_progress(&run_id_value) {
@@ -328,15 +323,10 @@ pub fn route_selector_action(
                 )
             };
 
-            let context_path = diagnostics_root
-                .join("context")
-                .join(format!("{diagnostics_id}.json"));
-            let result_path = diagnostics_root
-                .join("results")
-                .join(format!("{diagnostics_id}.json"));
-            let log_path = diagnostics_root
-                .join("logs")
-                .join(format!("{diagnostics_id}.log"));
+            let context_path =
+                diagnostics_root.join(format!("diagnostics-context-{diagnostics_id}.json"));
+            let result_path =
+                diagnostics_root.join(format!("diagnostics-result-{diagnostics_id}.json"));
 
             fs::write(
                 &context_path,
@@ -357,8 +347,6 @@ pub fn route_selector_action(
                 .map_err(|e| json_error(&result_path, e))?,
             )
             .map_err(|e| io_error(&result_path, e))?;
-
-            fs::write(&log_path, findings.as_bytes()).map_err(|e| io_error(&log_path, e))?;
 
             Ok(RoutedSelectorAction::DiagnosticsInvestigate { run_id, findings })
         }

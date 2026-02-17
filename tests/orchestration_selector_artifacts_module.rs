@@ -52,13 +52,13 @@ fn selector_artifact_store_module_path_persists_expected_files() {
         .expect("move request");
 
     let message: Value = serde_json::from_str(
-        &std::fs::read_to_string(state_root.join("orchestrator/messages/m1.json"))
+        &std::fs::read_to_string(state_root.join("orchestrator/artifacts/message-m1.json"))
             .expect("read message"),
     )
     .expect("parse message json");
     assert_eq!(message["messageId"], Value::String("m1".to_string()));
 
     assert!(state_root
-        .join("orchestrator/select/processing/sel-1.json")
+        .join("orchestrator/artifacts/selector-processing-sel-1.json")
         .is_file());
 }

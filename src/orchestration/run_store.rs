@@ -1,10 +1,10 @@
 use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::progress::ProgressSnapshot;
+use crate::shared::logging::{append_orchestrator_log_line, orchestrator_log_path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -384,26 +384,15 @@ impl WorkflowRunStore {
         self.run_dir(run_id).join("progress.json")
     }
 
-    fn engine_log_path(&self, run_id: &str) -> PathBuf {
-        self.run_dir(run_id).join("engine.log")
-    }
-
     pub fn append_engine_log(
         &self,
         run_id: &str,
         now: i64,
         message: impl AsRef<str>,
     ) -> Result<(), OrchestratorError> {
-        let path = self.engine_log_path(run_id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
-        }
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| io_error(&path, e))?;
-        writeln!(file, "ts={now} {}", message.as_ref()).map_err(|e| io_error(&path, e))
+        let line = format!("ts={now} run_id={run_id} {}", message.as_ref());
+        append_orchestrator_log_line(&self.state_root, &line)
+            .map_err(|source| io_error(orchestrator_log_path(&self.state_root).as_path(), source))
     }
 
     pub fn load_step_attempt(
