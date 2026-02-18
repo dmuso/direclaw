@@ -30,8 +30,11 @@ pub fn parse_slack_target_ref(
     let Some(channel) = obj.get("channel").and_then(Value::as_str) else {
         return Ok(None);
     };
-    if channel.trim() != "slack" {
-        return Ok(None);
+    let channel = channel.trim();
+    if channel != "slack" {
+        return Err(format!(
+            "{field_path}.channel `{channel}` is not supported; expected `slack`"
+        ));
     }
 
     let channel_profile_id = required_trimmed_string(obj, "channelProfileId", field_path)?;

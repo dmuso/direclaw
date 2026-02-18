@@ -63,16 +63,16 @@ fn slack_target_ref_schema_normalization_trims_fields() {
 }
 
 #[test]
-fn non_slack_target_ref_is_not_rejected_by_slack_contract_rules() {
-    assert!(parse_slack_target_ref(
+fn slack_target_ref_schema_rejects_unsupported_target_channel() {
+    let err = parse_slack_target_ref(
         &json!({
             "channel": "local",
             "conversationId": "chat-1"
         }),
         "targetRef",
     )
-    .expect("parse non-slack target")
-    .is_none());
+    .expect_err("unsupported channel should fail");
+    assert!(err.contains("targetRef.channel"), "unexpected error: {err}");
 }
 
 #[test]

@@ -58,6 +58,14 @@ pub enum OrchestratorError {
     OutputContractValidation { step_id: String, reason: String },
     #[error("step `{step_id}` transition validation failed: {reason}")]
     TransitionValidation { step_id: String, reason: String },
+    #[error(
+        "scheduled execution completion failed for job `{job_id}` execution `{execution_id}`: {reason}"
+    )]
+    ScheduledExecutionCompletion {
+        job_id: String,
+        execution_id: String,
+        reason: String,
+    },
     #[error("config error: {0}")]
     Config(String),
     #[error("io error at {path}: {source}")]

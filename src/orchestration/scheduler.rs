@@ -153,6 +153,8 @@ struct SchedulerState {
     active_executions: Vec<ActiveExecution>,
 }
 
+const STALE_ACTIVE_EXECUTION_MAX_AGE_SECS: i64 = 86_400;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchedRun {
     pub job_id: String,
@@ -360,6 +362,7 @@ impl SchedulerWorker {
 
     pub fn tick(&mut self, now: i64) -> Result<Vec<DispatchedRun>, String> {
         let mut state = self.load_state()?;
+        self.recover_stale_active_executions(&mut state, now);
         let mut dispatched = Vec::new();
 
         for mut job in self.store.list_all()? {
@@ -472,6 +475,38 @@ impl SchedulerWorker {
         state.last_tick_at = Some(now);
         self.save_state(&state)?;
         Ok(dispatched)
+    }
+
+    fn recover_stale_active_executions(&self, state: &mut SchedulerState, now: i64) {
+        let mut retained = Vec::with_capacity(state.active_executions.len());
+        for active in state.active_executions.drain(..) {
+            let age_secs = now.saturating_sub(active.started_at);
+            if age_secs <= STALE_ACTIVE_EXECUTION_MAX_AGE_SECS {
+                retained.push(active);
+                continue;
+            }
+
+            let mut payload = Map::new();
+            payload.insert(
+                "event".to_string(),
+                Value::String("scheduler.active_execution.recovered".to_string()),
+            );
+            payload.insert("jobId".to_string(), Value::String(active.job_id.clone()));
+            payload.insert(
+                "executionId".to_string(),
+                Value::String(active.execution_id.clone()),
+            );
+            payload.insert("startedAt".to_string(), Value::from(active.started_at));
+            payload.insert("timestamp".to_string(), Value::from(now));
+            payload.insert(
+                "reason".to_string(),
+                Value::String("stale_timeout".to_string()),
+            );
+            if let Ok(line) = serde_json::to_string(&Value::Object(payload)) {
+                let _ = append_orchestrator_log_line(&self.runtime_root, &line);
+            }
+        }
+        state.active_executions = retained;
     }
 
     pub fn complete_execution(

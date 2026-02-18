@@ -64,10 +64,18 @@ fn scheduler_domain_persists_lifecycle_and_state_transitions() {
             JobPatch {
                 schedule: Some(ScheduleConfig::Once { run_at: now + 30 }),
                 target_action: None,
-                target_ref: Some(Some(Value::Object(Map::from_iter([(
-                    "channel".to_string(),
-                    Value::String("C123".to_string()),
-                )])))),
+                target_ref: Some(Some(Value::Object(Map::from_iter([
+                    ("channel".to_string(), Value::String("slack".to_string())),
+                    (
+                        "channelProfileId".to_string(),
+                        Value::String("slack_main".to_string()),
+                    ),
+                    ("channelId".to_string(), Value::String("C123".to_string())),
+                    (
+                        "postingMode".to_string(),
+                        Value::String("channel_post".to_string()),
+                    ),
+                ])))),
                 misfire_policy: Some(MisfirePolicy::SkipMissed),
                 allow_overlap: Some(true),
             },

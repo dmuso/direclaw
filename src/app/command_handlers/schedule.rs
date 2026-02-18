@@ -1,10 +1,10 @@
 use crate::app::command_support::{load_settings, now_secs};
-use crate::orchestration::scheduler::{
-    JobPatch, JobStore, MisfirePolicy, NewJob, ScheduleConfig, TargetAction,
+use crate::app::schedule_parsing::{
+    normalize_patch_slack_target_ref, normalize_slack_target_ref_value, parse_job_patch,
+    parse_schedule_config, parse_schedule_create_tail_args, parse_target_action_config,
 };
-use crate::orchestration::slack_target::{
-    parse_slack_target_ref, slack_target_ref_to_value, validate_profile_mapping, SlackTargetRef,
-};
+use crate::orchestration::scheduler::{JobPatch, JobStore, NewJob};
+use crate::orchestration::slack_target::validate_profile_mapping;
 use serde_json::{Map, Value};
 
 pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
@@ -17,7 +17,7 @@ pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
     match args[0].as_str() {
         "create" => {
             if args.len() < 5 {
-                return Err("usage: schedule create <orchestrator_id> <schedule_type> <schedule_json> <target_action_json> [target_ref_json] [misfire_policy] [allow_overlap]".to_string());
+                return Err("usage: schedule create <orchestrator_id> <schedule_type> <schedule_json> <target_action_json> [target_ref_json] [misfire_policy] [allow_overlap] [--target-ref <json>] [--misfire-policy <value>] [--allow-overlap <true|false>]".to_string());
             }
             let settings = load_settings()?;
             let orchestrator_id = args[1].clone();
@@ -25,29 +25,11 @@ pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
             let schedule_obj = parse_json_object(&args[3], "schedule_json")?;
             let target_obj = parse_json_object(&args[4], "target_action_json")?;
 
-            let mut schedule = parse_schedule_with_type(&schedule_type, &schedule_obj)?;
-            let mut target_action = parse_target_action(&target_obj)?;
-
-            let target_ref = if let Some(raw) = args.get(5) {
-                Some(parse_json_object(raw, "target_ref_json")?.into())
-            } else {
-                None
-            };
-            let misfire_policy = if let Some(raw) = args.get(6) {
-                parse_misfire_policy(raw)?
-            } else {
-                MisfirePolicy::FireOnceOnRecovery
-            };
-            let allow_overlap = if let Some(raw) = args.get(7) {
-                parse_bool(raw, "allow_overlap")?
-            } else {
-                false
-            };
-
-            normalize_schedule_for_type(&mut schedule, &schedule_type)?;
-            normalize_target_action(&mut target_action)?;
+            let schedule = parse_schedule_config(&schedule_type, &schedule_obj)?;
+            let target_action = parse_target_action_config(&target_obj)?;
+            let tail = parse_schedule_create_tail_args(&args[5..])?;
             let (target_ref, slack_target_ref) =
-                normalize_slack_target_ref_value(target_ref, "target_ref_json")?;
+                normalize_slack_target_ref_value(tail.target_ref, "target_ref_json")?;
             validate_profile_mapping(&settings, &orchestrator_id, slack_target_ref.as_ref())?;
 
             let runtime_root = settings
@@ -61,8 +43,8 @@ pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
                     schedule,
                     target_action,
                     target_ref,
-                    misfire_policy,
-                    allow_overlap,
+                    misfire_policy: tail.misfire_policy,
+                    allow_overlap: tail.allow_overlap,
                 },
                 now_secs(),
             )?;
@@ -215,112 +197,6 @@ fn parse_json_object(raw: &str, field: &str) -> Result<Map<String, Value>, Strin
         .ok_or_else(|| format!("{field} must be a JSON object"))
 }
 
-fn parse_schedule_with_type(
-    schedule_type: &str,
-    schedule: &Map<String, Value>,
-) -> Result<ScheduleConfig, String> {
-    match schedule_type {
-        "once" => {
-            let run_at = schedule
-                .get("runAt")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "once schedule requires integer runAt".to_string())?;
-            Ok(ScheduleConfig::Once { run_at })
-        }
-        "interval" => {
-            let every_seconds = schedule
-                .get("everySeconds")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| "interval schedule requires integer everySeconds".to_string())?;
-            let anchor_at = schedule.get("anchorAt").and_then(Value::as_i64);
-            Ok(ScheduleConfig::Interval {
-                every_seconds,
-                anchor_at,
-            })
-        }
-        "cron" => {
-            let expression = schedule
-                .get("expression")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "cron schedule requires string expression".to_string())?
-                .to_string();
-            let timezone = schedule
-                .get("timezone")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "cron schedule requires string timezone".to_string())?
-                .to_string();
-            Ok(ScheduleConfig::Cron {
-                expression,
-                timezone,
-            })
-        }
-        other => Err(format!(
-            "schedule_type must be once|interval|cron, got `{other}`"
-        )),
-    }
-}
-
-fn parse_target_action(target: &Map<String, Value>) -> Result<TargetAction, String> {
-    let action_type = target
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "target_action.type is required".to_string())?;
-
-    match action_type {
-        "workflow_start" => {
-            let workflow_id = target
-                .get("workflowId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "workflow_start requires workflowId".to_string())?
-                .to_string();
-            let inputs = target
-                .get("inputs")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            Ok(TargetAction::WorkflowStart {
-                workflow_id,
-                inputs,
-            })
-        }
-        "command_invoke" => {
-            let function_id = target
-                .get("functionId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "command_invoke requires functionId".to_string())?
-                .to_string();
-            let function_args = target
-                .get("functionArgs")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            Ok(TargetAction::CommandInvoke {
-                function_id,
-                function_args,
-            })
-        }
-        other => Err(format!(
-            "target_action.type must be workflow_start|command_invoke, got `{other}`"
-        )),
-    }
-}
-
-fn parse_misfire_policy(raw: &str) -> Result<MisfirePolicy, String> {
-    match raw {
-        "fire_once_on_recovery" => Ok(MisfirePolicy::FireOnceOnRecovery),
-        "skip_missed" => Ok(MisfirePolicy::SkipMissed),
-        _ => Err("misfire_policy must be fire_once_on_recovery|skip_missed".to_string()),
-    }
-}
-
-fn parse_bool(raw: &str, field: &str) -> Result<bool, String> {
-    match raw {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(format!("{field} must be true|false")),
-    }
-}
-
 fn parse_patch(raw: &str) -> Result<JobPatch, String> {
     let value: Value =
         serde_json::from_str(raw).map_err(|err| format!("patch must be JSON: {err}"))?;
@@ -328,97 +204,5 @@ fn parse_patch(raw: &str) -> Result<JobPatch, String> {
         .as_object()
         .cloned()
         .ok_or_else(|| "patch must be JSON object".to_string())?;
-
-    let schedule = obj
-        .get("schedule")
-        .and_then(Value::as_object)
-        .map(|schedule_obj| {
-            let schedule_type = schedule_obj
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "patch.schedule.type is required".to_string())?;
-            parse_schedule_with_type(schedule_type, schedule_obj)
-        })
-        .transpose()?;
-
-    let target_action = obj
-        .get("targetAction")
-        .and_then(Value::as_object)
-        .map(parse_target_action)
-        .transpose()?;
-
-    let misfire_policy = obj
-        .get("misfirePolicy")
-        .and_then(Value::as_str)
-        .map(parse_misfire_policy)
-        .transpose()?;
-
-    let allow_overlap = obj.get("allowOverlap").and_then(Value::as_bool);
-    let target_ref = if obj.contains_key("targetRef") {
-        Some(obj.get("targetRef").cloned())
-    } else {
-        None
-    };
-    if let Some(Some(target_ref)) = target_ref.as_ref() {
-        let _ = parse_slack_target_ref(target_ref, "patch.targetRef")?;
-    }
-
-    Ok(JobPatch {
-        schedule,
-        target_action,
-        target_ref,
-        misfire_policy,
-        allow_overlap,
-    })
-}
-
-fn normalize_schedule_for_type(
-    schedule: &mut ScheduleConfig,
-    schedule_type: &str,
-) -> Result<(), String> {
-    match (schedule_type, schedule) {
-        ("once", ScheduleConfig::Once { .. }) => Ok(()),
-        ("interval", ScheduleConfig::Interval { .. }) => Ok(()),
-        ("cron", ScheduleConfig::Cron { .. }) => Ok(()),
-        _ => Err("schedule_type and schedule payload are inconsistent".to_string()),
-    }
-}
-
-fn normalize_target_action(_action: &mut TargetAction) -> Result<(), String> {
-    Ok(())
-}
-
-fn normalize_slack_target_ref_value(
-    target_ref: Option<Value>,
-    field_path: &str,
-) -> Result<(Option<Value>, Option<SlackTargetRef>), String> {
-    let Some(target_ref) = target_ref else {
-        return Ok((None, None));
-    };
-    let parsed = parse_slack_target_ref(&target_ref, field_path)?;
-    if let Some(slack_target) = parsed {
-        return Ok((
-            Some(slack_target_ref_to_value(&slack_target)),
-            Some(slack_target),
-        ));
-    }
-    Ok((Some(target_ref), None))
-}
-
-fn normalize_patch_slack_target_ref(
-    patch: &mut JobPatch,
-    field_path: &str,
-) -> Result<Option<SlackTargetRef>, String> {
-    let Some(target_ref) = patch.target_ref.as_ref() else {
-        return Ok(None);
-    };
-    let Some(target_ref) = target_ref.as_ref() else {
-        return Ok(None);
-    };
-    let parsed = parse_slack_target_ref(target_ref, field_path)?;
-    if let Some(slack_target) = parsed {
-        patch.target_ref = Some(Some(slack_target_ref_to_value(&slack_target)));
-        return Ok(Some(slack_target));
-    }
-    Ok(None)
+    parse_job_patch(&obj)
 }

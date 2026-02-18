@@ -1,4 +1,8 @@
 use crate::app::command_catalog::function_ids;
+use crate::app::schedule_parsing::{
+    normalize_patch_slack_target_ref, normalize_slack_target_ref_value, parse_job_patch,
+    parse_misfire_policy_arg, parse_schedule_config, parse_target_action_config,
+};
 use crate::config::{load_orchestrator_config, Settings};
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
@@ -6,9 +10,7 @@ use crate::orchestration::run_store::{RunState, WorkflowRunStore};
 use crate::orchestration::scheduler::{
     JobPatch, JobStore, MisfirePolicy, NewJob, ScheduleConfig, ScheduledJob, TargetAction,
 };
-use crate::orchestration::slack_target::{
-    parse_slack_target_ref, slack_target_ref_to_value, validate_profile_mapping, SlackTargetRef,
-};
+use crate::orchestration::slack_target::validate_profile_mapping;
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -936,7 +938,7 @@ pub fn plan_function_invocation(
                 .cloned()
                 .map(Value::Object);
             let misfire_policy =
-                parse_misfire_policy_arg(optional_string_arg(args, "misfirePolicy")?)?;
+                parse_misfire_policy_arg(optional_string_arg(args, "misfirePolicy")?.as_deref())?;
             let allow_overlap = optional_bool_arg(args, "allowOverlap")?.unwrap_or(false);
             let created_by = optional_object_arg(args, "createdBy")
                 .cloned()
@@ -1073,179 +1075,4 @@ fn required_object_arg<'a>(
     args.get(arg)
         .and_then(Value::as_object)
         .ok_or_else(|| format!("argument `{arg}` must be an object"))
-}
-
-fn parse_schedule_config(
-    schedule_type: &str,
-    schedule: &Map<String, Value>,
-) -> Result<ScheduleConfig, String> {
-    match schedule_type {
-        "once" => {
-            let run_at = schedule
-                .get("runAt")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "schedule.once requires integer `runAt`".to_string())?;
-            Ok(ScheduleConfig::Once { run_at })
-        }
-        "interval" => {
-            let every_seconds = schedule
-                .get("everySeconds")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| "schedule.interval requires integer `everySeconds`".to_string())?;
-            let anchor_at = schedule.get("anchorAt").and_then(Value::as_i64);
-            Ok(ScheduleConfig::Interval {
-                every_seconds,
-                anchor_at,
-            })
-        }
-        "cron" => {
-            let expression = schedule
-                .get("expression")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "schedule.cron requires string `expression`".to_string())?
-                .to_string();
-            let timezone = schedule
-                .get("timezone")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "schedule.cron requires string `timezone`".to_string())?
-                .to_string();
-            Ok(ScheduleConfig::Cron {
-                expression,
-                timezone,
-            })
-        }
-        other => Err(format!(
-            "scheduleType must be one of: once, interval, cron (got `{other}`)"
-        )),
-    }
-}
-
-fn parse_target_action_config(action: &Map<String, Value>) -> Result<TargetAction, String> {
-    let action_type = action
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "targetAction.type is required".to_string())?;
-    match action_type {
-        "workflow_start" => {
-            let workflow_id = action
-                .get("workflowId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "targetAction.workflow_start requires `workflowId`".to_string())?
-                .to_string();
-            let inputs = action
-                .get("inputs")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            Ok(TargetAction::WorkflowStart {
-                workflow_id,
-                inputs,
-            })
-        }
-        "command_invoke" => {
-            let function_id = action
-                .get("functionId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "targetAction.command_invoke requires `functionId`".to_string())?
-                .to_string();
-            let function_args = action
-                .get("functionArgs")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            Ok(TargetAction::CommandInvoke {
-                function_id,
-                function_args,
-            })
-        }
-        other => Err(format!(
-            "targetAction.type must be workflow_start|command_invoke (got `{other}`)"
-        )),
-    }
-}
-
-fn parse_misfire_policy_arg(raw: Option<String>) -> Result<MisfirePolicy, String> {
-    match raw.as_deref() {
-        None => Ok(MisfirePolicy::FireOnceOnRecovery),
-        Some("fire_once_on_recovery") => Ok(MisfirePolicy::FireOnceOnRecovery),
-        Some("skip_missed") => Ok(MisfirePolicy::SkipMissed),
-        Some(other) => Err(format!(
-            "misfirePolicy must be fire_once_on_recovery|skip_missed (got `{other}`)"
-        )),
-    }
-}
-
-fn parse_job_patch(patch: &Map<String, Value>) -> Result<JobPatch, String> {
-    let schedule = patch
-        .get("schedule")
-        .and_then(Value::as_object)
-        .map(|schedule| {
-            let schedule_type = schedule
-                .get("type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "patch.schedule.type is required".to_string())?;
-            parse_schedule_config(schedule_type, schedule)
-        })
-        .transpose()?;
-    let target_action = patch
-        .get("targetAction")
-        .and_then(Value::as_object)
-        .map(parse_target_action_config)
-        .transpose()?;
-    let target_ref = if patch.contains_key("targetRef") {
-        Some(patch.get("targetRef").cloned())
-    } else {
-        None
-    };
-    if let Some(Some(target_ref)) = target_ref.as_ref() {
-        let _ = parse_slack_target_ref(target_ref, "patch.targetRef")?;
-    }
-    let misfire_policy = match patch.get("misfirePolicy").and_then(Value::as_str) {
-        Some(raw) => Some(parse_misfire_policy_arg(Some(raw.to_string()))?),
-        None => None,
-    };
-    let allow_overlap = patch.get("allowOverlap").and_then(Value::as_bool);
-
-    Ok(JobPatch {
-        schedule,
-        target_action,
-        target_ref,
-        misfire_policy,
-        allow_overlap,
-    })
-}
-
-fn normalize_slack_target_ref_value(
-    target_ref: Option<Value>,
-    field_path: &str,
-) -> Result<(Option<Value>, Option<SlackTargetRef>), String> {
-    let Some(target_ref) = target_ref else {
-        return Ok((None, None));
-    };
-    let parsed = parse_slack_target_ref(&target_ref, field_path)?;
-    if let Some(slack_target) = parsed {
-        return Ok((
-            Some(slack_target_ref_to_value(&slack_target)),
-            Some(slack_target),
-        ));
-    }
-    Ok((Some(target_ref), None))
-}
-
-fn normalize_patch_slack_target_ref(
-    patch: &mut JobPatch,
-    field_path: &str,
-) -> Result<Option<SlackTargetRef>, String> {
-    let Some(target_ref) = patch.target_ref.as_ref() else {
-        return Ok(None);
-    };
-    let Some(target_ref) = target_ref.as_ref() else {
-        return Ok(None);
-    };
-    let parsed = parse_slack_target_ref(target_ref, field_path)?;
-    if let Some(slack_target) = parsed {
-        patch.target_ref = Some(Some(slack_target_ref_to_value(&slack_target)));
-        return Ok(Some(slack_target));
-    }
-    Ok(None)
 }

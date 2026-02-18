@@ -579,23 +579,49 @@ fn route_scheduled_trigger(
         },
     ) {
         Ok(action) => {
-            let _ = complete_scheduled_execution(
+            if let Err(err) = complete_scheduled_execution(
                 runtime_root,
                 &envelope.job_id,
                 &envelope.execution_id,
                 true,
                 now,
-            );
+            ) {
+                append_security_log(
+                    runtime_root,
+                    &format!(
+                        "scheduled trigger completion failed for job `{}` execution `{}`: {err}",
+                        envelope.job_id, envelope.execution_id
+                    ),
+                );
+                return Err(OrchestratorError::ScheduledExecutionCompletion {
+                    job_id: envelope.job_id,
+                    execution_id: envelope.execution_id,
+                    reason: err,
+                });
+            }
             Ok(action)
         }
         Err(err) => {
-            let _ = complete_scheduled_execution(
+            if let Err(completion_err) = complete_scheduled_execution(
                 runtime_root,
                 &envelope.job_id,
                 &envelope.execution_id,
                 false,
                 now,
-            );
+            ) {
+                append_security_log(
+                    runtime_root,
+                    &format!(
+                        "scheduled trigger completion failed for job `{}` execution `{}` after routing error `{err}`: {completion_err}",
+                        envelope.job_id, envelope.execution_id
+                    ),
+                );
+                return Err(OrchestratorError::ScheduledExecutionCompletion {
+                    job_id: envelope.job_id,
+                    execution_id: envelope.execution_id,
+                    reason: format!("routing error: {err}; completion error: {completion_err}"),
+                });
+            }
             append_security_log(
                 runtime_root,
                 &format!(

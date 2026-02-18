@@ -130,11 +130,11 @@ fn runtime_heartbeat_worker_module_builds_deterministic_payload_metadata() {
     );
     assert_eq!(
         message.conversation_id,
-        Some("hb:orch-a:worker".to_string())
+        Some("hb:orch-a:worker:1700000001".to_string())
     );
     assert_eq!(
         message.workflow_run_id,
-        Some("hb:orch-a:worker".to_string())
+        Some("hb:orch-a:worker:1700000001".to_string())
     );
     assert_eq!(
         message.workflow_step_id,
@@ -156,7 +156,7 @@ fn runtime_heartbeat_worker_module_matches_outbound_responses_without_mutation()
             "heartbeat-orch-a-worker-10",
             "worker",
             "healthy",
-            Some("hb:orch-a:worker"),
+            Some("hb:orch-a:worker:10"),
         ))
         .expect("serialize outgoing"),
     )
@@ -168,7 +168,7 @@ fn runtime_heartbeat_worker_module_matches_outbound_responses_without_mutation()
         "orch-a",
         "worker",
         "heartbeat-orch-a-worker-10",
-        "hb:orch-a:worker",
+        "hb:orch-a:worker:10",
     )
     .expect("match");
     assert_eq!(matched, Some("healthy".to_string()));
@@ -178,7 +178,7 @@ fn runtime_heartbeat_worker_module_matches_outbound_responses_without_mutation()
         "orch-a",
         "worker",
         "missing",
-        "hb:orch-a:different-worker",
+        "hb:orch-a:different-worker:10",
     )
     .expect("missing");
     assert!(missing.is_none());
@@ -187,6 +187,38 @@ fn runtime_heartbeat_worker_module_matches_outbound_responses_without_mutation()
     assert!(
         malformed_path.exists(),
         "malformed outbound file must remain"
+    );
+}
+
+#[test]
+fn runtime_heartbeat_worker_module_ignores_stale_response_from_prior_tick() {
+    let temp = tempdir().expect("tempdir");
+    let queue = QueuePaths::from_state_root(temp.path());
+    fs::create_dir_all(&queue.outgoing).expect("outgoing");
+
+    fs::write(
+        queue.outgoing.join("stale.json"),
+        serde_json::to_vec_pretty(&sample_outgoing(
+            "heartbeat-orch-a-worker-10",
+            "worker",
+            "healthy",
+            Some("hb:orch-a:worker:10"),
+        ))
+        .expect("serialize outgoing"),
+    )
+    .expect("write stale");
+
+    let matched = match_heartbeat_responses(
+        &queue,
+        "orch-a",
+        "worker",
+        "heartbeat-orch-a-worker-11",
+        "hb:orch-a:worker:11",
+    )
+    .expect("match");
+    assert!(
+        matched.is_none(),
+        "stale response should not satisfy a newer heartbeat tick"
     );
 }
 
@@ -332,7 +364,7 @@ fn runtime_heartbeat_worker_module_logs_matched_response_metadata() {
         "heartbeat-orch-worker-1700000001",
         "worker",
         "agent looks healthy",
-        Some("hb:orch:worker"),
+        Some("hb:orch:worker:1700000001"),
     );
     fs::write(
         queue.outgoing.join("heartbeat-orch-worker-1700000001.json"),
@@ -380,7 +412,7 @@ fn runtime_heartbeat_worker_module_routes_heartbeat_messages_through_queue_lifec
 }
 
 #[test]
-fn runtime_heartbeat_worker_module_matches_responses_across_ticks_without_fixed_timestamp() {
+fn runtime_heartbeat_worker_module_does_not_match_responses_across_ticks_without_fixed_timestamp() {
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
 
@@ -396,7 +428,7 @@ fn runtime_heartbeat_worker_module_matches_responses_across_ticks_without_fixed_
 
     let runtime_log = fs::read_to_string(state_root.join("logs/runtime.log")).expect("log");
     assert!(
-        runtime_log.contains("heartbeat.response.matched"),
-        "expected matched heartbeat response to be observable across ticks"
+        runtime_log.contains("heartbeat.response.missing"),
+        "expected stale heartbeat responses to be ignored across ticks"
     );
 }

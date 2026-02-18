@@ -47,7 +47,7 @@ pub fn build_heartbeat_incoming_message(
     }
     let safe_orchestrator_id = sanitize_component(orchestrator_id);
     let safe_agent_id = sanitize_component(agent_id);
-    let correlation = format!("hb:{safe_orchestrator_id}:{safe_agent_id}");
+    let correlation = format!("hb:{safe_orchestrator_id}:{safe_agent_id}:{tick_at}");
     Ok(IncomingMessage {
         channel: "heartbeat".to_string(),
         channel_profile_id: None,
@@ -67,7 +67,7 @@ pub fn match_heartbeat_responses(
     queue: &QueuePaths,
     _orchestrator_id: &str,
     _agent_id: &str,
-    _heartbeat_message_id: &str,
+    heartbeat_message_id: &str,
     correlation_id: &str,
 ) -> Result<Option<String>, String> {
     let outgoing = sorted_outgoing_paths(queue)
@@ -81,6 +81,9 @@ pub fn match_heartbeat_responses(
             continue;
         };
         if payload.channel != "heartbeat" {
+            continue;
+        }
+        if payload.message_id != heartbeat_message_id {
             continue;
         }
         if payload.conversation_id.as_deref() != Some(correlation_id) {

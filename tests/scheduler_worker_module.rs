@@ -281,3 +281,51 @@ fn scheduler_worker_advances_cron_skip_missed_to_future_slot() {
     let job = store.load(&created.job_id).expect("load");
     assert!(job.next_run_at.expect("next run") > 1_700_200_000);
 }
+
+#[test]
+fn scheduler_worker_recovers_stale_active_execution_to_prevent_long_term_stalls() {
+    let temp = tempdir().expect("tempdir");
+    let runtime_root = temp.path().join("runtime");
+    std::fs::create_dir_all(runtime_root.join("queue/incoming")).expect("incoming dir");
+
+    let store = JobStore::new(&runtime_root);
+    let created = store
+        .create(
+            make_interval_job(MisfirePolicy::FireOnceOnRecovery),
+            1_700_000_000,
+        )
+        .expect("create");
+
+    let mut worker = SchedulerWorker::new(&runtime_root);
+    let first = worker.tick(1_700_000_060).expect("first tick");
+    assert_eq!(first.len(), 1);
+
+    let blocked = worker.tick(1_700_000_120).expect("blocked tick");
+    assert!(
+        blocked.is_empty(),
+        "active execution should initially block overlap"
+    );
+
+    let state_path = runtime_root.join("automation/scheduler_state.json");
+    let stale_state = serde_json::json!({
+        "lastTickAt": 1_700_000_120_i64,
+        "recentExecutionIds": [first[0].execution_id.clone()],
+        "activeExecutions": [{
+            "jobId": created.job_id.clone(),
+            "executionId": first[0].execution_id.clone(),
+            "startedAt": 1_i64
+        }]
+    });
+    std::fs::write(
+        &state_path,
+        serde_json::to_vec_pretty(&stale_state).expect("encode state"),
+    )
+    .expect("write stale state");
+
+    let recovered = worker.tick(1_700_086_400).expect("recovery tick");
+    assert_eq!(
+        recovered.len(),
+        1,
+        "stale active execution should be recovered to unblock scheduling"
+    );
+}
