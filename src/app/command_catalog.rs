@@ -535,7 +535,8 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
                 name: "targetRef",
                 arg_type: FunctionArgTypeDef::Object,
                 required: false,
-                description: "Optional opaque target descriptor",
+                description:
+                    "Optional target descriptor (Slack: channel/channelProfile/postingMode/thread)",
             },
             FunctionArgDef {
                 name: "misfirePolicy",

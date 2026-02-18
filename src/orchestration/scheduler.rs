@@ -1,3 +1,4 @@
+use crate::orchestration::slack_target::{parse_slack_target_ref, slack_target_ref_to_value};
 use crate::queue::{IncomingMessage, QueuePaths};
 use crate::shared::logging::append_orchestrator_log_line;
 use chrono::{Datelike, TimeZone, Timelike, Utc};
@@ -174,6 +175,7 @@ impl JobStore {
     pub fn create(&self, input: NewJob, now: i64) -> Result<ScheduledJob, String> {
         validate_schedule(&input.schedule)?;
         validate_target_action(&input.target_action)?;
+        validate_target_ref(&input.target_ref)?;
         if input.orchestrator_id.trim().is_empty() {
             return Err("orchestrator_id must be non-empty".to_string());
         }
@@ -262,6 +264,7 @@ impl JobStore {
             job.target_action = action;
         }
         if let Some(target_ref) = patch.target_ref {
+            validate_target_ref(&target_ref)?;
             job.target_ref = target_ref;
         }
         if let Some(policy) = patch.misfire_policy {
@@ -662,6 +665,35 @@ impl SchedulerWorker {
                 Value::String(execution_id.to_string()),
             );
         }
+        if let Some(target_ref) = job.target_ref.as_ref() {
+            if let Ok(Some(slack_target)) = parse_slack_target_ref(target_ref, "target_ref") {
+                payload.insert(
+                    "targetChannelProfileId".to_string(),
+                    Value::String(slack_target.channel_profile_id),
+                );
+                payload.insert(
+                    "targetChannelId".to_string(),
+                    Value::String(slack_target.channel_id),
+                );
+                payload.insert(
+                    "targetPostingMode".to_string(),
+                    Value::String(
+                        match slack_target.posting_mode {
+                            crate::orchestration::slack_target::SlackPostingMode::ChannelPost => {
+                                "channel_post"
+                            }
+                            crate::orchestration::slack_target::SlackPostingMode::ThreadReply => {
+                                "thread_reply"
+                            }
+                        }
+                        .to_string(),
+                    ),
+                );
+                if let Some(thread_ts) = slack_target.thread_ts {
+                    payload.insert("targetThreadTs".to_string(), Value::String(thread_ts));
+                }
+            }
+        }
         if let Ok(line) = serde_json::to_string(&Value::Object(payload)) {
             let _ = append_orchestrator_log_line(&self.runtime_root, &line);
         }
@@ -680,7 +712,10 @@ pub fn complete_scheduled_execution(
 }
 
 pub fn parse_trigger_envelope(message: &str) -> Result<ScheduledTriggerEnvelope, String> {
-    serde_json::from_str(message).map_err(|err| format!("invalid scheduler trigger payload: {err}"))
+    let envelope: ScheduledTriggerEnvelope = serde_json::from_str(message)
+        .map_err(|err| format!("invalid scheduler trigger payload: {err}"))?;
+    validate_target_ref(&envelope.target_ref)?;
+    Ok(envelope)
 }
 
 pub fn validate_iana_timezone(raw: &str) -> Result<(), String> {
@@ -856,6 +891,20 @@ fn validate_target_action(action: &TargetAction) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+fn validate_target_ref(target_ref: &Option<Value>) -> Result<(), String> {
+    let Some(value) = target_ref.as_ref() else {
+        return Ok(());
+    };
+    let parsed = parse_slack_target_ref(value, "target_ref")?;
+    if let Some(target) = parsed {
+        let normalized = slack_target_ref_to_value(&target);
+        if !matches!(normalized, Value::Object(_)) {
+            return Err("target_ref slack normalization failed".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn valid_transition(from: JobState, to: JobState) -> bool {

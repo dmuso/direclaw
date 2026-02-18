@@ -67,6 +67,7 @@ Execution context passed to every invocation:
 - If selector action is `workflow_start`, output must resolve to exactly one workflow id from resolved orchestrator workflow set.
 - If selector action is `diagnostics_investigate`, output must resolve target run scope by `workflowRunId` when present or by active `(channelProfileId, conversationId)` association.
 - If selector action is `command_invoke`, `functionId` must resolve to exactly one supported function from selector-provided `availableFunctions`.
+- When scheduled triggers include Slack `targetRef`, `targetRef.channelProfileId` must map to the same orchestrator scope before routing continues.
 - If selector output references an unknown workflow id, execution must fail validation and follow retry/default rules.
 
 ## Acceptance Criteria

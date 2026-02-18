@@ -35,6 +35,8 @@ pub enum SlackError {
     },
     #[error("invalid conversation id `{0}` for slack outgoing message")]
     InvalidConversationId(String),
+    #[error("invalid slack targetRef in outgoing message `{message_id}`: {reason}")]
+    InvalidTargetRef { message_id: String, reason: String },
     #[error("unknown slack channel profile `{0}` in outgoing message")]
     UnknownChannelProfile(String),
     #[error("outgoing slack message `{message_id}` has no channel_profile_id and multiple slack profiles exist")]
@@ -46,6 +48,14 @@ pub enum SlackError {
         message_id: String,
         profile_id: String,
         reason: String,
+    },
+    #[error(
+        "outgoing slack message `{message_id}` for profile `{profile_id}` targets unauthorized channel `{channel_id}`"
+    )]
+    UnauthorizedChannelTarget {
+        message_id: String,
+        profile_id: String,
+        channel_id: String,
     },
     #[error("slack api request failed: {0}")]
     ApiRequest(String),

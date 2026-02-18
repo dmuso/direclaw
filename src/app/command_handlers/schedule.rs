@@ -2,6 +2,9 @@ use crate::app::command_support::{load_settings, now_secs};
 use crate::orchestration::scheduler::{
     JobPatch, JobStore, MisfirePolicy, NewJob, ScheduleConfig, TargetAction,
 };
+use crate::orchestration::slack_target::{
+    parse_slack_target_ref, slack_target_ref_to_value, validate_profile_mapping, SlackTargetRef,
+};
 use serde_json::{Map, Value};
 
 pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
@@ -43,6 +46,9 @@ pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
 
             normalize_schedule_for_type(&mut schedule, &schedule_type)?;
             normalize_target_action(&mut target_action)?;
+            let (target_ref, slack_target_ref) =
+                normalize_slack_target_ref_value(target_ref, "target_ref_json")?;
+            validate_profile_mapping(&settings, &orchestrator_id, slack_target_ref.as_ref())?;
 
             let runtime_root = settings
                 .resolve_orchestrator_runtime_root(&orchestrator_id)
@@ -124,7 +130,9 @@ pub fn cmd_schedule(args: &[String]) -> Result<String, String> {
                 .resolve_orchestrator_runtime_root(&args[1])
                 .map_err(|err| err.to_string())?;
             let store = JobStore::new(runtime_root);
-            let patch = parse_patch(&args[3])?;
+            let mut patch = parse_patch(&args[3])?;
+            let slack_target_ref = normalize_patch_slack_target_ref(&mut patch, "patch.targetRef")?;
+            validate_profile_mapping(&settings, &args[1], slack_target_ref.as_ref())?;
             let job = store.update(&args[2], patch, now_secs())?;
             Ok(format!(
                 "schedule updated\njob_id={}\nstate={:?}",
@@ -351,6 +359,9 @@ fn parse_patch(raw: &str) -> Result<JobPatch, String> {
     } else {
         None
     };
+    if let Some(Some(target_ref)) = target_ref.as_ref() {
+        let _ = parse_slack_target_ref(target_ref, "patch.targetRef")?;
+    }
 
     Ok(JobPatch {
         schedule,
@@ -375,4 +386,39 @@ fn normalize_schedule_for_type(
 
 fn normalize_target_action(_action: &mut TargetAction) -> Result<(), String> {
     Ok(())
+}
+
+fn normalize_slack_target_ref_value(
+    target_ref: Option<Value>,
+    field_path: &str,
+) -> Result<(Option<Value>, Option<SlackTargetRef>), String> {
+    let Some(target_ref) = target_ref else {
+        return Ok((None, None));
+    };
+    let parsed = parse_slack_target_ref(&target_ref, field_path)?;
+    if let Some(slack_target) = parsed {
+        return Ok((
+            Some(slack_target_ref_to_value(&slack_target)),
+            Some(slack_target),
+        ));
+    }
+    Ok((Some(target_ref), None))
+}
+
+fn normalize_patch_slack_target_ref(
+    patch: &mut JobPatch,
+    field_path: &str,
+) -> Result<Option<SlackTargetRef>, String> {
+    let Some(target_ref) = patch.target_ref.as_ref() else {
+        return Ok(None);
+    };
+    let Some(target_ref) = target_ref.as_ref() else {
+        return Ok(None);
+    };
+    let parsed = parse_slack_target_ref(target_ref, field_path)?;
+    if let Some(slack_target) = parsed {
+        patch.target_ref = Some(Some(slack_target_ref_to_value(&slack_target)));
+        return Ok(Some(slack_target));
+    }
+    Ok(None)
 }

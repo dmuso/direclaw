@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +36,8 @@ pub struct OutgoingMessage {
     pub agent: String,
     #[serde(default)]
     pub conversation_id: Option<String>,
+    #[serde(default)]
+    pub target_ref: Option<Value>,
     #[serde(default)]
     pub files: Vec<String>,
     #[serde(default)]

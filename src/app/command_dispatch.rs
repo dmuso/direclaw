@@ -6,6 +6,9 @@ use crate::orchestration::run_store::{RunState, WorkflowRunStore};
 use crate::orchestration::scheduler::{
     JobPatch, JobStore, MisfirePolicy, NewJob, ScheduleConfig, ScheduledJob, TargetAction,
 };
+use crate::orchestration::slack_target::{
+    parse_slack_target_ref, slack_target_ref_to_value, validate_profile_mapping, SlackTargetRef,
+};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,6 +339,11 @@ pub fn execute_internal_function(
                     "schedule.create requires settings context".to_string(),
                 )
             })?;
+            let (target_ref, slack_target_ref) =
+                normalize_slack_target_ref_value(target_ref, "targetRef")
+                    .map_err(OrchestratorError::SelectorValidation)?;
+            validate_profile_mapping(settings, &orchestrator_id, slack_target_ref.as_ref())
+                .map_err(OrchestratorError::SelectorValidation)?;
             let runtime_root = settings
                 .resolve_orchestrator_runtime_root(&orchestrator_id)
                 .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?;
@@ -411,7 +419,7 @@ pub fn execute_internal_function(
             );
             job_to_value(&job)
         }
-        InternalFunction::ScheduleUpdate { job_id, patch } => {
+        InternalFunction::ScheduleUpdate { job_id, mut patch } => {
             let settings = context.settings.ok_or_else(|| {
                 OrchestratorError::SelectorValidation(
                     "schedule.update requires settings context".to_string(),
@@ -419,6 +427,10 @@ pub fn execute_internal_function(
             })?;
             let (store, orchestrator_id) =
                 job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let slack_target_ref = normalize_patch_slack_target_ref(&mut patch, "patch.targetRef")
+                .map_err(OrchestratorError::SelectorValidation)?;
+            validate_profile_mapping(settings, &orchestrator_id, slack_target_ref.as_ref())
+                .map_err(OrchestratorError::SelectorValidation)?;
             let job = store
                 .update(&job_id, patch, now_secs())
                 .map_err(OrchestratorError::SelectorValidation)?;
@@ -1185,6 +1197,9 @@ fn parse_job_patch(patch: &Map<String, Value>) -> Result<JobPatch, String> {
     } else {
         None
     };
+    if let Some(Some(target_ref)) = target_ref.as_ref() {
+        let _ = parse_slack_target_ref(target_ref, "patch.targetRef")?;
+    }
     let misfire_policy = match patch.get("misfirePolicy").and_then(Value::as_str) {
         Some(raw) => Some(parse_misfire_policy_arg(Some(raw.to_string()))?),
         None => None,
@@ -1198,4 +1213,39 @@ fn parse_job_patch(patch: &Map<String, Value>) -> Result<JobPatch, String> {
         misfire_policy,
         allow_overlap,
     })
+}
+
+fn normalize_slack_target_ref_value(
+    target_ref: Option<Value>,
+    field_path: &str,
+) -> Result<(Option<Value>, Option<SlackTargetRef>), String> {
+    let Some(target_ref) = target_ref else {
+        return Ok((None, None));
+    };
+    let parsed = parse_slack_target_ref(&target_ref, field_path)?;
+    if let Some(slack_target) = parsed {
+        return Ok((
+            Some(slack_target_ref_to_value(&slack_target)),
+            Some(slack_target),
+        ));
+    }
+    Ok((Some(target_ref), None))
+}
+
+fn normalize_patch_slack_target_ref(
+    patch: &mut JobPatch,
+    field_path: &str,
+) -> Result<Option<SlackTargetRef>, String> {
+    let Some(target_ref) = patch.target_ref.as_ref() else {
+        return Ok(None);
+    };
+    let Some(target_ref) = target_ref.as_ref() else {
+        return Ok(None);
+    };
+    let parsed = parse_slack_target_ref(target_ref, field_path)?;
+    if let Some(slack_target) = parsed {
+        patch.target_ref = Some(Some(slack_target_ref_to_value(&slack_target)));
+        return Ok(Some(slack_target));
+    }
+    Ok(None)
 }

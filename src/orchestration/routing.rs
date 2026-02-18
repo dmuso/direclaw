@@ -17,6 +17,7 @@ use crate::orchestration::selector::{
     SelectorStatus,
 };
 use crate::orchestration::selector_artifacts::SelectorArtifactStore;
+use crate::orchestration::slack_target::{parse_slack_target_ref, validate_profile_mapping};
 use crate::orchestration::transitions::{
     route_selector_action, RouteContext, RoutedSelectorAction,
 };
@@ -481,6 +482,15 @@ fn route_scheduled_trigger(
             envelope.orchestrator_id
         )));
     }
+    let slack_target = envelope
+        .target_ref
+        .as_ref()
+        .map(|value| parse_slack_target_ref(value, "targetRef"))
+        .transpose()
+        .map_err(OrchestratorError::SelectorValidation)?
+        .flatten();
+    validate_profile_mapping(settings, orchestrator_id, slack_target.as_ref())
+        .map_err(OrchestratorError::SelectorValidation)?;
 
     let orchestrator = load_orchestrator_config(settings, orchestrator_id)?;
     let workspace_context =

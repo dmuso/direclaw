@@ -32,6 +32,7 @@ fn make_outgoing(incoming: &IncomingMessage) -> OutgoingMessage {
         message_id: incoming.message_id.clone(),
         agent: "worker".to_string(),
         conversation_id: incoming.conversation_id.clone(),
+        target_ref: None,
         files: vec![],
         workflow_run_id: incoming.workflow_run_id.clone(),
         workflow_step_id: incoming.workflow_step_id.clone(),

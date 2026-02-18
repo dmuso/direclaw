@@ -42,6 +42,13 @@ When implemented, each adapter must:
 - Upload files via Slack file upload API
 - Reply in thread context for non-DM messages
 - Outbound replies must use the same resolved `channelProfileId` credentials that accepted the inbound event
+- Unified targeted outbound contract for Slack-bound actions must use:
+  - `targetRef.channel = "slack"`
+  - `targetRef.channelProfileId` (required)
+  - `targetRef.channelId` (required)
+  - `targetRef.threadTs` (required when `postingMode=thread_reply`)
+  - `targetRef.postingMode` (`channel_post|thread_reply`)
+- Adapter delivery must use one canonical targeted-post function for both channel posts and thread replies.
 - Split outbound text around 3500 chars
 - For workflow runs, maintain association between `workflowRunId` and Slack thread/conversation id for progress posting
 - While associated workflow run is active (`running|waiting`), post progress updates to the same Slack thread every 15 minutes

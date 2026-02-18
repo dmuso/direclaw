@@ -93,6 +93,7 @@ fn sample_outgoing(
         message_id: message_id.to_string(),
         agent: agent.to_string(),
         conversation_id: conversation_id.map(ToString::to_string),
+        target_ref: None,
         files: Vec::new(),
         workflow_run_id: None,
         workflow_step_id: None,

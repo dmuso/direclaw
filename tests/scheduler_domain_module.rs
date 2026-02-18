@@ -115,3 +115,27 @@ fn scheduler_domain_computes_next_run_for_once_interval_and_cron() {
     .expect("cron next run");
     assert!(cron.is_some());
 }
+
+#[test]
+fn scheduler_domain_rejects_invalid_slack_target_ref_contract() {
+    let temp = tempdir().expect("tempdir");
+    let now = 1_700_000_000_i64;
+    let store = JobStore::new(temp.path());
+
+    let err = store
+        .create(
+            NewJob {
+                target_ref: Some(Value::Object(Map::from_iter([
+                    ("channel".to_string(), Value::String("slack".to_string())),
+                    ("channelId".to_string(), Value::String("C123".to_string())),
+                ]))),
+                ..sample_create(now)
+            },
+            now,
+        )
+        .expect_err("invalid slack targetRef should fail");
+    assert!(
+        err.contains("target_ref.channelProfileId"),
+        "unexpected error: {err}"
+    );
+}

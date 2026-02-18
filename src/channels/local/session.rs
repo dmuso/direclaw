@@ -206,6 +206,7 @@ mod tests {
             message_id: "msg-1".to_string(),
             agent: "orchestrator".to_string(),
             conversation_id: Some("chat-1".to_string()),
+            target_ref: None,
             files: Vec::new(),
             workflow_run_id: None,
             workflow_step_id: None,

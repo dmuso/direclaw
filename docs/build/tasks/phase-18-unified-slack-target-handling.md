@@ -7,7 +7,7 @@ Implement one unified Slack target resolution and delivery path for all request 
 
 ### P18-T01 Define and validate Slack target reference contract
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - A typed Slack `targetRef` contract is defined for all Slack-bound actions (channel id, optional thread id, posting mode).
   - Validation enforces required Slack target fields regardless of entrypoint (`workflow_start`, `command_invoke`, ad-hoc orchestrator action, or scheduled trigger).
@@ -20,7 +20,7 @@ Implement one unified Slack target resolution and delivery path for all request 
 
 ### P18-T02 Add orchestrator-safe mapping from all request contexts to Slack delivery context
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Slack-bound actions resolve required `channelProfileId` and orchestrator scope deterministically for every entrypoint.
   - Mismatched profile/orchestrator mappings are rejected before enqueue.
@@ -33,7 +33,7 @@ Implement one unified Slack target resolution and delivery path for all request 
 
 ### P18-T03 Implement one canonical Slack adapter delivery path for targeted posts
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Slack adapter exposes a single internal delivery path for targeted channel/thread posts used by all upstream contexts.
   - Scheduler, workflow, and ad-hoc command/chat paths reuse the same Slack delivery function and payload contract.
@@ -48,7 +48,7 @@ Implement one unified Slack target resolution and delivery path for all request 
 
 ### P18-T04 End-to-end validation across all Slack-target entrypoints
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Natural-language and command-driven ad-hoc targeting can post to allowed Slack channels/threads via orchestrator routing.
   - Scheduled job lifecycle operations (`pause`, `resume`, `delete`, `run_now`) affect Slack-targeted execution as expected.

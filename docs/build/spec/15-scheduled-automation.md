@@ -167,8 +167,14 @@ Idempotency and overlap protection:
 
 Scheduler target model is channel-agnostic:
 
-- `targetRef` is stored as opaque structured metadata owned by the selected action/workflow.
-- Scheduler validates schema presence and type shape, not channel API reachability.
+- `targetRef` is selected-action metadata.
+- For Slack-targeted actions, `targetRef` must use this typed contract:
+  - `channel = "slack"`
+  - `channelProfileId` (required)
+  - `channelId` (required)
+  - `threadTs` (required when `postingMode=thread_reply`)
+  - `postingMode` (`channel_post|thread_reply`)
+- Scheduler validates Slack `targetRef` required fields and type shape, but not transport reachability.
 
 Channel-specific enforcement belongs in adapter specs:
 

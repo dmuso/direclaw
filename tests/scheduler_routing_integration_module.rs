@@ -76,6 +76,38 @@ channels: {{}}
     .expect("settings")
 }
 
+fn settings_for_with_slack_profiles(
+    private_workspace: &std::path::Path,
+    workspaces_root: &std::path::Path,
+) -> Settings {
+    serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: {}
+shared_workspaces: {{}}
+orchestrators:
+  main:
+    private_workspace: {}
+    shared_access: []
+  other:
+    private_workspace: {}
+    shared_access: []
+channel_profiles:
+  slack_main:
+    channel: slack
+    orchestrator_id: main
+  slack_other:
+    channel: slack
+    orchestrator_id: other
+monitoring: {{}}
+channels: {{}}
+"#,
+        workspaces_root.display(),
+        private_workspace.display(),
+        workspaces_root.join("other").display(),
+    ))
+    .expect("settings")
+}
+
 #[test]
 fn scheduled_workflow_start_routes_through_existing_action_path() {
     let temp = tempdir().expect("tempdir");
@@ -276,5 +308,66 @@ fn scheduled_trigger_failure_records_scheduler_failure_event() {
     assert!(
         log.contains("\"event\":\"scheduler.trigger.failed\""),
         "missing failure event in log: {log}"
+    );
+}
+
+#[test]
+fn scheduled_trigger_rejects_cross_orchestrator_slack_target_profile() {
+    let temp = tempdir().expect("tempdir");
+    let workspaces_root = temp.path().join("workspaces");
+    let private_workspace = workspaces_root.join("main");
+    write_orchestrator(&private_workspace);
+    std::fs::create_dir_all(workspaces_root.join("other")).expect("other workspace");
+    let settings = settings_for_with_slack_profiles(&private_workspace, temp.path());
+
+    let runtime_root = settings
+        .resolve_orchestrator_runtime_root("main")
+        .expect("runtime root");
+    let functions = FunctionRegistry::v1_defaults(WorkflowRunStore::new(&runtime_root), &settings);
+
+    let envelope = ScheduledTriggerEnvelope {
+        job_id: "job-cross".to_string(),
+        execution_id: "exec-cross".to_string(),
+        triggered_at: 1_700_000_000,
+        orchestrator_id: "main".to_string(),
+        target_action: TargetAction::CommandInvoke {
+            function_id: "orchestrator.list".to_string(),
+            function_args: Map::new(),
+        },
+        target_ref: Some(serde_json::json!({
+            "channel": "slack",
+            "channelProfileId": "slack_other",
+            "channelId": "C222",
+            "postingMode": "channel_post"
+        })),
+    };
+    let inbound = IncomingMessage {
+        channel: "scheduler".to_string(),
+        channel_profile_id: None,
+        sender: "scheduler:main".to_string(),
+        sender_id: "job-cross".to_string(),
+        message: serde_json::to_string(&envelope).expect("serialize envelope"),
+        timestamp: 1_700_000_000,
+        message_id: "exec-cross".to_string(),
+        conversation_id: Some("scheduler:job-cross".to_string()),
+        files: vec![],
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+
+    let err = process_queued_message_with_runner_binaries(
+        temp.path(),
+        &settings,
+        &inbound,
+        1_700_000_001,
+        &BTreeMap::new(),
+        &functions,
+        None,
+        |_attempt, _request, _orchestrator| None,
+    )
+    .expect_err("cross-orchestrator target should fail");
+    assert!(
+        err.to_string().contains("targetRef.channelProfileId"),
+        "unexpected error: {err}"
     );
 }

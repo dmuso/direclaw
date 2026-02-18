@@ -26,6 +26,7 @@ fn queue_message_module_exposes_queue_message_types() {
         message_id: incoming.message_id.clone(),
         agent: "agent-1".to_string(),
         conversation_id: incoming.conversation_id.clone(),
+        target_ref: None,
         files: incoming.files.clone(),
         workflow_run_id: incoming.workflow_run_id.clone(),
         workflow_step_id: incoming.workflow_step_id.clone(),

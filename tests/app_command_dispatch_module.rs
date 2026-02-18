@@ -211,3 +211,75 @@ fn schedule_lifecycle_emits_scheduler_audit_events() {
         "missing resumed event in log: {log}"
     );
 }
+
+#[test]
+fn schedule_create_rejects_target_profile_mapped_to_different_orchestrator() {
+    let temp = tempdir().expect("tempdir");
+    let alpha_ws = temp.path().join("alpha");
+    let beta_ws = temp.path().join("beta");
+    let settings: Settings = serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: {}
+shared_workspaces: {{}}
+orchestrators:
+  alpha:
+    private_workspace: {}
+    shared_access: []
+  beta:
+    private_workspace: {}
+    shared_access: []
+channel_profiles:
+  slack_alpha:
+    channel: slack
+    orchestrator_id: alpha
+  slack_beta:
+    channel: slack
+    orchestrator_id: beta
+monitoring: {{}}
+channels: {{}}
+"#,
+        temp.path().display(),
+        alpha_ws.display(),
+        beta_ws.display()
+    ))
+    .expect("settings");
+
+    let err = execute_internal_function(
+        InternalFunction::ScheduleCreate {
+            orchestrator_id: "alpha".to_string(),
+            schedule: ScheduleConfig::Once {
+                run_at: 1_700_000_000,
+            },
+            target_action: TargetAction::CommandInvoke {
+                function_id: function_ids::ORCHESTRATOR_LIST.to_string(),
+                function_args: Map::new(),
+            },
+            target_ref: Some(Value::Object(Map::from_iter([
+                ("channel".to_string(), Value::String("slack".to_string())),
+                (
+                    "channelProfileId".to_string(),
+                    Value::String("slack_beta".to_string()),
+                ),
+                ("channelId".to_string(), Value::String("C999".to_string())),
+                (
+                    "postingMode".to_string(),
+                    Value::String("channel_post".to_string()),
+                ),
+            ]))),
+            misfire_policy: MisfirePolicy::FireOnceOnRecovery,
+            allow_overlap: false,
+            created_by: Map::new(),
+        },
+        FunctionExecutionContext {
+            run_store: None,
+            settings: Some(&settings),
+            orchestrator_id: Some("alpha"),
+        },
+    )
+    .expect_err("cross-orchestrator target should fail");
+
+    assert!(
+        err.to_string().contains("targetRef.channelProfileId"),
+        "unexpected error: {err}"
+    );
+}

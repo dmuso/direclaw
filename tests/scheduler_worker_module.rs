@@ -79,6 +79,52 @@ fn scheduler_worker_dispatches_due_job_through_queue_and_records_run_history() {
 }
 
 #[test]
+fn scheduler_worker_propagates_slack_target_ref_in_trigger_payload() {
+    let temp = tempdir().expect("tempdir");
+    let runtime_root = temp.path().join("runtime");
+    let queue = QueuePaths::from_state_root(&runtime_root);
+    std::fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    std::fs::create_dir_all(&queue.processing).expect("processing dir");
+
+    let store = JobStore::new(&runtime_root);
+    let created = store
+        .create(
+            NewJob {
+                target_ref: Some(serde_json::json!({
+                    "channel": "slack",
+                    "channelProfileId": "slack_main",
+                    "channelId": "C200",
+                    "threadTs": "1700000000.1",
+                    "postingMode": "thread_reply"
+                })),
+                ..make_job(MisfirePolicy::FireOnceOnRecovery)
+            },
+            1_700_000_000,
+        )
+        .expect("create");
+
+    let mut worker = SchedulerWorker::new(&runtime_root);
+    worker.tick(1_700_000_001).expect("tick");
+
+    let claimed = claim_oldest(&queue)
+        .expect("claim")
+        .expect("expected queued scheduled trigger");
+    assert!(claimed.payload.message.contains("\"targetRef\""));
+    assert!(claimed
+        .payload
+        .message
+        .contains("\"channelProfileId\":\"slack_main\""));
+
+    let log = std::fs::read_to_string(runtime_root.join("logs/orchestrator.log")).expect("log");
+    assert!(
+        log.contains(&format!("\"jobId\":\"{}\"", created.job_id))
+            && log.contains("\"targetChannelProfileId\":\"slack_main\"")
+            && log.contains("\"targetChannelId\":\"C200\""),
+        "missing slack target audit metadata in log: {log}"
+    );
+}
+
+#[test]
 fn scheduler_worker_applies_skip_missed_without_dispatching() {
     let temp = tempdir().expect("tempdir");
     let runtime_root = temp.path().join("runtime");

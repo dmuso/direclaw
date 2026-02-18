@@ -3,7 +3,12 @@ use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries;
 use crate::orchestration::run_store::{RunState, StepAttemptRecord, WorkflowRunStore};
+use crate::orchestration::scheduler::parse_trigger_envelope;
 use crate::orchestration::selector::run_selector_attempt_with_provider;
+use crate::orchestration::slack_target::{
+    parse_slack_target_ref, slack_target_from_conversation, slack_target_ref_to_value,
+    validate_profile_mapping, SlackPostingMode,
+};
 use crate::orchestration::transitions::RoutedSelectorAction;
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
@@ -391,20 +396,44 @@ fn process_claimed_message(
     })?;
 
     let responses = action_to_outbound_messages(&action, &run_store);
+    let outbound_slack_target = resolve_outbound_slack_target(settings, &scoped.claimed.payload)?;
+    let outbound_channel = outbound_slack_target
+        .as_ref()
+        .map(|_| "slack".to_string())
+        .unwrap_or_else(|| scoped.claimed.payload.channel.clone());
+    let outbound_channel_profile_id = outbound_slack_target
+        .as_ref()
+        .map(|target| target.channel_profile_id.clone())
+        .or_else(|| scoped.claimed.payload.channel_profile_id.clone());
+    let outbound_conversation_id = outbound_slack_target
+        .as_ref()
+        .map(|target| match target.posting_mode {
+            SlackPostingMode::ChannelPost => target.channel_id.clone(),
+            SlackPostingMode::ThreadReply => format!(
+                "{}:{}",
+                target.channel_id,
+                target.thread_ts.clone().unwrap_or_default()
+            ),
+        })
+        .or_else(|| scoped.claimed.payload.conversation_id.clone());
+    let outbound_target_ref = outbound_slack_target
+        .as_ref()
+        .map(slack_target_ref_to_value);
     let now = now_secs();
     let outgoing: Vec<OutgoingMessage> = responses
         .into_iter()
         .enumerate()
         .map(|(index, (message, agent))| OutgoingMessage {
-            channel: scoped.claimed.payload.channel.clone(),
-            channel_profile_id: scoped.claimed.payload.channel_profile_id.clone(),
+            channel: outbound_channel.clone(),
+            channel_profile_id: outbound_channel_profile_id.clone(),
             sender: scoped.claimed.payload.sender.clone(),
             message,
             original_message: scoped.claimed.payload.message.clone(),
             timestamp: now.saturating_add(index as i64),
             message_id: scoped.claimed.payload.message_id.clone(),
             agent,
-            conversation_id: scoped.claimed.payload.conversation_id.clone(),
+            conversation_id: outbound_conversation_id.clone(),
+            target_ref: outbound_target_ref.clone(),
             files: Vec::new(),
             workflow_run_id: scoped.claimed.payload.workflow_run_id.clone(),
             workflow_step_id: scoped.claimed.payload.workflow_step_id.clone(),
@@ -467,6 +496,37 @@ fn recover_queue_processing_paths(queue_paths: &QueuePaths) -> Result<Vec<PathBu
         recovered.push(target);
     }
     Ok(recovered)
+}
+
+fn resolve_outbound_slack_target(
+    settings: &Settings,
+    inbound: &queue::IncomingMessage,
+) -> Result<Option<crate::orchestration::slack_target::SlackTargetRef>, String> {
+    if inbound.channel == "slack" {
+        let channel_profile_id = inbound
+            .channel_profile_id
+            .as_deref()
+            .ok_or_else(|| "slack message missing channel_profile_id".to_string())?;
+        let conversation_id = inbound
+            .conversation_id
+            .as_deref()
+            .ok_or_else(|| "slack message missing conversation_id".to_string())?;
+        return slack_target_from_conversation(channel_profile_id, conversation_id).map(Some);
+    }
+
+    if inbound.channel == "scheduler" {
+        let envelope = parse_trigger_envelope(&inbound.message)?;
+        let slack_target = envelope
+            .target_ref
+            .as_ref()
+            .map(|value| parse_slack_target_ref(value, "targetRef"))
+            .transpose()?
+            .flatten();
+        validate_profile_mapping(settings, &envelope.orchestrator_id, slack_target.as_ref())?;
+        return Ok(slack_target);
+    }
+
+    Ok(None)
 }
 
 fn resolve_runner_binaries() -> RunnerBinaries {

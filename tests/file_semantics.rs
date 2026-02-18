@@ -64,6 +64,7 @@ fn file_tags_round_trip_from_inbound_queue_to_outbound_payload() {
         message_id: claimed.payload.message_id.clone(),
         agent: "worker".to_string(),
         conversation_id: claimed.payload.conversation_id.clone(),
+        target_ref: None,
         files: prepared.files,
         workflow_run_id: claimed.payload.workflow_run_id.clone(),
         workflow_step_id: claimed.payload.workflow_step_id.clone(),
