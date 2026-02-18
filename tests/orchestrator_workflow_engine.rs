@@ -291,6 +291,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             runner_binaries: Some(runner_binaries.clone()),
             memory_enabled: false,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 100,
         },
     )
@@ -405,6 +406,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             runner_binaries: Some(runner_binaries.clone()),
             memory_enabled: false,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 101,
         },
     )
@@ -457,6 +459,7 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
             runner_binaries: Some(runner_binaries),
             memory_enabled: false,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 102,
         },
     )
@@ -1020,6 +1023,7 @@ channels: {{}}
             runner_binaries: Some(runner_binaries),
             memory_enabled: false,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 200,
         },
     )
@@ -1183,6 +1187,7 @@ fn diagnostics_persists_memory_evidence_bundle_with_provenance() {
             runner_binaries: None,
             memory_enabled: true,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 400,
         },
     )
@@ -1257,6 +1262,7 @@ fn diagnostics_persists_findings_back_into_memory_graph() {
             runner_binaries: None,
             memory_enabled: true,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 430,
         },
     )
@@ -1379,6 +1385,7 @@ fn diagnostics_does_not_recall_memory_when_scope_is_unresolved() {
             runner_binaries: None,
             memory_enabled: true,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 410,
         },
     )
@@ -1464,6 +1471,7 @@ fn diagnostics_persists_memory_evidence_failure_artifact() {
             runner_binaries: None,
             memory_enabled: true,
             source_message_id: Some("message-1"),
+            workflow_inputs: None,
             now: 420,
         },
     )

@@ -1,7 +1,11 @@
 use crate::app::command_catalog::function_ids;
 use crate::config::{load_orchestrator_config, Settings};
+use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::run_store::{RunState, WorkflowRunStore};
+use crate::orchestration::scheduler::{
+    JobPatch, JobStore, MisfirePolicy, NewJob, ScheduleConfig, ScheduledJob, TargetAction,
+};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +34,37 @@ pub enum InternalFunction {
     ChannelProfileShow {
         channel_profile_id: String,
     },
+    ScheduleCreate {
+        orchestrator_id: String,
+        schedule: ScheduleConfig,
+        target_action: TargetAction,
+        target_ref: Option<Value>,
+        misfire_policy: MisfirePolicy,
+        allow_overlap: bool,
+        created_by: Map<String, Value>,
+    },
+    ScheduleList {
+        orchestrator_id: String,
+    },
+    ScheduleShow {
+        job_id: String,
+    },
+    ScheduleUpdate {
+        job_id: String,
+        patch: JobPatch,
+    },
+    SchedulePause {
+        job_id: String,
+    },
+    ScheduleResume {
+        job_id: String,
+    },
+    ScheduleDelete {
+        job_id: String,
+    },
+    ScheduleRunNow {
+        job_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +77,7 @@ pub enum FunctionExecutionPlan {
 pub struct FunctionExecutionContext<'a> {
     pub run_store: Option<&'a WorkflowRunStore>,
     pub settings: Option<&'a Settings>,
+    pub orchestrator_id: Option<&'a str>,
 }
 
 pub fn execute_function_invocation_with_executor<F>(
@@ -286,6 +322,205 @@ pub fn execute_internal_function(
                 ),
             ])))
         }
+        InternalFunction::ScheduleCreate {
+            orchestrator_id,
+            schedule,
+            target_action,
+            target_ref,
+            misfire_policy,
+            allow_overlap,
+            created_by,
+        } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.create requires settings context".to_string(),
+                )
+            })?;
+            let runtime_root = settings
+                .resolve_orchestrator_runtime_root(&orchestrator_id)
+                .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?;
+            let store = JobStore::new(&runtime_root);
+            let created = store
+                .create(
+                    NewJob {
+                        orchestrator_id: orchestrator_id.clone(),
+                        created_by,
+                        schedule,
+                        target_action,
+                        target_ref,
+                        misfire_policy,
+                        allow_overlap,
+                    },
+                    now_secs(),
+                )
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &runtime_root,
+                "scheduler.job.created",
+                &created.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&created)
+        }
+        InternalFunction::ScheduleList { orchestrator_id } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.list requires settings context".to_string(),
+                )
+            })?;
+            let runtime_root = settings
+                .resolve_orchestrator_runtime_root(&orchestrator_id)
+                .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?;
+            let store = JobStore::new(runtime_root);
+            let jobs = store
+                .list_for_orchestrator(&orchestrator_id)
+                .map_err(OrchestratorError::SelectorValidation)?;
+            Ok(Value::Object(Map::from_iter([
+                ("orchestratorId".to_string(), Value::String(orchestrator_id)),
+                (
+                    "jobs".to_string(),
+                    Value::Array(
+                        jobs.into_iter()
+                            .map(job_to_json)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(|error| OrchestratorError::SelectorJson(error.to_string()))?,
+                    ),
+                ),
+            ])))
+        }
+        InternalFunction::ScheduleShow { job_id } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.show requires settings context".to_string(),
+                )
+            })?;
+            let (store, orchestrator_id) =
+                job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let job = store
+                .load(&job_id)
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &settings
+                    .resolve_orchestrator_runtime_root(&orchestrator_id)
+                    .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?,
+                "scheduler.job.shown",
+                &job.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&job)
+        }
+        InternalFunction::ScheduleUpdate { job_id, patch } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.update requires settings context".to_string(),
+                )
+            })?;
+            let (store, orchestrator_id) =
+                job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let job = store
+                .update(&job_id, patch, now_secs())
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &settings
+                    .resolve_orchestrator_runtime_root(&orchestrator_id)
+                    .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?,
+                "scheduler.job.updated",
+                &job.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&job)
+        }
+        InternalFunction::SchedulePause { job_id } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.pause requires settings context".to_string(),
+                )
+            })?;
+            let (store, orchestrator_id) =
+                job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let job = store
+                .pause(&job_id, now_secs())
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &settings
+                    .resolve_orchestrator_runtime_root(&orchestrator_id)
+                    .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?,
+                "scheduler.job.paused",
+                &job.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&job)
+        }
+        InternalFunction::ScheduleResume { job_id } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.resume requires settings context".to_string(),
+                )
+            })?;
+            let (store, orchestrator_id) =
+                job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let job = store
+                .resume(&job_id, now_secs())
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &settings
+                    .resolve_orchestrator_runtime_root(&orchestrator_id)
+                    .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?,
+                "scheduler.job.resumed",
+                &job.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&job)
+        }
+        InternalFunction::ScheduleDelete { job_id } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.delete requires settings context".to_string(),
+                )
+            })?;
+            let (store, orchestrator_id) =
+                job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let job = store
+                .delete(&job_id, now_secs())
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &settings
+                    .resolve_orchestrator_runtime_root(&orchestrator_id)
+                    .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?,
+                "scheduler.job.deleted",
+                &job.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&job)
+        }
+        InternalFunction::ScheduleRunNow { job_id } => {
+            let settings = context.settings.ok_or_else(|| {
+                OrchestratorError::SelectorValidation(
+                    "schedule.run_now requires settings context".to_string(),
+                )
+            })?;
+            let (store, orchestrator_id) =
+                job_store_for_job_id(settings, &job_id, context.orchestrator_id)?;
+            let job = store
+                .run_now(&job_id, now_secs())
+                .map_err(OrchestratorError::SelectorValidation)?;
+            append_scheduler_audit_event(
+                &settings
+                    .resolve_orchestrator_runtime_root(&orchestrator_id)
+                    .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?,
+                "scheduler.job.run_now",
+                &job.job_id,
+                None,
+                now_secs(),
+            );
+            job_to_value(&job)
+        }
     }
 }
 
@@ -297,6 +532,75 @@ fn remap_missing_run_error(run_id: &str, err: OrchestratorError) -> Orchestrator
             }
         }
         _ => err,
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn job_to_json(job: ScheduledJob) -> Result<Value, serde_json::Error> {
+    serde_json::to_value(job)
+}
+
+fn job_to_value(job: &ScheduledJob) -> Result<Value, OrchestratorError> {
+    serde_json::to_value(job).map_err(|error| OrchestratorError::SelectorJson(error.to_string()))
+}
+
+fn job_store_for_job_id(
+    settings: &Settings,
+    job_id: &str,
+    orchestrator_scope: Option<&str>,
+) -> Result<(JobStore, String), OrchestratorError> {
+    if let Some(orchestrator_id) = orchestrator_scope {
+        let runtime_root = settings
+            .resolve_orchestrator_runtime_root(orchestrator_id)
+            .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?;
+        let store = JobStore::new(runtime_root);
+        if store.load(job_id).is_ok() {
+            return Ok((store, orchestrator_id.to_string()));
+        }
+        return Err(OrchestratorError::SelectorValidation(format!(
+            "unknown scheduler job `{job_id}`"
+        )));
+    }
+
+    for orchestrator_id in settings.orchestrators.keys() {
+        let runtime_root = settings
+            .resolve_orchestrator_runtime_root(orchestrator_id)
+            .map_err(|err| OrchestratorError::SelectorValidation(err.to_string()))?;
+        let store = JobStore::new(runtime_root);
+        if store.load(job_id).is_ok() {
+            return Ok((store, orchestrator_id.clone()));
+        }
+    }
+    Err(OrchestratorError::SelectorValidation(format!(
+        "unknown scheduler job `{job_id}`"
+    )))
+}
+
+fn append_scheduler_audit_event(
+    runtime_root: &std::path::Path,
+    event: &str,
+    job_id: &str,
+    execution_id: Option<&str>,
+    now: i64,
+) {
+    let mut payload = Map::new();
+    payload.insert("event".to_string(), Value::String(event.to_string()));
+    payload.insert("jobId".to_string(), Value::String(job_id.to_string()));
+    payload.insert("timestamp".to_string(), Value::from(now));
+    if let Some(execution_id) = execution_id {
+        payload.insert(
+            "executionId".to_string(),
+            Value::String(execution_id.to_string()),
+        );
+    }
+    if let Ok(line) = serde_json::to_string(&Value::Object(payload)) {
+        append_security_log(runtime_root, &line);
     }
 }
 
@@ -609,6 +913,77 @@ pub fn plan_function_invocation(
                 orchestrator_id,
             ]))
         }
+        function_ids::SCHEDULE_CREATE => {
+            let orchestrator_id = required_string_arg(args, "orchestratorId")?;
+            let schedule_type = required_string_arg(args, "scheduleType")?;
+            let schedule_obj = required_object_arg(args, "schedule")?;
+            let target_action_obj = required_object_arg(args, "targetAction")?;
+            let schedule = parse_schedule_config(&schedule_type, schedule_obj)?;
+            let target_action = parse_target_action_config(target_action_obj)?;
+            let target_ref = optional_object_arg(args, "targetRef")
+                .cloned()
+                .map(Value::Object);
+            let misfire_policy =
+                parse_misfire_policy_arg(optional_string_arg(args, "misfirePolicy")?)?;
+            let allow_overlap = optional_bool_arg(args, "allowOverlap")?.unwrap_or(false);
+            let created_by = optional_object_arg(args, "createdBy")
+                .cloned()
+                .unwrap_or_else(Map::new);
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleCreate {
+                    orchestrator_id,
+                    schedule,
+                    target_action,
+                    target_ref,
+                    misfire_policy,
+                    allow_overlap,
+                    created_by,
+                },
+            ))
+        }
+        function_ids::SCHEDULE_LIST => {
+            let orchestrator_id = required_string_arg(args, "orchestratorId")?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleList { orchestrator_id },
+            ))
+        }
+        function_ids::SCHEDULE_SHOW => {
+            let job_id = required_string_arg(args, "jobId")?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleShow { job_id },
+            ))
+        }
+        function_ids::SCHEDULE_UPDATE => {
+            let job_id = required_string_arg(args, "jobId")?;
+            let patch = parse_job_patch(required_object_arg(args, "patch")?)?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleUpdate { job_id, patch },
+            ))
+        }
+        function_ids::SCHEDULE_PAUSE => {
+            let job_id = required_string_arg(args, "jobId")?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::SchedulePause { job_id },
+            ))
+        }
+        function_ids::SCHEDULE_RESUME => {
+            let job_id = required_string_arg(args, "jobId")?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleResume { job_id },
+            ))
+        }
+        function_ids::SCHEDULE_DELETE => {
+            let job_id = required_string_arg(args, "jobId")?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleDelete { job_id },
+            ))
+        }
+        function_ids::SCHEDULE_RUN_NOW => {
+            let job_id = required_string_arg(args, "jobId")?;
+            Ok(FunctionExecutionPlan::Internal(
+                InternalFunction::ScheduleRunNow { job_id },
+            ))
+        }
         function_ids::UPDATE_CHECK => Ok(FunctionExecutionPlan::CliArgs(vec![
             "update".to_string(),
             "check".to_string(),
@@ -677,4 +1052,150 @@ fn optional_object_arg<'a>(
     arg: &str,
 ) -> Option<&'a Map<String, Value>> {
     args.get(arg).and_then(|value| value.as_object())
+}
+
+fn required_object_arg<'a>(
+    args: &'a Map<String, Value>,
+    arg: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    args.get(arg)
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("argument `{arg}` must be an object"))
+}
+
+fn parse_schedule_config(
+    schedule_type: &str,
+    schedule: &Map<String, Value>,
+) -> Result<ScheduleConfig, String> {
+    match schedule_type {
+        "once" => {
+            let run_at = schedule
+                .get("runAt")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| "schedule.once requires integer `runAt`".to_string())?;
+            Ok(ScheduleConfig::Once { run_at })
+        }
+        "interval" => {
+            let every_seconds = schedule
+                .get("everySeconds")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "schedule.interval requires integer `everySeconds`".to_string())?;
+            let anchor_at = schedule.get("anchorAt").and_then(Value::as_i64);
+            Ok(ScheduleConfig::Interval {
+                every_seconds,
+                anchor_at,
+            })
+        }
+        "cron" => {
+            let expression = schedule
+                .get("expression")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "schedule.cron requires string `expression`".to_string())?
+                .to_string();
+            let timezone = schedule
+                .get("timezone")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "schedule.cron requires string `timezone`".to_string())?
+                .to_string();
+            Ok(ScheduleConfig::Cron {
+                expression,
+                timezone,
+            })
+        }
+        other => Err(format!(
+            "scheduleType must be one of: once, interval, cron (got `{other}`)"
+        )),
+    }
+}
+
+fn parse_target_action_config(action: &Map<String, Value>) -> Result<TargetAction, String> {
+    let action_type = action
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "targetAction.type is required".to_string())?;
+    match action_type {
+        "workflow_start" => {
+            let workflow_id = action
+                .get("workflowId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "targetAction.workflow_start requires `workflowId`".to_string())?
+                .to_string();
+            let inputs = action
+                .get("inputs")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            Ok(TargetAction::WorkflowStart {
+                workflow_id,
+                inputs,
+            })
+        }
+        "command_invoke" => {
+            let function_id = action
+                .get("functionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "targetAction.command_invoke requires `functionId`".to_string())?
+                .to_string();
+            let function_args = action
+                .get("functionArgs")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            Ok(TargetAction::CommandInvoke {
+                function_id,
+                function_args,
+            })
+        }
+        other => Err(format!(
+            "targetAction.type must be workflow_start|command_invoke (got `{other}`)"
+        )),
+    }
+}
+
+fn parse_misfire_policy_arg(raw: Option<String>) -> Result<MisfirePolicy, String> {
+    match raw.as_deref() {
+        None => Ok(MisfirePolicy::FireOnceOnRecovery),
+        Some("fire_once_on_recovery") => Ok(MisfirePolicy::FireOnceOnRecovery),
+        Some("skip_missed") => Ok(MisfirePolicy::SkipMissed),
+        Some(other) => Err(format!(
+            "misfirePolicy must be fire_once_on_recovery|skip_missed (got `{other}`)"
+        )),
+    }
+}
+
+fn parse_job_patch(patch: &Map<String, Value>) -> Result<JobPatch, String> {
+    let schedule = patch
+        .get("schedule")
+        .and_then(Value::as_object)
+        .map(|schedule| {
+            let schedule_type = schedule
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "patch.schedule.type is required".to_string())?;
+            parse_schedule_config(schedule_type, schedule)
+        })
+        .transpose()?;
+    let target_action = patch
+        .get("targetAction")
+        .and_then(Value::as_object)
+        .map(parse_target_action_config)
+        .transpose()?;
+    let target_ref = if patch.contains_key("targetRef") {
+        Some(patch.get("targetRef").cloned())
+    } else {
+        None
+    };
+    let misfire_policy = match patch.get("misfirePolicy").and_then(Value::as_str) {
+        Some(raw) => Some(parse_misfire_policy_arg(Some(raw.to_string()))?),
+        None => None,
+    };
+    let allow_overlap = patch.get("allowOverlap").and_then(Value::as_bool);
+
+    Ok(JobPatch {
+        schedule,
+        target_action,
+        target_ref,
+        misfire_policy,
+        allow_overlap,
+    })
 }

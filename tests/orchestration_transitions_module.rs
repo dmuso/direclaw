@@ -75,6 +75,7 @@ fn transitions_module_routes_status_without_active_run() {
             runner_binaries: None,
             memory_enabled: false,
             source_message_id: None,
+            workflow_inputs: None,
             now: 100,
         },
     )

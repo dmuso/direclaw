@@ -7,7 +7,7 @@ Add orchestrator-scoped scheduled automation with natural-language command routi
 
 ### P17-T01 Add scheduler command surface and selector function exposure
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Command/function registry includes `schedule.create`, `schedule.list`, `schedule.show`, `schedule.update`, `schedule.pause`, `schedule.resume`, `schedule.delete`, and `schedule.run_now`.
   - Selector `command_invoke` validation supports scheduler function ids and typed argument schemas.
@@ -20,7 +20,7 @@ Add orchestrator-scoped scheduled automation with natural-language command routi
 
 ### P17-T02 Implement scheduler job model, persistence, and validation
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Job persistence exists under `<orchestrator_runtime_root>/automation/jobs` with stable ids and full required metadata.
   - Schedule types `once`, `interval`, and `cron` are validated at create/update time.
@@ -33,7 +33,7 @@ Add orchestrator-scoped scheduled automation with natural-language command routi
 
 ### P17-T03 Implement scheduler worker trigger evaluation and misfire recovery
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Scheduler worker evaluates due jobs at least once per minute and computes deterministic `nextRunAt`.
   - Restart recovery applies configured misfire policy (`fire_once_on_recovery|skip_missed`).
@@ -46,7 +46,7 @@ Add orchestrator-scoped scheduled automation with natural-language command routi
 
 ### P17-T04 Dispatch scheduled triggers through queue and orchestrator routing path
 
-- Status: `todo` (`todo|in_progress|complete`)
+- Status: `complete` (`todo|in_progress|complete`)
 - Acceptance Criteria:
   - Scheduler-triggered executions are enqueued into orchestrator incoming queue, not executed by direct provider calls.
   - Trigger payloads include deterministic correlation metadata (`jobId`, `executionId`, `triggeredAt`).

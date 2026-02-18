@@ -9,6 +9,9 @@ use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
 use crate::orchestration::lexical_router::{resolve_lexical_decision, LexicalRoutingConfig};
 use crate::orchestration::run_store::WorkflowRunStore;
+use crate::orchestration::scheduler::{
+    complete_scheduled_execution, parse_trigger_envelope, ScheduledTriggerEnvelope,
+};
 use crate::orchestration::selector::{
     resolve_orchestrator_id, SelectionResolution, SelectorAction, SelectorRequest, SelectorResult,
     SelectorStatus,
@@ -123,6 +126,19 @@ where
         .resolve_orchestrator_runtime_root(&orchestrator_id)
         .map_err(|err| OrchestratorError::Config(err.to_string()))?;
     let run_store = WorkflowRunStore::new(&runtime_root);
+    if inbound.channel == "scheduler" {
+        return route_scheduled_trigger(
+            inbound,
+            &orchestrator_id,
+            settings,
+            &runtime_root,
+            active_conversation_runs,
+            functions,
+            &run_store,
+            runner_binaries.clone(),
+            now,
+        );
+    }
     let inbound_message = inbound.message.trim().to_ascii_lowercase();
     if let Some(run_id) = inbound
         .workflow_run_id
@@ -186,6 +202,7 @@ where
                     runner_binaries: Some(runner_binaries.clone()),
                     memory_enabled: false,
                     source_message_id: Some(&inbound.message_id),
+                    workflow_inputs: None,
                     now,
                 },
             );
@@ -438,7 +455,145 @@ where
             runner_binaries: Some(runner_binaries),
             memory_enabled: settings.memory.enabled,
             source_message_id: Some(&inbound.message_id),
+            workflow_inputs: None,
             now,
         },
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn route_scheduled_trigger(
+    inbound: &IncomingMessage,
+    orchestrator_id: &str,
+    settings: &Settings,
+    runtime_root: &Path,
+    active_conversation_runs: &BTreeMap<(String, String), String>,
+    functions: &FunctionRegistry,
+    run_store: &WorkflowRunStore,
+    runner_binaries: RunnerBinaries,
+    now: i64,
+) -> Result<RoutedSelectorAction, OrchestratorError> {
+    let envelope: ScheduledTriggerEnvelope =
+        parse_trigger_envelope(&inbound.message).map_err(OrchestratorError::SelectorValidation)?;
+    if envelope.orchestrator_id != orchestrator_id {
+        return Err(OrchestratorError::SelectorValidation(format!(
+            "scheduled trigger orchestrator mismatch: expected `{orchestrator_id}`, got `{}`",
+            envelope.orchestrator_id
+        )));
+    }
+
+    let orchestrator = load_orchestrator_config(settings, orchestrator_id)?;
+    let workspace_context =
+        verify_orchestrator_workspace_access(settings, orchestrator_id, &orchestrator)?;
+
+    let request = SelectorRequest {
+        selector_id: format!("schedule-{}", envelope.execution_id),
+        channel_profile_id: inbound
+            .channel_profile_id
+            .clone()
+            .unwrap_or_else(|| "scheduler".to_string()),
+        message_id: envelope.execution_id.clone(),
+        conversation_id: inbound.conversation_id.clone(),
+        user_message: format!("scheduled trigger {}", envelope.job_id),
+        memory_bulletin: None,
+        memory_bulletin_citations: Vec::new(),
+        available_workflows: orchestrator
+            .workflows
+            .iter()
+            .map(|workflow| workflow.id.clone())
+            .collect(),
+        default_workflow: orchestrator.default_workflow.clone(),
+        available_functions: functions.available_function_ids(),
+        available_function_schemas: functions.available_function_schemas(),
+    };
+
+    let mut workflow_inputs = None;
+    let result = match envelope.target_action {
+        crate::orchestration::scheduler::TargetAction::WorkflowStart {
+            workflow_id,
+            inputs,
+        } => {
+            workflow_inputs = Some(inputs);
+            SelectorResult {
+                selector_id: request.selector_id.clone(),
+                status: SelectorStatus::Selected,
+                action: Some(SelectorAction::WorkflowStart),
+                selected_workflow: Some(workflow_id),
+                diagnostics_scope: None,
+                function_id: None,
+                function_args: None,
+                reason: Some(format!(
+                    "scheduled_trigger job_id={} execution_id={}",
+                    envelope.job_id, envelope.execution_id
+                )),
+            }
+        }
+        crate::orchestration::scheduler::TargetAction::CommandInvoke {
+            function_id,
+            function_args,
+        } => SelectorResult {
+            selector_id: request.selector_id.clone(),
+            status: SelectorStatus::Selected,
+            action: Some(SelectorAction::CommandInvoke),
+            selected_workflow: None,
+            diagnostics_scope: None,
+            function_id: Some(function_id),
+            function_args: Some(function_args),
+            reason: Some(format!(
+                "scheduled_trigger job_id={} execution_id={}",
+                envelope.job_id, envelope.execution_id
+            )),
+        },
+    };
+
+    match route_selector_action(
+        &request,
+        &result,
+        RouteContext {
+            status_input: &StatusResolutionInput {
+                explicit_run_id: None,
+                inbound_workflow_run_id: inbound.workflow_run_id.clone(),
+                channel_profile_id: inbound.channel_profile_id.clone(),
+                conversation_id: inbound.conversation_id.clone(),
+            },
+            active_conversation_runs,
+            functions,
+            run_store,
+            orchestrator: &orchestrator,
+            workspace_access_context: Some(workspace_context),
+            runner_binaries: Some(runner_binaries),
+            memory_enabled: false,
+            source_message_id: Some(&inbound.message_id),
+            workflow_inputs: workflow_inputs.as_ref(),
+            now,
+        },
+    ) {
+        Ok(action) => {
+            let _ = complete_scheduled_execution(
+                runtime_root,
+                &envelope.job_id,
+                &envelope.execution_id,
+                true,
+                now,
+            );
+            Ok(action)
+        }
+        Err(err) => {
+            let _ = complete_scheduled_execution(
+                runtime_root,
+                &envelope.job_id,
+                &envelope.execution_id,
+                false,
+                now,
+            );
+            append_security_log(
+                runtime_root,
+                &format!(
+                    "scheduled trigger execution failed for job `{}` execution `{}`: {err}",
+                    envelope.job_id, envelope.execution_id
+                ),
+            );
+            Err(err)
+        }
+    }
 }

@@ -175,6 +175,14 @@ impl FunctionRegistry {
     }
 
     pub fn invoke(&self, call: &FunctionCall) -> Result<Value, OrchestratorError> {
+        self.invoke_with_context(call, None)
+    }
+
+    pub fn invoke_with_context(
+        &self,
+        call: &FunctionCall,
+        orchestrator_id: Option<&str>,
+    ) -> Result<Value, OrchestratorError> {
         if !self.contains(&call.function_id) {
             return Err(OrchestratorError::UnknownFunction {
                 function_id: call.function_id.clone(),
@@ -193,6 +201,7 @@ impl FunctionRegistry {
             FunctionExecutionContext {
                 run_store: self.run_store.as_ref(),
                 settings: self.settings.as_ref(),
+                orchestrator_id,
             },
         )
     }

@@ -94,6 +94,7 @@ fn validate_selected_workflow_output_paths(
 fn selector_start_inputs(
     request: &SelectorRequest,
     source_message_id: Option<&str>,
+    workflow_inputs: Option<&Map<String, Value>>,
 ) -> Map<String, Value> {
     let mut inputs = Map::new();
     inputs.insert(
@@ -142,6 +143,12 @@ fn selector_start_inputs(
             ),
         );
     }
+    if let Some(workflow_inputs) = workflow_inputs {
+        inputs.insert(
+            "workflow_inputs".to_string(),
+            Value::Object(workflow_inputs.clone()),
+        );
+    }
     inputs
 }
 
@@ -175,6 +182,7 @@ pub struct RouteContext<'a> {
     pub runner_binaries: Option<RunnerBinaries>,
     pub memory_enabled: bool,
     pub source_message_id: Option<&'a str>,
+    pub workflow_inputs: Option<&'a Map<String, Value>>,
     pub now: i64,
 }
 
@@ -240,7 +248,7 @@ pub fn route_selector_action(
                     selected_workflow: Some(workflow_id.clone()),
                     status_conversation_id: request.conversation_id.clone(),
                 },
-                selector_start_inputs(request, ctx.source_message_id),
+                selector_start_inputs(request, ctx.source_message_id, ctx.workflow_inputs),
                 ctx.now,
             )?;
             let mut engine = WorkflowEngine::new(ctx.run_store.clone(), ctx.orchestrator.clone());
@@ -662,7 +670,9 @@ pub fn route_selector_action(
                 function_id,
                 args: function_args,
             };
-            let invoke_result = ctx.functions.invoke(&call)?;
+            let invoke_result = ctx
+                .functions
+                .invoke_with_context(&call, Some(&ctx.orchestrator.id))?;
             Ok(RoutedSelectorAction::CommandInvoke {
                 result: invoke_result,
             })

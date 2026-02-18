@@ -20,6 +20,7 @@ pub mod daemon;
 pub mod doctor;
 pub mod orchestrators;
 pub mod provider;
+pub mod schedule;
 pub mod update;
 pub mod workflows;
 
@@ -65,6 +66,7 @@ fn run_cli_native(args: Vec<String>) -> Result<String, String> {
         "workflow" => workflows::cmd_workflow(&args[1..]),
         "channel-profile" => channel_profiles::cmd_channel_profile(&args[1..]),
         "auth" => auth::cmd_auth(&args[1..]),
+        "schedule" => schedule::cmd_schedule(&args[1..]),
         "__supervisor" => daemon::cmd_supervisor(&args[1..]),
         _ => Err(format!("unknown command `{}`", args[0])),
     }
@@ -84,6 +86,7 @@ fn try_execute_selector_cli_alias(args: &[String]) -> Option<Result<String, Stri
     let context = FunctionExecutionContext {
         run_store: run_store.as_ref(),
         settings: settings.as_ref(),
+        orchestrator_id: None,
     };
 
     Some(

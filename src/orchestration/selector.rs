@@ -34,6 +34,18 @@ pub fn resolve_orchestrator_id(
             }
         }
     }
+    if channel_profile_id.is_none() && inbound.channel == "scheduler" {
+        if let Some(orchestrator_id) = inbound
+            .sender
+            .strip_prefix("scheduler:")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if settings.orchestrators.contains_key(orchestrator_id) {
+                return Ok(orchestrator_id.to_string());
+            }
+        }
+    }
 
     let channel_profile_id =
         channel_profile_id.ok_or_else(|| OrchestratorError::MissingChannelProfileId {

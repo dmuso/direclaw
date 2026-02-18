@@ -14,6 +14,7 @@ pub mod memory_worker;
 pub mod ownership_lock;
 pub mod queue_worker;
 pub mod recovery;
+pub mod scheduler_worker;
 pub mod state_paths;
 pub mod supervisor;
 pub mod worker_registry;
@@ -206,6 +207,7 @@ channels:
                 "queue_processor",
                 "orchestrator_dispatcher",
                 "memory_worker",
+                "scheduler",
                 "heartbeat",
                 "channel:slack"
             ]

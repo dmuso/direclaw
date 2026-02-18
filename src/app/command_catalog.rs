@@ -62,6 +62,14 @@ pub mod function_ids {
     pub const CHANNEL_PROFILE_SHOW: &str = "channel_profile.show";
     pub const CHANNEL_PROFILE_REMOVE: &str = "channel_profile.remove";
     pub const CHANNEL_PROFILE_SET_ORCHESTRATOR: &str = "channel_profile.set_orchestrator";
+    pub const SCHEDULE_CREATE: &str = "schedule.create";
+    pub const SCHEDULE_LIST: &str = "schedule.list";
+    pub const SCHEDULE_SHOW: &str = "schedule.show";
+    pub const SCHEDULE_UPDATE: &str = "schedule.update";
+    pub const SCHEDULE_PAUSE: &str = "schedule.pause";
+    pub const SCHEDULE_RESUME: &str = "schedule.resume";
+    pub const SCHEDULE_DELETE: &str = "schedule.delete";
+    pub const SCHEDULE_RUN_NOW: &str = "schedule.run_now";
     pub const UPDATE_CHECK: &str = "update.check";
     pub const UPDATE_APPLY: &str = "update.apply";
     pub const DAEMON_ATTACH: &str = "daemon.attach";
@@ -139,6 +147,13 @@ const PROFILE_ID_ARG: FunctionArgDef = FunctionArgDef {
     arg_type: FunctionArgTypeDef::String,
     required: true,
     description: "Channel profile id",
+};
+
+const JOB_ID_ARG: FunctionArgDef = FunctionArgDef {
+    name: "jobId",
+    arg_type: FunctionArgTypeDef::String,
+    required: true,
+    description: "Scheduler job id",
 };
 
 const AGENT_ORCHESTRATOR_ARGS: &[FunctionArgDef] = &[ORCHESTRATOR_ID_ARG, AGENT_ID_ARG];
@@ -491,6 +506,106 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
                 description: "Mapped orchestrator id",
             },
         ],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_CREATE,
+        description: "Create scheduled automation job",
+        args: &[
+            ORCHESTRATOR_ID_ARG,
+            FunctionArgDef {
+                name: "scheduleType",
+                arg_type: FunctionArgTypeDef::String,
+                required: true,
+                description: "Schedule type: once|interval|cron",
+            },
+            FunctionArgDef {
+                name: "schedule",
+                arg_type: FunctionArgTypeDef::Object,
+                required: true,
+                description: "Schedule config object",
+            },
+            FunctionArgDef {
+                name: "targetAction",
+                arg_type: FunctionArgTypeDef::Object,
+                required: true,
+                description: "Target action object",
+            },
+            FunctionArgDef {
+                name: "targetRef",
+                arg_type: FunctionArgTypeDef::Object,
+                required: false,
+                description: "Optional opaque target descriptor",
+            },
+            FunctionArgDef {
+                name: "misfirePolicy",
+                arg_type: FunctionArgTypeDef::String,
+                required: false,
+                description: "Misfire policy: fire_once_on_recovery|skip_missed",
+            },
+            FunctionArgDef {
+                name: "allowOverlap",
+                arg_type: FunctionArgTypeDef::Boolean,
+                required: false,
+                description: "Allow overlapping triggers",
+            },
+            FunctionArgDef {
+                name: "createdBy",
+                arg_type: FunctionArgTypeDef::Object,
+                required: false,
+                description: "Optional creator metadata",
+            },
+        ],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_LIST,
+        description: "List scheduler jobs for an orchestrator",
+        args: &[ORCHESTRATOR_ID_ARG],
+        read_only: true,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_SHOW,
+        description: "Show one scheduler job",
+        args: &[JOB_ID_ARG],
+        read_only: true,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_UPDATE,
+        description: "Update a scheduler job",
+        args: &[
+            JOB_ID_ARG,
+            FunctionArgDef {
+                name: "patch",
+                arg_type: FunctionArgTypeDef::Object,
+                required: true,
+                description: "Scheduler update patch object",
+            },
+        ],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_PAUSE,
+        description: "Pause a scheduler job",
+        args: &[JOB_ID_ARG],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_RESUME,
+        description: "Resume a scheduler job",
+        args: &[JOB_ID_ARG],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_DELETE,
+        description: "Delete a scheduler job",
+        args: &[JOB_ID_ARG],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::SCHEDULE_RUN_NOW,
+        description: "Trigger a scheduler job immediately",
+        args: &[JOB_ID_ARG],
         read_only: false,
     },
     FunctionDef {

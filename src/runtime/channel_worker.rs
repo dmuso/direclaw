@@ -1,4 +1,6 @@
-use super::{heartbeat_worker, memory_worker, now_secs, queue_worker, WorkerEvent};
+use super::{
+    heartbeat_worker, memory_worker, now_secs, queue_worker, scheduler_worker, WorkerEvent,
+};
 use crate::channels::slack;
 use crate::config::Settings;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,7 @@ pub(crate) enum WorkerRuntime {
     QueueProcessor,
     OrchestratorDispatcher,
     Memory,
+    Scheduler,
     Slack,
     Heartbeat,
 }
@@ -75,6 +78,11 @@ pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
             interval: Duration::from_secs(settings.memory.worker_interval_seconds),
         });
     }
+    specs.push(WorkerSpec {
+        id: "scheduler".to_string(),
+        runtime: WorkerRuntime::Scheduler,
+        interval: Duration::from_secs(60),
+    });
 
     if let Some(interval) = heartbeat_worker::configured_heartbeat_interval(settings) {
         specs.push(WorkerSpec {
@@ -187,6 +195,9 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
             WorkerRuntime::QueueProcessor => Ok(()),
             WorkerRuntime::OrchestratorDispatcher => Ok(()),
             WorkerRuntime::Memory => memory_worker::tick_memory_worker(&settings),
+            WorkerRuntime::Scheduler => {
+                scheduler_worker::tick_scheduler_worker(&state_root, &settings)
+            }
             WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
             WorkerRuntime::Heartbeat => {
                 heartbeat_worker::tick_heartbeat_worker(&state_root, &settings)

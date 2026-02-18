@@ -7,6 +7,7 @@ pub mod progress;
 pub mod prompt_render;
 pub mod routing;
 pub mod run_store;
+pub mod scheduler;
 pub mod selector;
 pub mod selector_artifacts;
 pub mod step_execution;

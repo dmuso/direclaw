@@ -57,6 +57,7 @@ fn app_command_handlers_execute_function_invocation_routes_internal_functions() 
         FunctionExecutionContext {
             run_store: None,
             settings: Some(&settings),
+            orchestrator_id: None,
         },
     )
     .expect("internal function result");
