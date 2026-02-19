@@ -1,4 +1,5 @@
 use super::{append_runtime_log, now_secs, StatePaths, WorkerEvent};
+use crate::channels::policy::classify_response_eligibility;
 use crate::config::Settings;
 use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries;
@@ -11,7 +12,7 @@ use crate::orchestration::slack_target::{
 use crate::orchestration::transitions::RoutedSelectorAction;
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
-use crate::runtime::recovery::recovered_processing_filename;
+use crate::runtime::recovery::recover_queue_processing_paths;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -172,13 +173,21 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
     config: QueueProcessorLoopConfig,
 ) {
     match recover_processing_queue_entries_for_settings(&state_root, &settings) {
-        Ok(recovered) => {
-            for path in recovered {
+        Ok(report) => {
+            for path in report.recovered {
                 append_runtime_log(
                     &StatePaths::new(&state_root),
                     "info",
                     "queue.recovered",
                     &format!("requeued {}", path.display()),
+                );
+            }
+            for path in report.dropped_duplicates {
+                append_runtime_log(
+                    &StatePaths::new(&state_root),
+                    "warn",
+                    "queue.recovery.skipped_duplicate",
+                    &format!("dropped stale processing {}", path.display()),
                 );
             }
         }
@@ -385,7 +394,14 @@ fn process_claimed_message(
         e.to_string()
     })?;
 
+    if matches!(action, RoutedSelectorAction::NoResponse { .. }) {
+        queue::complete_success_no_outgoing(&scoped.queue_paths, &scoped.claimed)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
     let responses = action_to_outbound_messages(&action, &run_store);
+    let _eligibility = classify_response_eligibility(settings, &scoped.claimed.payload);
     let outbound_slack_target = resolve_outbound_slack_target(settings, &scoped.claimed.payload)?;
     let outbound_channel = outbound_slack_target
         .as_ref()
@@ -448,44 +464,16 @@ fn collect_orchestrator_queue_paths(settings: &Settings) -> Result<Vec<QueuePath
 fn recover_processing_queue_entries_for_settings(
     _state_root: &Path,
     settings: &Settings,
-) -> Result<Vec<PathBuf>, String> {
-    let mut recovered = Vec::new();
+) -> Result<crate::runtime::recovery::ProcessingRecoveryReport, String> {
+    let mut report = crate::runtime::recovery::ProcessingRecoveryReport::default();
     for queue_paths in collect_orchestrator_queue_paths(settings)? {
-        recovered.extend(recover_queue_processing_paths(&queue_paths)?);
+        let recovered = recover_queue_processing_paths(&queue_paths)?;
+        report.recovered.extend(recovered.recovered);
+        report
+            .dropped_duplicates
+            .extend(recovered.dropped_duplicates);
     }
-    Ok(recovered)
-}
-
-fn recover_queue_processing_paths(queue_paths: &QueuePaths) -> Result<Vec<PathBuf>, String> {
-    let mut recovered = Vec::new();
-    let mut entries = Vec::new();
-    for entry in fs::read_dir(&queue_paths.processing).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if path.is_file() {
-            entries.push(path);
-        }
-    }
-    entries.sort();
-    for (index, processing_path) in entries.into_iter().enumerate() {
-        let name = processing_path
-            .file_name()
-            .and_then(|v| v.to_str())
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or("message.json");
-        let target = queue_paths
-            .incoming
-            .join(recovered_processing_filename(index, name));
-        fs::rename(&processing_path, &target).map_err(|e| {
-            format!(
-                "failed to recover processing file {}: {}",
-                processing_path.display(),
-                e
-            )
-        })?;
-        recovered.push(target);
-    }
-    Ok(recovered)
+    Ok(report)
 }
 
 fn resolve_outbound_slack_target(
@@ -584,6 +572,7 @@ fn action_to_outbound_messages(
                 .unwrap_or_else(|_| "command completed".to_string());
             vec![(rendered, "command".to_string())]
         }
+        RoutedSelectorAction::NoResponse { .. } => Vec::new(),
     }
 }
 

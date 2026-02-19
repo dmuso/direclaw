@@ -15,6 +15,12 @@ pub struct IncomingMessage {
     #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]
+    pub is_direct: bool,
+    #[serde(default)]
+    pub is_thread_reply: bool,
+    #[serde(default)]
+    pub is_mentioned: bool,
+    #[serde(default)]
     pub files: Vec<String>,
     #[serde(default)]
     pub workflow_run_id: Option<String>,

@@ -516,8 +516,10 @@ mod tests {
             profile: ChannelProfile {
                 channel: ChannelKind::Local,
                 orchestrator_id: "eng".to_string(),
+                identity: Default::default(),
                 slack_app_user_id: None,
                 require_mention_in_channels: None,
+                thread_response_mode: crate::config::ThreadResponseMode::AlwaysReply,
             },
             conversation_id: "chat-1".to_string(),
         }

@@ -42,6 +42,8 @@ Source baseline: `docs/SPEC.md`.
     `docs/build/spec/14-memory.md`
 14. Scheduled Automation and Cron Handling
     `docs/build/spec/15-scheduled-automation.md`
+15. Message Reply Policy
+    `docs/build/spec/16-message-reply-policy.md`
 
 ## Working Decision Docs
 

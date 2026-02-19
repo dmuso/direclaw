@@ -76,8 +76,26 @@ pub struct SettingsOrchestrator {
 pub struct ChannelProfile {
     pub channel: ChannelKind,
     pub orchestrator_id: String,
+    #[serde(default)]
+    pub identity: ChannelProfileIdentity,
     pub slack_app_user_id: Option<String>,
     pub require_mention_in_channels: Option<bool>,
+    #[serde(default)]
+    pub thread_response_mode: ThreadResponseMode,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ChannelProfileIdentity {
+    #[serde(default)]
+    pub mention_tokens: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadResponseMode {
+    #[default]
+    AlwaysReply,
+    SelectiveReply,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -203,23 +221,6 @@ impl Settings {
                     profile.orchestrator_id
                 )));
             }
-            if profile.channel == ChannelKind::Slack {
-                if profile
-                    .slack_app_user_id
-                    .as_ref()
-                    .map(|v| v.trim().is_empty())
-                    .unwrap_or(true)
-                {
-                    return Err(ConfigError::Settings(format!(
-                        "slack profile `{profile_id}` requires `slack_app_user_id`"
-                    )));
-                }
-                if profile.require_mention_in_channels.is_none() {
-                    return Err(ConfigError::Settings(format!(
-                        "slack profile `{profile_id}` requires `require_mention_in_channels`"
-                    )));
-                }
-            }
         }
 
         if let Some(slack_cfg) = self.channels.get("slack") {
@@ -316,5 +317,28 @@ impl Settings {
             ConfigError::Settings(format!("unknown channel profile `{profile_id}`"))
         })?;
         self.resolve_orchestrator_runtime_root(&profile.orchestrator_id)
+    }
+}
+
+impl ChannelProfile {
+    pub fn mention_tokens(&self) -> Vec<String> {
+        let mut tokens: Vec<String> = self
+            .identity
+            .mention_tokens
+            .iter()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            if let Some(slack_app_user_id) = self
+                .slack_app_user_id
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+            {
+                tokens.push(format!("<@{slack_app_user_id}>"));
+            }
+        }
+        tokens
     }
 }

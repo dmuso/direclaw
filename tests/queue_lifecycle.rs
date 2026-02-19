@@ -1,6 +1,6 @@
 use direclaw::queue::{
-    claim_oldest, complete_success, complete_success_many, requeue_failure, IncomingMessage,
-    OutgoingMessage, QueuePaths,
+    claim_oldest, complete_success, complete_success_many, complete_success_no_outgoing,
+    requeue_failure, IncomingMessage, OutgoingMessage, QueuePaths,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -15,6 +15,9 @@ fn make_incoming(message_id: &str) -> IncomingMessage {
         timestamp: 100,
         message_id: message_id.to_string(),
         conversation_id: Some("thread-1".to_string()),
+        is_direct: false,
+        is_thread_reply: false,
+        is_mentioned: false,
         files: vec![],
         workflow_run_id: None,
         workflow_step_id: None,
@@ -262,4 +265,29 @@ fn complete_success_many_writes_ordered_outbound_messages_for_one_claim() {
         .collect();
     assert_eq!(parsed[0].message, "step one");
     assert_eq!(parsed[1].message, "step two");
+}
+
+#[test]
+fn complete_success_no_outgoing_removes_processing_without_writing_outbound() {
+    let dir = tempdir().expect("tempdir");
+    let queue = QueuePaths::from_state_root(dir.path());
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing");
+
+    let incoming = make_incoming("msg-6");
+    fs::write(
+        queue.incoming.join("msg-6.json"),
+        serde_json::to_string(&incoming).expect("serialize"),
+    )
+    .expect("write");
+    let claimed = claim_oldest(&queue).expect("claim").expect("item");
+    assert!(claimed.processing_path.exists());
+
+    complete_success_no_outgoing(&queue, &claimed).expect("complete without outgoing");
+    assert!(!claimed.processing_path.exists());
+    assert!(fs::read_dir(&queue.outgoing)
+        .expect("outgoing")
+        .next()
+        .is_none());
 }

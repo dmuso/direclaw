@@ -115,6 +115,20 @@ fn selector_module_rejects_unknown_argument() {
 }
 
 #[test]
+fn selector_module_accepts_no_response_action() {
+    let request = sample_request();
+    let raw = r#"{
+      "selectorId":"sel-1",
+      "status":"selected",
+      "action":"no_response",
+      "reason":"low_value_thread_noise"
+    }"#;
+    let parsed = parse_and_validate_selector_result(raw, &request).expect("valid selector");
+    assert_eq!(parsed.status, SelectorStatus::Selected);
+    assert_eq!(parsed.action, Some(SelectorAction::NoResponse));
+}
+
+#[test]
 fn selector_module_exposes_selector_provider_attempt_runner() {
     let settings: direclaw::config::Settings = serde_yaml::from_str(
         r#"
@@ -176,6 +190,9 @@ channels: {}
         timestamp: 1,
         message_id: "hb-1".to_string(),
         conversation_id: Some("hb:orch:agent".to_string()),
+        is_direct: false,
+        is_thread_reply: false,
+        is_mentioned: false,
         files: Vec::new(),
         workflow_run_id: Some("hb:orch:agent".to_string()),
         workflow_step_id: Some("heartbeat_worker_check".to_string()),

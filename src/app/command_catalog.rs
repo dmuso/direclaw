@@ -471,13 +471,20 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
                 name: "slackAppUserId",
                 arg_type: FunctionArgTypeDef::String,
                 required: false,
-                description: "Slack bot user id",
+                description:
+                    "Profile mention identity for channels that require provider-scoped user ids",
             },
             FunctionArgDef {
                 name: "requireMentionInChannels",
                 arg_type: FunctionArgTypeDef::Boolean,
                 required: false,
-                description: "Slack mention requirement in channels",
+                description: "Mention-gating policy for non-direct channel messages",
+            },
+            FunctionArgDef {
+                name: "threadResponseMode",
+                arg_type: FunctionArgTypeDef::String,
+                required: false,
+                description: "Opportunistic reply policy: always_reply|selective_reply",
             },
         ],
         read_only: false,
@@ -536,7 +543,7 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
                 arg_type: FunctionArgTypeDef::Object,
                 required: false,
                 description:
-                    "Optional target descriptor (Slack: channel/channelProfile/postingMode/thread)",
+                    "Optional channel target descriptor (channel/channelProfile/postingMode/thread)",
             },
             FunctionArgDef {
                 name: "misfirePolicy",

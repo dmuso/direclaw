@@ -1,3 +1,6 @@
+use crate::channels::policy::{
+    classify_response_eligibility, is_explicit_profile_mention, ResponseEligibility,
+};
 use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
 use crate::memory::{
     embed_query_text, generate_bulletin_for_message, persist_transcript_observation,
@@ -12,8 +15,9 @@ use crate::orchestration::scheduler::{
     complete_scheduled_execution, parse_trigger_envelope, ScheduledTriggerEnvelope,
 };
 use crate::orchestration::selector::{
-    resolve_orchestrator_id, resolve_selector_with_retries, run_selector_attempt_with_provider,
-    SelectionResolution, SelectorAction, SelectorRequest, SelectorResult, SelectorStatus,
+    parse_and_validate_selector_result, resolve_orchestrator_id, resolve_selector_with_retries,
+    run_selector_attempt_with_provider, SelectionResolution, SelectorAction, SelectorRequest,
+    SelectorResult, SelectorStatus,
 };
 use crate::orchestration::selector_artifacts::SelectorArtifactStore;
 use crate::orchestration::slack_target::{parse_slack_target_ref, validate_profile_mapping};
@@ -82,6 +86,131 @@ fn missing_run_for_io(run_id: &str, err: &OrchestratorError) -> Option<Orchestra
     }
 }
 
+fn enforce_no_response_policy(
+    runtime_root: &Path,
+    settings: &Settings,
+    inbound: &IncomingMessage,
+    orchestrator: &OrchestratorConfig,
+    result: &mut SelectorResult,
+) {
+    if result.action != Some(SelectorAction::NoResponse) {
+        return;
+    }
+    let mention_detected = is_explicit_profile_mention(inbound);
+    let eligibility = classify_response_eligibility(settings, inbound);
+
+    let allow = matches!(eligibility, ResponseEligibility::Opportunistic) && !mention_detected;
+    if allow {
+        append_security_log(
+            runtime_root,
+            &format!(
+                "selector.no_response.accepted message_id={} channel_profile_id={} mode={:?} mention_detected={}",
+                inbound.message_id,
+                inbound.channel_profile_id.as_deref().unwrap_or(""),
+                eligibility,
+                mention_detected
+            ),
+        );
+        return;
+    }
+
+    result.action = Some(SelectorAction::WorkflowStart);
+    result.selected_workflow = Some(orchestrator.default_workflow.clone());
+    result.diagnostics_scope = None;
+    result.function_id = None;
+    result.function_args = None;
+    result.reason = Some("no_response_overridden_to_default_workflow".to_string());
+    append_security_log(
+        runtime_root,
+        &format!(
+            "selector.no_response.overridden message_id={} channel_profile_id={} mode={:?} mention_detected={} thread_message={}",
+            inbound.message_id,
+            inbound.channel_profile_id.as_deref().unwrap_or(""),
+            eligibility,
+            mention_detected,
+            inbound.is_thread_reply
+        ),
+    );
+}
+
+const OPPORTUNISTIC_SELECTOR_RETRY_COUNT: usize = 3;
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_selector_for_inbound<F>(
+    state_root: &Path,
+    settings: &Settings,
+    inbound: &IncomingMessage,
+    request: &SelectorRequest,
+    orchestrator: &OrchestratorConfig,
+    runner_binaries: &RunnerBinaries,
+    next_selector_attempt: &mut F,
+) -> SelectionResolution
+where
+    F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
+{
+    let eligibility = classify_response_eligibility(settings, inbound);
+    if !matches!(eligibility, ResponseEligibility::Opportunistic) {
+        return resolve_selector_with_retries(orchestrator, request, |attempt| {
+            next_selector_attempt(attempt, request, orchestrator).or_else(|| {
+                run_selector_attempt_with_provider(
+                    state_root,
+                    settings,
+                    request,
+                    orchestrator,
+                    attempt,
+                    runner_binaries,
+                )
+                .ok()
+            })
+        });
+    }
+
+    for attempt in 0..=OPPORTUNISTIC_SELECTOR_RETRY_COUNT {
+        let raw = if let Some(raw) = next_selector_attempt(attempt as u32, request, orchestrator) {
+            Some(raw)
+        } else {
+            run_selector_attempt_with_provider(
+                state_root,
+                settings,
+                request,
+                orchestrator,
+                attempt as u32,
+                runner_binaries,
+            )
+            .ok()
+        };
+
+        let Some(raw) = raw else {
+            continue;
+        };
+        let Ok(validated) = parse_and_validate_selector_result(&raw, request) else {
+            continue;
+        };
+        if validated.status == SelectorStatus::Selected {
+            return SelectionResolution {
+                result: validated,
+                retries_used: attempt as u32,
+                fell_back_to_default_workflow: false,
+            };
+        }
+    }
+
+    SelectionResolution {
+        result: SelectorResult {
+            selector_id: request.selector_id.clone(),
+            status: SelectorStatus::Selected,
+            action: Some(SelectorAction::NoResponse),
+            selected_workflow: None,
+            diagnostics_scope: None,
+            function_id: None,
+            function_args: None,
+            reason: Some("selector_retry_exhausted_no_response".to_string()),
+        },
+        retries_used: OPPORTUNISTIC_SELECTOR_RETRY_COUNT as u32,
+        fell_back_to_default_workflow: false,
+    }
+}
+
 pub fn process_queued_message<F>(
     state_root: &Path,
     settings: &Settings,
@@ -140,130 +269,73 @@ where
         );
     }
     let inbound_message = inbound.message.trim().to_ascii_lowercase();
+    let is_status_command = matches!(
+        inbound_message.as_str(),
+        "status" | "progress" | "/status" | "/progress"
+    );
     if let Some(run_id) = inbound
         .workflow_run_id
         .as_ref()
         .filter(|v| !v.trim().is_empty())
     {
-        if matches!(
-            inbound_message.as_str(),
-            "status" | "progress" | "/status" | "/progress"
-        ) {
-            let status_input = StatusResolutionInput {
-                explicit_run_id: Some(run_id.clone()),
-                inbound_workflow_run_id: Some(run_id.clone()),
-                channel_profile_id: inbound.channel_profile_id.clone(),
-                conversation_id: inbound.conversation_id.clone(),
-            };
-
-            let pseudo_request = SelectorRequest {
-                selector_id: format!("status-{}", inbound.message_id),
-                channel_profile_id: inbound.channel_profile_id.clone().unwrap_or_default(),
-                message_id: inbound.message_id.clone(),
-                conversation_id: inbound.conversation_id.clone(),
-                user_message: inbound.message.clone(),
-                memory_bulletin: None,
-                memory_bulletin_citations: Vec::new(),
-                available_workflows: Vec::new(),
-                default_workflow: String::new(),
-                available_functions: functions.available_function_ids(),
-                available_function_schemas: functions.available_function_schemas(),
-            };
-            let status_result = SelectorResult {
-                selector_id: pseudo_request.selector_id.clone(),
-                status: SelectorStatus::Selected,
-                action: Some(SelectorAction::WorkflowStatus),
-                selected_workflow: None,
-                diagnostics_scope: None,
-                function_id: None,
-                function_args: None,
-                reason: None,
-            };
-
-            return route_selector_action(
-                &pseudo_request,
-                &status_result,
-                RouteContext {
-                    status_input: &status_input,
-                    active_conversation_runs,
-                    functions,
-                    run_store: &run_store,
-                    orchestrator: &OrchestratorConfig {
-                        id: "status_only".to_string(),
-                        selector_agent: "none".to_string(),
-                        default_workflow: "none".to_string(),
-                        selection_max_retries: 1,
-                        selector_timeout_seconds: 30,
-                        agents: BTreeMap::new(),
-                        workflows: Vec::new(),
-                        workflow_orchestration: None,
-                    },
-                    workspace_access_context: None,
-                    runner_binaries: Some(runner_binaries.clone()),
-                    memory_enabled: false,
-                    source_message_id: Some(&inbound.message_id),
-                    workflow_inputs: None,
-                    now,
-                },
-            );
-        }
-
-        let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
-        let workspace_context = match verify_orchestrator_workspace_access(
-            settings,
-            &orchestrator_id,
-            &orchestrator,
-        ) {
-            Ok(context) => context,
-            Err(err) => {
-                append_security_log(
+        if !is_status_command {
+            let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
+            let workspace_context = match verify_orchestrator_workspace_access(
+                settings,
+                &orchestrator_id,
+                &orchestrator,
+            ) {
+                Ok(context) => context,
+                Err(err) => {
+                    append_security_log(
                         &runtime_root,
                         &format!(
                             "workspace access denied for orchestrator `{orchestrator_id}` message `{}`: {err}",
                             inbound.message_id
                         ),
                     );
-                return Err(err);
-            }
-        };
+                    return Err(err);
+                }
+            };
 
-        let engine = WorkflowEngine::new(run_store.clone(), orchestrator.clone())
-            .with_runner_binaries(runner_binaries.clone())
-            .with_workspace_access_context(workspace_context)
-            .with_memory_enabled(settings.memory.enabled);
-        let resumed = match engine
-            .resume(run_id, now)
-            .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
-        {
-            Ok(run) => run,
-            Err(OrchestratorError::UnknownRunId { .. }) => {
-                return Ok(RoutedSelectorAction::WorkflowStatus {
-                    run_id: Some(run_id.to_string()),
-                    progress: None,
-                    message: format!("workflow run `{run_id}` was not found"),
-                });
-            }
-            Err(err) => return Err(err),
-        };
-        let progress = match run_store
-            .load_progress(run_id)
-            .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
-        {
-            Ok(progress) => progress,
-            Err(OrchestratorError::UnknownRunId { .. }) => {
-                return Ok(RoutedSelectorAction::WorkflowStatus {
-                    run_id: Some(run_id.to_string()),
-                    progress: None,
-                    message: format!("workflow run `{run_id}` was not found"),
-                });
-            }
-            Err(err) => return Err(err),
-        };
-        return Ok(RoutedSelectorAction::WorkflowStatus {
-            run_id: Some(resumed.run_id),
-            progress: Some(progress),
-            message: "workflow progress loaded".to_string(),
-        });
+            let engine = WorkflowEngine::new(run_store.clone(), orchestrator.clone())
+                .with_runner_binaries(runner_binaries.clone())
+                .with_workspace_access_context(workspace_context)
+                .with_memory_enabled(settings.memory.enabled);
+            let resumed = match engine
+                .resume(run_id, now)
+                .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
+            {
+                Ok(run) => run,
+                Err(OrchestratorError::UnknownRunId { .. }) => {
+                    return Ok(RoutedSelectorAction::WorkflowStatus {
+                        run_id: Some(run_id.to_string()),
+                        progress: None,
+                        message: format!("workflow run `{run_id}` was not found"),
+                    });
+                }
+                Err(err) => return Err(err),
+            };
+            let progress = match run_store
+                .load_progress(run_id)
+                .map_err(|e| missing_run_for_io(run_id, &e).unwrap_or(e))
+            {
+                Ok(progress) => progress,
+                Err(OrchestratorError::UnknownRunId { .. }) => {
+                    return Ok(RoutedSelectorAction::WorkflowStatus {
+                        run_id: Some(run_id.to_string()),
+                        progress: None,
+                        message: format!("workflow run `{run_id}` was not found"),
+                    });
+                }
+                Err(err) => return Err(err),
+            };
+            return Ok(RoutedSelectorAction::WorkflowStatus {
+                run_id: Some(resumed.run_id),
+                progress: Some(progress),
+                message: "workflow progress loaded".to_string(),
+            });
+        }
     }
 
     let orchestrator = load_orchestrator_config(settings, &orchestrator_id)?;
@@ -399,20 +471,22 @@ where
     artifact_store.persist_selector_request(&request)?;
     let _ = artifact_store.move_request_to_processing(&request.selector_id)?;
 
-    let selection: SelectionResolution =
-        resolve_selector_with_retries(&orchestrator, &request, |attempt| {
-            next_selector_attempt(attempt, &request, &orchestrator).or_else(|| {
-                run_selector_attempt_with_provider(
-                    state_root,
-                    settings,
-                    &request,
-                    &orchestrator,
-                    attempt,
-                    &runner_binaries,
-                )
-                .ok()
-            })
-        });
+    let mut selection: SelectionResolution = resolve_selector_for_inbound(
+        state_root,
+        settings,
+        inbound,
+        &request,
+        &orchestrator,
+        &runner_binaries,
+        &mut next_selector_attempt,
+    );
+    enforce_no_response_policy(
+        &runtime_root,
+        settings,
+        inbound,
+        &orchestrator,
+        &mut selection.result,
+    );
     artifact_store.persist_selector_result(&selection.result)?;
     artifact_store.persist_selector_log(
         &request.selector_id,

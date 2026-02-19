@@ -25,8 +25,9 @@ pub use paths::{
 };
 pub use save::{save_orchestrator_config, save_settings};
 pub use settings::{
-    AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelKind, ChannelProfile, Monitoring,
-    Settings, SettingsOrchestrator, ValidationOptions,
+    AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelKind, ChannelProfile,
+    ChannelProfileIdentity, Monitoring, Settings, SettingsOrchestrator, ThreadResponseMode,
+    ValidationOptions,
 };
 pub(crate) use setup_draft::{OrchestrationLimitField, SetupDraft};
 pub use typed_fields::{

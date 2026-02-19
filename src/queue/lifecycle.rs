@@ -62,6 +62,14 @@ pub fn complete_success(
     Ok(all.remove(0))
 }
 
+pub fn complete_success_no_outgoing(
+    _paths: &QueuePaths,
+    claimed: &ClaimedMessage,
+) -> Result<(), QueueError> {
+    fs::remove_file(&claimed.processing_path).map_err(|e| io_err(&claimed.processing_path, e))?;
+    Ok(())
+}
+
 pub fn complete_success_many(
     paths: &QueuePaths,
     claimed: &ClaimedMessage,

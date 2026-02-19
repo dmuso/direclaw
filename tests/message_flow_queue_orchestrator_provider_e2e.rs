@@ -27,6 +27,24 @@ fn write_openai_success_script(path: &Path) {
     );
 }
 
+fn write_selector_workflow_status_script(path: &Path) {
+    write_script(
+        path,
+        r#"#!/bin/sh
+set -eu
+msg="$*"
+result_path=$(printf "%s" "$msg" | sed -n 's/.*Write selector result JSON to: \([^ ]*\).*/\1/p')
+if [ -z "$result_path" ]; then
+  echo "missing selector result path" 1>&2
+  exit 1
+fi
+selector_id=$(basename "$result_path" | sed -E 's/^selector-provider-result-(.*)_attempt_[0-9]+\.json$/\1/')
+printf '{"selectorId":"%s","status":"selected","action":"workflow_status"}' "$selector_id" > "$result_path"
+echo "ok"
+"#,
+    );
+}
+
 fn sample_message(message_id: &str, conversation_id: &str) -> IncomingMessage {
     IncomingMessage {
         channel: "slack".to_string(),
@@ -37,6 +55,9 @@ fn sample_message(message_id: &str, conversation_id: &str) -> IncomingMessage {
         timestamp: 100,
         message_id: message_id.to_string(),
         conversation_id: Some(conversation_id.to_string()),
+        is_direct: true,
+        is_thread_reply: true,
+        is_mentioned: false,
         files: Vec::new(),
         workflow_run_id: None,
         workflow_step_id: None,
@@ -315,6 +336,166 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
 }
 
 #[test]
+fn selector_no_response_produces_no_outgoing() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let claude = dir.path().join("claude-selector");
+    let codex = dir.path().join("codex-worker");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-low-value\",\"status\":\"selected\",\"action\":\"no_response\",\"reason\":\"context_only\"}'\n",
+    );
+    write_script(
+        &codex,
+        r#"#!/bin/sh
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"Nice catch. AccountEmailDomain::Verify is taking around 20-30 seconds due to DKIM and DMARC DNS checks. For next iteration we could make this async and return 202 with verification_pending.\"}[/workflow_result]"}}'
+"#,
+    );
+
+    let mut settings =
+        write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"), "anthropic", 1, 30);
+    settings
+        .channel_profiles
+        .get_mut("eng")
+        .expect("eng profile")
+        .thread_response_mode = direclaw::config::ThreadResponseMode::SelectiveReply;
+    let queue = queue_for_profile(&settings, "eng");
+    let mut inbound = sample_message("msg-low-value", "C111:1700000000.1");
+    inbound.is_direct = false;
+    inbound.message = "One thing I noticed: AccountEmailDomain::Verify is taking ~20-30 seconds because of DKIM/DMARC DNS checks. For next iteration we could make this async and return 202 verification_pending.".to_string();
+    write_incoming(&queue, &inbound);
+
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        4,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain");
+    assert_eq!(processed, 1);
+    assert_eq!(
+        fs::read_dir(&queue.outgoing)
+            .expect("outgoing list")
+            .count(),
+        0,
+        "selector no_response should produce no outgoing files"
+    );
+}
+
+#[test]
+fn selector_workflow_start_produces_outgoing() {
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let claude = dir.path().join("claude-selector-local");
+    let codex = dir.path().join("codex-worker-local");
+    write_script(
+        &claude,
+        "#!/bin/sh\necho '{\"selectorId\":\"sel-msg-local-low-value\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
+    );
+    write_script(
+        &codex,
+        r#"#!/bin/sh
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"Nice catch. AccountEmailDomain::Verify is taking around 20-30 seconds due to DKIM and DMARC DNS checks. For next iteration we could make this async and return 202 with verification_pending.\"}[/workflow_result]"}}'
+"#,
+    );
+
+    let orchestrator_workspace = dir.path().join("orch-local");
+    let settings = serde_yaml::from_str::<Settings>(&format!(
+        r#"
+workspaces_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  eng_orchestrator:
+    private_workspace: {orchestrator_workspace}
+    shared_access: []
+channel_profiles:
+  local-eng:
+    channel: local
+    orchestrator_id: eng_orchestrator
+    thread_response_mode: selective_reply
+monitoring: {{}}
+channels: {{}}
+"#,
+        workspace = dir.path().display(),
+        orchestrator_workspace = orchestrator_workspace.display()
+    ))
+    .expect("settings");
+    fs::create_dir_all(&orchestrator_workspace).expect("orchestrator workspace");
+    fs::write(
+        orchestrator_workspace.join("orchestrator.yaml"),
+        r#"
+id: eng_orchestrator
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: openai
+    model: gpt-5.2
+workflows:
+  - id: triage
+    version: 1
+    description: default triage workflow
+    tags: [triage, default]
+    steps:
+      - id: start
+        type: agent_task
+        agent: worker
+        prompt: start
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
+"#,
+    )
+    .expect("write orchestrator");
+
+    let queue = queue_for_profile(&settings, "local-eng");
+    let inbound = IncomingMessage {
+        channel: "local".to_string(),
+        channel_profile_id: Some("local-eng".to_string()),
+        sender: "cli".to_string(),
+        sender_id: "cli".to_string(),
+        message: "One thing I noticed: AccountEmailDomain::Verify is taking ~20-30 seconds because of DKIM/DMARC DNS checks. For next iteration we could make this async and return 202 verification_pending.".to_string(),
+        timestamp: 100,
+        message_id: "msg-local-low-value".to_string(),
+        conversation_id: Some("chat-1".to_string()),
+        is_direct: true,
+        is_thread_reply: true,
+        is_mentioned: false,
+        files: Vec::new(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+    write_incoming(&queue, &inbound);
+
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        4,
+        &binaries(claude.display().to_string(), codex.display().to_string()),
+    )
+    .expect("drain");
+    assert_eq!(processed, 1);
+    assert!(
+        fs::read_dir(&queue.outgoing)
+            .expect("outgoing list")
+            .count()
+            >= 1,
+        "workflow_start should produce at least one outgoing message"
+    );
+}
+
+#[test]
 fn memory_enabled_cross_channel_recall_changes_workflow_output() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
@@ -577,12 +758,17 @@ workflows:
     status_request.workflow_run_id = Some(run_id.clone());
     status_request.message = "/status".to_string();
     write_incoming(&queue, &status_request);
+    let claude_status = dir.path().join("claude-multi-selector-status");
+    write_selector_workflow_status_script(&claude_status);
 
     let status_processed = drain_queue_once_with_binaries(
         &state_root,
         &settings,
         2,
-        &binaries(claude.display().to_string(), codex.display().to_string()),
+        &binaries(
+            claude_status.display().to_string(),
+            codex.display().to_string(),
+        ),
     )
     .expect("drain status");
     assert_eq!(status_processed, 1);
@@ -654,6 +840,8 @@ fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let claude_status = dir.path().join("claude-status-only-selector");
+    write_selector_workflow_status_script(&claude_status);
 
     let settings = write_settings_and_orchestrator(
         dir.path(),
@@ -683,9 +871,13 @@ fn workflow_bound_status_command_is_read_only_and_does_not_advance_steps() {
     inbound.message = "/status".to_string();
     write_incoming(&queue, &inbound);
 
-    let processed =
-        drain_queue_once_with_binaries(&state_root, &settings, 1, &binaries("unused", "unused"))
-            .expect("drain");
+    let processed = drain_queue_once_with_binaries(
+        &state_root,
+        &settings,
+        1,
+        &binaries(claude_status.display().to_string(), "unused"),
+    )
+    .expect("drain");
     assert_eq!(processed, 1);
 
     assert!(!state_root

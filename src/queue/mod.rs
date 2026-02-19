@@ -9,7 +9,8 @@ pub use file_tags::{
     append_inbound_file_tags, extract_inbound_file_tags, prepare_outbound_content,
 };
 pub use lifecycle::{
-    claim_oldest, complete_success, complete_success_many, requeue_failure, ClaimedMessage,
+    claim_oldest, complete_success, complete_success_many, complete_success_no_outgoing,
+    requeue_failure, ClaimedMessage,
 };
 pub use message::{IncomingMessage, OutgoingMessage};
 pub use outbound::{
@@ -60,6 +61,9 @@ mod tests {
             timestamp: 1,
             message_id: message_id.to_string(),
             conversation_id: Some("thread-1".to_string()),
+            is_direct: false,
+            is_thread_reply: false,
+            is_mentioned: false,
             files: vec![],
             workflow_run_id: None,
             workflow_step_id: None,

@@ -101,7 +101,7 @@ pub fn run_selector_attempt_with_provider(
     }
 
     let prompt = format!(
-        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nDecision policy:\n- Prioritize the user's explicit requested action over surrounding background context.\n- Distinguish contextual setup/background from the actual ask before choosing an action.\n- Use background details only to inform the action, not to override the direct request.\n- Choose from availableWorkflows/defaultWorkflow/availableFunctions exactly as provided.\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Identify the user's requested action separately from contextual setup/background.\n3. Select exactly one supported action and validate any selected workflow/function against the request fields.\n4. Output exactly one structured JSON selector result to this path:\n{}\n5. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
+        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nDecision policy:\n- Prioritize the user's explicit requested action over surrounding background context.\n- Distinguish contextual setup/background from the actual ask before choosing an action.\n- Use background details only to inform the action, not to override the direct request.\n- Choose from availableWorkflows/defaultWorkflow/availableFunctions exactly as provided.\n- Action `no_response` is allowed only for low-value opportunistic context messages.\n- Never use `no_response` when the inbound context indicates an explicit profile mention.\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Identify the user's requested action separately from contextual setup/background.\n3. Select exactly one supported action and validate any selected workflow/function against the request fields.\n4. Output exactly one structured JSON selector result to this path:\n{}\n5. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
         selector_result_path.display()
     );
     let context = format!(
@@ -252,6 +252,7 @@ pub enum SelectorAction {
     WorkflowStatus,
     DiagnosticsInvestigate,
     CommandInvoke,
+    NoResponse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -361,6 +362,7 @@ pub fn parse_and_validate_selector_result(
                         }
                     }
                 }
+                SelectorAction::NoResponse => {}
             }
             Ok(result)
         }

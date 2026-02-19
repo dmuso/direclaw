@@ -1,7 +1,7 @@
 use crate::config::{
     AgentConfig, AuthSyncConfig, ChannelKind, ChannelProfile, ConfigProviderKind,
     OrchestratorConfig, OutputKey, PathTemplate, Settings, SettingsOrchestrator, StepLimitsConfig,
-    ValidationOptions, WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig,
+    ThreadResponseMode, ValidationOptions, WorkflowConfig, WorkflowInputs, WorkflowLimitsConfig,
     WorkflowOrchestrationConfig, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
     WorkflowStepWorkspaceMode, WorkflowTag,
 };
@@ -1009,8 +1009,10 @@ impl SetupDraft {
                 ChannelProfile {
                     channel: ChannelKind::Local,
                     orchestrator_id: self.orchestrator_id.clone(),
+                    identity: Default::default(),
                     slack_app_user_id: None,
                     require_mention_in_channels: None,
+                    thread_response_mode: ThreadResponseMode::AlwaysReply,
                 },
             );
         }
@@ -1024,8 +1026,10 @@ impl SetupDraft {
                 ChannelProfile {
                     channel: ChannelKind::Local,
                     orchestrator_id: self.orchestrator_id.clone(),
+                    identity: Default::default(),
                     slack_app_user_id: None,
                     require_mention_in_channels: None,
+                    thread_response_mode: ThreadResponseMode::AlwaysReply,
                 },
             );
         }

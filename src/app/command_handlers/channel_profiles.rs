@@ -1,5 +1,5 @@
 use crate::app::command_support::{load_settings, save_settings};
-use crate::config::{ChannelKind, ChannelProfile};
+use crate::config::{ChannelKind, ChannelProfile, ThreadResponseMode};
 
 pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
     if args.is_empty() {
@@ -20,7 +20,7 @@ pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
         }
         "add" => {
             if args.len() < 4 {
-                return Err("usage: channel-profile add <channel_profile_id> <channel> <orchestrator_id> [--slack-app-user-id <id>] [--require-mention-in-channels <bool>]".to_string());
+                return Err("usage: channel-profile add <channel_profile_id> <channel> <orchestrator_id> [--slack-app-user-id <id>] [--require-mention-in-channels <bool>] [--thread-response-mode <always_reply|selective_reply>]".to_string());
             }
             let mut settings = load_settings()?;
             let id = args[1].clone();
@@ -35,6 +35,7 @@ pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
 
             let mut slack_app_user_id = None;
             let mut require_mention = None;
+            let mut thread_response_mode = ThreadResponseMode::AlwaysReply;
             let mut i = 4usize;
             while i < args.len() {
                 match args[i].as_str() {
@@ -54,6 +55,13 @@ pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
                         require_mention = Some(parse_bool(&args[i + 1])?);
                         i += 2;
                     }
+                    "--thread-response-mode" => {
+                        if i + 1 >= args.len() {
+                            return Err("missing value for --thread-response-mode".to_string());
+                        }
+                        thread_response_mode = parse_thread_response_mode(&args[i + 1])?;
+                        i += 2;
+                    }
                     other => return Err(format!("unknown option `{other}`")),
                 }
             }
@@ -63,8 +71,10 @@ pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
                 ChannelProfile {
                     channel,
                     orchestrator_id,
+                    identity: Default::default(),
                     slack_app_user_id,
                     require_mention_in_channels: require_mention,
+                    thread_response_mode,
                 },
             );
             save_settings(&settings)?;
@@ -84,7 +94,7 @@ pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "n/a".to_string());
             Ok(format!(
-                "id={}\nchannel={}\norchestrator_id={}\nslack_app_user_id={}\nrequire_mention_in_channels={}",
+                "id={}\nchannel={}\norchestrator_id={}\nslack_app_user_id={}\nrequire_mention_in_channels={}\nthread_response_mode={}",
                 args[1],
                 profile.channel,
                 profile.orchestrator_id,
@@ -92,7 +102,11 @@ pub fn cmd_channel_profile(args: &[String]) -> Result<String, String> {
                     .slack_app_user_id
                     .clone()
                     .unwrap_or_else(|| "n/a".to_string()),
-                mention_policy
+                mention_policy,
+                match profile.thread_response_mode {
+                    ThreadResponseMode::AlwaysReply => "always_reply",
+                    ThreadResponseMode::SelectiveReply => "selective_reply",
+                }
             ))
         }
         "remove" => {
@@ -137,5 +151,15 @@ fn parse_bool(raw: &str) -> Result<bool, String> {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(format!("expected boolean true|false, got `{raw}`")),
+    }
+}
+
+fn parse_thread_response_mode(raw: &str) -> Result<ThreadResponseMode, String> {
+    match raw.trim() {
+        "always_reply" => Ok(ThreadResponseMode::AlwaysReply),
+        "selective_reply" => Ok(ThreadResponseMode::SelectiveReply),
+        other => Err(format!(
+            "expected thread response mode always_reply|selective_reply, got `{other}`"
+        )),
     }
 }

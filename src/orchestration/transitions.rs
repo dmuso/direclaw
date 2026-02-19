@@ -170,6 +170,9 @@ pub enum RoutedSelectorAction {
     CommandInvoke {
         result: Value,
     },
+    NoResponse {
+        reason: String,
+    },
 }
 
 pub struct RouteContext<'a> {
@@ -677,5 +680,10 @@ pub fn route_selector_action(
                 result: invoke_result,
             })
         }
+        SelectorAction::NoResponse => Ok(RoutedSelectorAction::NoResponse {
+            reason: validated
+                .reason
+                .unwrap_or_else(|| "selector chose no_response".to_string()),
+        }),
     }
 }

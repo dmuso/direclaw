@@ -907,6 +907,10 @@ pub fn plan_function_invocation(
                 cli_args.push("--require-mention-in-channels".to_string());
                 cli_args.push(require_mention.to_string());
             }
+            if let Some(thread_response_mode) = optional_string_arg(args, "threadResponseMode")? {
+                cli_args.push("--thread-response-mode".to_string());
+                cli_args.push(thread_response_mode);
+            }
             Ok(FunctionExecutionPlan::CliArgs(cli_args))
         }
         function_ids::CHANNEL_PROFILE_REMOVE => {

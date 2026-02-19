@@ -103,8 +103,10 @@ fn profile_mapping_validation_rejects_cross_orchestrator_target() {
                 direclaw::config::ChannelProfile {
                     channel: direclaw::config::ChannelKind::Slack,
                     orchestrator_id: "alpha".to_string(),
+                    identity: Default::default(),
                     slack_app_user_id: None,
                     require_mention_in_channels: None,
+                    thread_response_mode: direclaw::config::ThreadResponseMode::AlwaysReply,
                 },
             ),
             (
@@ -112,8 +114,10 @@ fn profile_mapping_validation_rejects_cross_orchestrator_target() {
                 direclaw::config::ChannelProfile {
                     channel: direclaw::config::ChannelKind::Slack,
                     orchestrator_id: "beta".to_string(),
+                    identity: Default::default(),
                     slack_app_user_id: None,
                     require_mention_in_channels: None,
+                    thread_response_mode: direclaw::config::ThreadResponseMode::AlwaysReply,
                 },
             ),
         ]),
