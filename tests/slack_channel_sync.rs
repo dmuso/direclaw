@@ -97,6 +97,7 @@ impl MockSlackServer {
                 };
                 handled += 1;
                 idle_polls = 0;
+                stream.set_nonblocking(false).expect("set blocking stream");
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
 
                 let mut request_line = String::new();
