@@ -1,7 +1,7 @@
 use direclaw::channels::slack::{sync_once, sync_runtime_once, SlackError};
 use direclaw::config::{
     AuthSyncConfig, ChannelConfig, ChannelKind, ChannelProfile, Monitoring, Settings,
-    SettingsOrchestrator,
+    SettingsOrchestrator, ThreadResponseMode,
 };
 use direclaw::memory::MemoryConfig;
 use direclaw::queue::{OutgoingMessage, QueuePaths};
@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tempfile::tempdir;
@@ -68,14 +69,34 @@ impl MockSlackServer {
         F: Fn(&str) -> String + Send + Sync + 'static,
     {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
         let addr = listener.local_addr().expect("local addr");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let requests_for_thread = Arc::clone(&requests);
         let responder = Arc::new(responder);
 
         let handle = thread::spawn(move || {
-            for _ in 0..expected_requests {
-                let (mut stream, _) = listener.accept().expect("accept");
+            let mut handled = 0usize;
+            let mut idle_polls = 0usize;
+            loop {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(conn) => conn,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        if handled >= expected_requests {
+                            idle_polls += 1;
+                            if idle_polls > 20 {
+                                break;
+                            }
+                        }
+                        thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                handled += 1;
+                idle_polls = 0;
                 let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
 
                 let mut request_line = String::new();
@@ -125,7 +146,14 @@ impl MockSlackServer {
                         body,
                     });
 
-                let response_body = responder(&path);
+                let mut response_body = responder(&path);
+                if path.starts_with("/api/conversations.replies")
+                    && response_body == r#"{"ok":false,"error":"unexpected_path"}"#
+                {
+                    response_body =
+                        r#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#
+                            .to_string();
+                }
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     response_body.len(),
@@ -181,8 +209,10 @@ fn sample_settings_with_dm_listing(
         ChannelProfile {
             channel: ChannelKind::Slack,
             orchestrator_id: "main".to_string(),
+            identity: Default::default(),
             slack_app_user_id: Some("UAPP".to_string()),
             require_mention_in_channels: Some(require_mention),
+            thread_response_mode: ThreadResponseMode::AlwaysReply,
         },
     );
 
@@ -677,7 +707,7 @@ fn sync_queues_inbound_and_sends_outbound() {
 }
 
 #[test]
-fn sync_respects_require_mention_for_channels() {
+fn sync_ingests_channel_messages_for_opportunistic_policy_even_when_not_mentioned() {
     let _env_guard = ENV_LOCK.lock().expect("env lock");
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
@@ -704,17 +734,17 @@ fn sync_respects_require_mention_for_channels() {
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
-    assert_eq!(report.inbound_enqueued, 0);
+    assert_eq!(report.inbound_enqueued, 1);
 
     let incoming_count = fs::read_dir(&queue.incoming)
         .expect("incoming list")
         .count();
-    assert_eq!(incoming_count, 0);
+    assert_eq!(incoming_count, 1);
     let _ = server.finish();
 }
 
 #[test]
-fn sync_requires_allowlist_thread_or_mention_even_when_mentions_not_required() {
+fn sync_ingests_channel_messages_without_allowlist_even_when_mentions_not_required() {
     let _env_guard = ENV_LOCK.lock().expect("env lock");
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
@@ -741,12 +771,12 @@ fn sync_requires_allowlist_thread_or_mention_even_when_mentions_not_required() {
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
     let report = sync_once(&state_root, &settings).expect("sync succeeds");
-    assert_eq!(report.inbound_enqueued, 0);
+    assert_eq!(report.inbound_enqueued, 1);
     assert_eq!(
         fs::read_dir(&queue.incoming)
             .expect("incoming list")
             .count(),
-        0
+        1
     );
     let _ = server.finish();
 }
@@ -848,8 +878,10 @@ fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
         ChannelProfile {
             channel: ChannelKind::Slack,
             orchestrator_id: "main".to_string(),
+            identity: Default::default(),
             slack_app_user_id: Some("UAPPALT".to_string()),
             require_mention_in_channels: Some(true),
+            thread_response_mode: ThreadResponseMode::AlwaysReply,
         },
     );
 
@@ -1028,11 +1060,111 @@ fn sync_preserves_outbound_file_and_returns_context_on_api_failure() {
     let error_text = err.to_string();
     assert!(error_text.contains("msg_fail"));
     assert!(error_text.contains("slack_main"));
+    assert!(error_text.contains("D111"));
+    assert!(error_text.contains("1700000000.1"));
     assert!(error_text.contains("ratelimited"));
     assert!(
         outbound_path.exists(),
         "failed outbound file should be preserved for retry"
     );
+    let _ = server.finish();
+}
+
+#[test]
+fn sync_continues_after_outbound_failure_and_delivers_later_files() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let post_attempts = Arc::new(AtomicUsize::new(0));
+    let post_attempts_for_server = Arc::clone(&post_attempts);
+    let server = MockSlackServer::start(6, move |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return r#"{"ok":true,"url":"wss://example"}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"D111","is_im":true}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            return r#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#
+                .to_string();
+        }
+        if path.starts_with("/api/chat.postMessage") {
+            if post_attempts_for_server.fetch_add(1, Ordering::SeqCst) == 0 {
+                return r#"{"ok":false,"error":"ratelimited"}"#.to_string();
+            }
+            return r#"{"ok":true,"ts":"1700000000.2"}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let settings = sample_settings(temp.path(), true, Vec::new());
+    let queue = queue_for_profile(&settings, "slack_main");
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let failed_path = queue.outgoing.join("a_failed_outbound.json");
+    let failed = OutgoingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("slack_main".to_string()),
+        sender: "assistant".to_string(),
+        message: "first outbound".to_string(),
+        original_message: "original".to_string(),
+        timestamp: 1,
+        message_id: "msg_first_fail".to_string(),
+        agent: "agent-a".to_string(),
+        conversation_id: Some("D111:1700000000.1".to_string()),
+        target_ref: None,
+        files: Vec::new(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+    fs::write(
+        &failed_path,
+        serde_json::to_string_pretty(&failed).expect("encode failed outbound"),
+    )
+    .expect("write failed outbound");
+
+    let success_path = queue.outgoing.join("b_success_outbound.json");
+    let success = OutgoingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("slack_main".to_string()),
+        sender: "assistant".to_string(),
+        message: "second outbound".to_string(),
+        original_message: "original".to_string(),
+        timestamp: 2,
+        message_id: "msg_second_ok".to_string(),
+        agent: "agent-a".to_string(),
+        conversation_id: Some("D111:1700000000.1".to_string()),
+        target_ref: None,
+        files: Vec::new(),
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+    fs::write(
+        &success_path,
+        serde_json::to_string_pretty(&success).expect("encode success outbound"),
+    )
+    .expect("write success outbound");
+
+    let err = sync_once(&state_root, &settings).expect_err("first outbound should fail");
+    let error_text = err.to_string();
+    assert!(error_text.contains("msg_first_fail"));
+    assert!(error_text.contains("D111"));
+    assert!(error_text.contains("1700000000.1"));
+    assert!(
+        failed_path.exists(),
+        "failed outbound should remain for retry"
+    );
+    assert!(
+        !success_path.exists(),
+        "later valid outbound should still be delivered"
+    );
+    assert_eq!(post_attempts.load(Ordering::SeqCst), 2);
+
     let _ = server.finish();
 }
 

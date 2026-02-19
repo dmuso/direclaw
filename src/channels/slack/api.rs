@@ -71,6 +71,8 @@ pub(crate) struct SlackMessage {
     pub(crate) subtype: Option<String>,
     #[serde(default)]
     pub(crate) bot_id: Option<String>,
+    #[serde(default)]
+    pub(crate) reply_count: Option<u64>,
 }
 
 impl SlackApiClient {
@@ -289,6 +291,49 @@ impl SlackApiClient {
                     envelope
                         .error
                         .unwrap_or_else(|| "conversations.history failed".to_string()),
+                ));
+            }
+            let data = envelope.data;
+            all.extend(data.messages);
+            cursor = data.response_metadata.next_cursor;
+            if cursor.trim().is_empty() {
+                break;
+            }
+        }
+        Ok(all)
+    }
+
+    pub(crate) fn conversation_replies(
+        &self,
+        conversation_id: &str,
+        thread_ts: &str,
+        oldest: Option<&str>,
+    ) -> Result<Vec<SlackMessage>, SlackError> {
+        let mut all = Vec::new();
+        let mut cursor = String::new();
+        loop {
+            let mut query = vec![
+                ("channel", conversation_id.to_string()),
+                ("ts", thread_ts.to_string()),
+                ("inclusive", "false".to_string()),
+                ("limit", "200".to_string()),
+            ];
+            if let Some(oldest) = oldest {
+                if !oldest.trim().is_empty() {
+                    query.push(("oldest", oldest.to_string()));
+                }
+            }
+            if !cursor.is_empty() {
+                query.push(("cursor", cursor.clone()));
+            }
+
+            let envelope: SlackEnvelope<ConversationsHistoryData> =
+                self.get_with_token("conversations.replies", &query, &self.bot_token)?;
+            if !envelope.ok {
+                return Err(SlackError::ApiResponse(
+                    envelope
+                        .error
+                        .unwrap_or_else(|| "conversations.replies failed".to_string()),
                 ));
             }
             let data = envelope.data;

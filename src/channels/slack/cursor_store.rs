@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct SlackCursorState {
+    #[serde(default)]
     pub conversations: BTreeMap<String, String>,
+    #[serde(default)]
+    pub threads: BTreeMap<String, String>,
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> SlackError {

@@ -184,6 +184,11 @@ fn deliver_targeted_post(
             .map_err(|err| SlackError::OutboundDelivery {
                 message_id: outgoing.message_id.clone(),
                 profile_id: profile_id.to_string(),
+                channel_id: target.channel_id.clone(),
+                thread_ts: target
+                    .thread_ts
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string()),
                 reason: err.to_string(),
             })?;
     }
@@ -195,34 +200,51 @@ pub(super) fn process_outbound(
     runtimes: &BTreeMap<String, SlackProfileRuntime>,
 ) -> Result<usize, SlackError> {
     let mut sent = 0usize;
+    let mut first_error: Option<SlackError> = None;
 
     for path in
         sorted_outgoing_paths(queue_paths).map_err(|e| io_error(&queue_paths.outgoing, e))?
     {
-        let raw = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
-        let outgoing: OutgoingMessage =
-            serde_json::from_str(&raw).map_err(|e| json_error(&path, e))?;
-        if outgoing.channel != "slack" {
-            continue;
+        let result: Result<bool, SlackError> = (|| {
+            let raw = fs::read_to_string(&path).map_err(|e| io_error(&path, e))?;
+            let outgoing: OutgoingMessage =
+                serde_json::from_str(&raw).map_err(|e| json_error(&path, e))?;
+            if outgoing.channel != "slack" {
+                return Ok(false);
+            }
+            let target_ref = parse_outgoing_target_ref(&outgoing)?;
+
+            let profile_id = resolve_outgoing_profile_id(&outgoing, target_ref.as_ref(), runtimes)?;
+            let runtime = runtimes
+                .get(&profile_id)
+                .ok_or_else(|| SlackError::UnknownChannelProfile(profile_id.clone()))?;
+
+            let target = resolve_delivery_target(&outgoing, target_ref.as_ref())?;
+            deliver_targeted_post(
+                &outgoing,
+                &profile_id,
+                runtime,
+                &target,
+                target_ref.as_ref(),
+            )?;
+
+            fs::remove_file(&path).map_err(|e| io_error(&path, e))?;
+            Ok(true)
+        })();
+
+        match result {
+            Ok(true) => sent += 1,
+            Ok(false) => {}
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
         }
-        let target_ref = parse_outgoing_target_ref(&outgoing)?;
+    }
 
-        let profile_id = resolve_outgoing_profile_id(&outgoing, target_ref.as_ref(), runtimes)?;
-        let runtime = runtimes
-            .get(&profile_id)
-            .ok_or_else(|| SlackError::UnknownChannelProfile(profile_id.clone()))?;
-
-        let target = resolve_delivery_target(&outgoing, target_ref.as_ref())?;
-        deliver_targeted_post(
-            &outgoing,
-            &profile_id,
-            runtime,
-            &target,
-            target_ref.as_ref(),
-        )?;
-
-        fs::remove_file(&path).map_err(|e| io_error(&path, e))?;
-        sent += 1;
+    if let Some(err) = first_error {
+        return Err(err);
     }
 
     Ok(sent)

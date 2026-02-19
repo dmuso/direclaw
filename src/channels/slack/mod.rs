@@ -43,11 +43,13 @@ pub enum SlackError {
     #[error("outgoing slack message `{message_id}` has no channel_profile_id and multiple slack profiles exist")]
     MissingChannelProfileId { message_id: String },
     #[error(
-        "failed to deliver outbound slack message `{message_id}` for profile `{profile_id}`: {reason}"
+        "failed to deliver outbound slack message `{message_id}` for profile `{profile_id}` to channel `{channel_id}` thread `{thread_ts}`: {reason}"
     )]
     OutboundDelivery {
         message_id: String,
         profile_id: String,
+        channel_id: String,
+        thread_ts: String,
         reason: String,
     },
     #[error(
