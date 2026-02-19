@@ -12,6 +12,7 @@ pub mod auth;
 pub mod cursor_store;
 pub mod egress;
 pub mod ingest;
+pub mod socket;
 
 pub use auth::{profile_credential_health, validate_startup_credentials};
 
@@ -59,6 +60,8 @@ pub enum SlackError {
     },
     #[error("slack api request failed: {0}")]
     ApiRequest(String),
+    #[error("slack api rate limited for `{path}`; retry_after_seconds={retry_after_secs}")]
+    RateLimited { path: String, retry_after_secs: u64 },
     #[error("slack api responded with error `{0}`")]
     ApiResponse(String),
     #[error("invalid settings configuration: {0}")]
@@ -96,6 +99,7 @@ struct SlackProfileRuntime {
     profile: ChannelProfile,
     api: SlackApiClient,
     allowlist: BTreeSet<String>,
+    include_im_conversations: bool,
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> SlackError {
@@ -139,11 +143,35 @@ fn slack_channel_enabled(settings: &Settings) -> bool {
         .unwrap_or(false)
 }
 
+fn slack_include_im_conversations(settings: &Settings) -> bool {
+    settings
+        .channels
+        .get("slack")
+        .map(|cfg| cfg.include_im_conversations)
+        .unwrap_or(true)
+}
+
 pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncReport, SlackError> {
+    sync_once_internal(state_root, settings, false)
+}
+
+pub fn sync_runtime_once(
+    state_root: &Path,
+    settings: &Settings,
+) -> Result<SlackSyncReport, SlackError> {
+    sync_once_internal(state_root, settings, true)
+}
+
+fn sync_once_internal(
+    state_root: &Path,
+    settings: &Settings,
+    include_socket_ingest: bool,
+) -> Result<SlackSyncReport, SlackError> {
     validate_startup_credentials(settings)?;
     let profiles = slack_profiles(settings);
     let profile_scoped_tokens_required = profiles.len() > 1;
     let config_allowlist = configured_slack_allowlist(settings);
+    let include_im_conversations = slack_include_im_conversations(settings);
 
     let mut bot_token_profile = BTreeMap::<String, String>::new();
     let mut app_token_profile = BTreeMap::<String, String>::new();
@@ -171,13 +199,18 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
             });
         }
         let api = SlackApiClient::new(env.bot_token, env.app_token);
-        api.validate_connection()?;
+        if include_socket_ingest {
+            api.validate_auth()?;
+        } else {
+            api.validate_connection()?;
+        }
         runtimes.insert(
             profile_id,
             SlackProfileRuntime {
                 profile,
                 api,
                 allowlist: env.allowlist,
+                include_im_conversations,
             },
         );
     }
@@ -199,6 +232,14 @@ pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncRepo
             .map_err(|e| io_error(&queue_paths.outgoing, e))?;
         report.inbound_enqueued +=
             ingest::process_inbound_for_profile(state_root, &queue_paths, profile_id, runtime)?;
+        if include_socket_ingest {
+            report.inbound_enqueued += socket::process_socket_inbound_for_profile(
+                state_root,
+                &queue_paths,
+                profile_id,
+                runtime,
+            )?;
+        }
         outbound_roots.insert(runtime_root);
     }
     for runtime_root in outbound_roots {

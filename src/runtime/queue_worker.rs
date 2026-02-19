@@ -12,6 +12,7 @@ use crate::orchestration::slack_target::{
 use crate::orchestration::transitions::RoutedSelectorAction;
 use crate::provider::RunnerBinaries;
 use crate::queue::{self, OutgoingMessage, QueuePaths};
+use crate::runtime::recovery::recovered_processing_filename;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -485,7 +486,7 @@ fn recover_queue_processing_paths(queue_paths: &QueuePaths) -> Result<Vec<PathBu
             .unwrap_or("message.json");
         let target = queue_paths
             .incoming
-            .join(format!("recovered_{index}_{name}"));
+            .join(recovered_processing_filename(index, name));
         fs::rename(&processing_path, &target).map_err(|e| {
             format!(
                 "failed to recover processing file {}: {}",

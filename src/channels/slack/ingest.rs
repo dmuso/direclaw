@@ -7,6 +7,20 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+const INITIAL_HISTORY_WINDOW_SECS: i64 = 24 * 60 * 60;
+
+fn default_oldest_timestamp() -> String {
+    let oldest = now_secs().saturating_sub(INITIAL_HISTORY_WINDOW_SECS);
+    format!("{oldest}.0")
+}
+
+fn resolve_oldest_cursor(existing: Option<&str>) -> String {
+    existing
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(default_oldest_timestamp)
+}
+
 pub fn should_accept_channel_message(
     profile: &ChannelProfile,
     allowlist: &BTreeSet<String>,
@@ -28,7 +42,7 @@ pub fn should_accept_channel_message(
     in_thread || allowlisted || mentioned
 }
 
-fn enqueue_incoming(
+pub(super) fn enqueue_incoming(
     queue_paths: &QueuePaths,
     profile_id: &str,
     conversation_id: &str,
@@ -80,13 +94,29 @@ pub(super) fn process_inbound_for_profile(
     let mut cursor_state = load_cursor_state(state_root, profile_id)?;
     let mut enqueued = 0usize;
 
-    for conversation in runtime.api.list_conversations()? {
-        let oldest = cursor_state
-            .conversations
-            .get(&conversation.id)
-            .map(String::as_str);
-        let mut latest_ts = oldest.unwrap_or("0").to_string();
-        let messages = runtime.api.conversation_history(&conversation.id, oldest)?;
+    for conversation in runtime
+        .api
+        .list_conversations(runtime.include_im_conversations)?
+    {
+        let oldest = resolve_oldest_cursor(
+            cursor_state
+                .conversations
+                .get(&conversation.id)
+                .map(String::as_str),
+        );
+        let mut latest_ts = oldest.clone();
+        let messages = match runtime
+            .api
+            .conversation_history(&conversation.id, Some(oldest.as_str()))
+        {
+            Ok(messages) => messages,
+            Err(SlackError::ApiResponse(message))
+                if message.contains("conversations.history failed: not_in_channel") =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         for message in messages {
             if message.ts.trim().is_empty() {
                 continue;

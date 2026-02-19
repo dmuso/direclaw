@@ -85,11 +85,23 @@ pub struct Monitoring {
     pub heartbeat_interval: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChannelConfig {
     pub enabled: bool,
     #[serde(default)]
     pub allowlisted_channels: Vec<String>,
+    #[serde(default = "default_true")]
+    pub include_im_conversations: bool,
+}
+
+impl Default for ChannelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowlisted_channels: Vec::new(),
+            include_im_conversations: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

@@ -147,6 +147,39 @@ fn queue_requeue_failure_does_not_clobber_existing_incoming_file() {
 }
 
 #[test]
+fn queue_requeue_parse_failures_do_not_grow_filename_unbounded() {
+    let dir = tempdir().expect("tempdir");
+    let queue = QueuePaths::from_state_root(dir.path());
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing");
+
+    let long_name = format!("{}.json", "a".repeat(240));
+    fs::write(queue.incoming.join(long_name), "{bad-json").expect("write invalid");
+
+    for _ in 0..25 {
+        let err = claim_oldest(&queue).expect_err("claim should fail and requeue");
+        let err_text = err.to_string();
+        assert!(
+            !err_text.contains("File name too long"),
+            "requeue should not hit path length errors: {err_text}"
+        );
+    }
+
+    let files: Vec<_> = fs::read_dir(&queue.incoming)
+        .expect("incoming")
+        .map(|entry| entry.expect("entry").path())
+        .collect();
+    assert_eq!(files.len(), 1);
+    let name = files[0].file_name().and_then(|v| v.to_str()).expect("name");
+    assert!(
+        name.len() < 255,
+        "requeue name should stay bounded: {}",
+        name.len()
+    );
+}
+
+#[test]
 fn complete_success_enforces_send_file_stripping_truncation_and_file_validation() {
     let dir = tempdir().expect("tempdir");
     let queue = QueuePaths::from_state_root(dir.path());

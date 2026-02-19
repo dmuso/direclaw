@@ -57,6 +57,7 @@ Make sure your `~/.direclaw/config.yaml` has Slack enabled under `channels`:
 channels:
   slack:
     enabled: true
+    include_im_conversations: true # set false to disable DM polling (no im:read scope needed)
     allowlisted_channels: [] # optional channel ids, for example ["C12345678"]
 ```
 

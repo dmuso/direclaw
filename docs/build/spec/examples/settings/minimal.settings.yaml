@@ -31,3 +31,4 @@ channels:
     enabled: false
   slack:
     enabled: false
+    include_im_conversations: true

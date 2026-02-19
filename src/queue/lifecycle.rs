@@ -2,6 +2,7 @@ use super::{
     file_tags, is_valid_queue_json_filename, logging::append_queue_log, outgoing_filename,
     IncomingMessage, OutgoingMessage, QueueError, QueuePaths,
 };
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -174,14 +175,20 @@ static REQUEUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn unique_requeue_name(original_name: &str) -> String {
     let path = Path::new(original_name);
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or("message");
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
+    let hash = short_name_hash(original_name);
     let counter = REQUEUE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-    format!("{stem}_requeue_{counter}.{ext}")
+    format!("requeue_{hash}_{counter}.{ext}")
+}
+
+fn short_name_hash(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn requeue_processing_file(

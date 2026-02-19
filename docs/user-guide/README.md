@@ -118,6 +118,7 @@ For production service supervision, continue with [Operator Runbook](operator-ru
 | `unknown channel profile` | Profile id typo or profile missing | Run `direclaw channel-profile list` and recreate profile with `direclaw channel-profile add ...`. |
 | Slack worker missing in `status` | Slack channel disabled in config | Set `channels.slack.enabled: true` in `~/.direclaw/config.yaml`, then `direclaw restart`. |
 | `SLACK_*_TOKEN... required` errors | Required Slack token env vars not present in runtime process | Export `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` (plus profile-scoped overrides for multi-profile setups). |
+| `missing_scope` for `im:read` during sync | Slack app token lacks DM-read scope while runtime still polls DM conversations | Add `channels.slack.include_im_conversations: false` to `~/.direclaw/config.yaml` (disables DM polling), or grant `im:read` and reinstall app. |
 | `auth sync failed` | `op` CLI missing, token missing, or secret reference invalid | Install `op`, export `OP_SERVICE_ACCOUNT_TOKEN`, and validate each `auth_sync.sources.*.reference`. |
 | No outbound Slack replies | Slack app scopes/mode incomplete or app not reinstalled | Re-check Socket Mode, OAuth scopes, reinstall app, run `direclaw channels slack sync`. |
 | `update apply is unsupported...` | In-place self-update intentionally blocked | Download new release archive manually, verify checksum, replace binary. |

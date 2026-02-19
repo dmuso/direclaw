@@ -26,3 +26,28 @@ fn runtime_recovery_module_requeues_processing_entries_to_incoming() {
         .next()
         .is_none());
 }
+
+#[test]
+fn runtime_recovery_handles_near_limit_processing_filenames() {
+    let tmp = tempdir().expect("tempdir");
+    let state_root = tmp.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+
+    let queue = QueuePaths::from_state_root(&state_root);
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    let long_name = format!("{}.json", "b".repeat(240));
+    fs::write(queue.processing.join(long_name), b"{}").expect("write processing file");
+
+    let recovered = recover_processing_queue_entries(&state_root).expect("recover entries");
+    assert_eq!(recovered.len(), 1);
+    let name = recovered[0]
+        .file_name()
+        .and_then(|v| v.to_str())
+        .expect("name");
+    assert!(
+        name.len() < 255,
+        "recovered name should stay bounded: {}",
+        name.len()
+    );
+}

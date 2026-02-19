@@ -1,4 +1,5 @@
 use crate::queue::QueuePaths;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +25,7 @@ pub fn recover_processing_queue_entries(state_root: &Path) -> Result<Vec<PathBuf
             .unwrap_or("message.json");
         let target = queue_paths
             .incoming
-            .join(format!("recovered_{index}_{name}"));
+            .join(recovered_processing_filename(index, name));
         fs::rename(&processing_path, &target).map_err(|e| {
             format!(
                 "failed to recover processing file {}: {}",
@@ -36,4 +37,19 @@ pub fn recover_processing_queue_entries(state_root: &Path) -> Result<Vec<PathBuf
     }
 
     Ok(recovered)
+}
+
+pub(crate) fn recovered_processing_filename(index: usize, name: &str) -> String {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or("json");
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    let digest = hasher.finalize();
+    let hash = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("recovered_{index}_{hash}.{ext}")
 }

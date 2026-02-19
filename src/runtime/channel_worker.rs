@@ -54,9 +54,16 @@ pub(crate) struct WorkerRunContext {
 }
 
 pub fn tick_slack_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
-    slack::sync_once(state_root, settings)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    match slack::sync_runtime_once(state_root, settings) {
+        Ok(_) => Ok(()),
+        Err(slack::SlackError::RateLimited {
+            retry_after_secs, ..
+        }) => {
+            thread::sleep(Duration::from_secs(retry_after_secs));
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {

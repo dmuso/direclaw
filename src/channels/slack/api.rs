@@ -25,12 +25,12 @@ struct EmptyData {}
 
 #[derive(Debug, Clone, Deserialize)]
 struct OpenConnectionData {
-    #[allow(dead_code)]
     url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ConversationsListData {
+    #[serde(default, alias = "channels")]
     conversations: Vec<ConversationSummary>,
     #[serde(default)]
     response_metadata: ResponseMetadata,
@@ -109,11 +109,8 @@ impl SlackApiClient {
         let response = ureq::get(&url)
             .set("Authorization", &format!("Bearer {token}"))
             .call()
-            .map_err(|e| SlackError::ApiRequest(e.to_string()))?;
-
-        response
-            .into_json::<T>()
-            .map_err(|e| SlackError::ApiRequest(e.to_string()))
+            .map_err(|e| Self::map_request_error(path, e))?;
+        Self::decode_slack_response(path, response)
     }
 
     fn post_json_with_token<B: Serialize, T: for<'de> Deserialize<'de>>(
@@ -128,14 +125,65 @@ impl SlackApiClient {
             .send_json(
                 serde_json::to_value(body).map_err(|e| SlackError::ApiRequest(e.to_string()))?,
             )
+            .map_err(|e| Self::map_request_error(path, e))?;
+        Self::decode_slack_response(path, response)
+    }
+
+    fn map_request_error(path: &str, error: ureq::Error) -> SlackError {
+        match error {
+            ureq::Error::Status(429, response) => {
+                let retry_after_secs = response
+                    .header("Retry-After")
+                    .and_then(|raw| raw.trim().parse::<u64>().ok())
+                    .filter(|value| *value > 0)
+                    .unwrap_or(1);
+                SlackError::RateLimited {
+                    path: path.to_string(),
+                    retry_after_secs,
+                }
+            }
+            other => SlackError::ApiRequest(other.to_string()),
+        }
+    }
+
+    fn decode_slack_response<T: for<'de> Deserialize<'de>>(
+        path: &str,
+        response: ureq::Response,
+    ) -> Result<T, SlackError> {
+        let value = response
+            .into_json::<serde_json::Value>()
             .map_err(|e| SlackError::ApiRequest(e.to_string()))?;
 
-        response
-            .into_json::<T>()
-            .map_err(|e| SlackError::ApiRequest(e.to_string()))
+        if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            let error = value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown_error");
+            let needed = value.get("needed").and_then(serde_json::Value::as_str);
+            let provided = value.get("provided").and_then(serde_json::Value::as_str);
+
+            let mut parts = vec![format!("{path} failed: {error}")];
+            if let Some(needed) = needed {
+                parts.push(format!("needed={needed}"));
+            }
+            if let Some(provided) = provided {
+                parts.push(format!("provided={provided}"));
+            }
+            return Err(SlackError::ApiResponse(parts.join("; ")));
+        }
+
+        serde_json::from_value::<T>(value).map_err(|e| {
+            SlackError::ApiRequest(format!("failed to parse {path} response JSON: {e}"))
+        })
     }
 
     pub(crate) fn validate_connection(&self) -> Result<(), SlackError> {
+        self.validate_auth()?;
+        let _ = self.open_socket_connection_url()?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_auth(&self) -> Result<(), SlackError> {
         let auth: SlackEnvelope<EmptyData> =
             self.get_with_token("auth.test", &[], &self.bot_token)?;
         if !auth.ok {
@@ -143,7 +191,10 @@ impl SlackApiClient {
                 auth.error.unwrap_or_else(|| "auth.test failed".to_string()),
             ));
         }
+        Ok(())
+    }
 
+    pub(crate) fn open_socket_connection_url(&self) -> Result<String, SlackError> {
         let conn: SlackEnvelope<OpenConnectionData> =
             self.post_json_with_token("apps.connections.open", &json!({}), &self.app_token)?;
         if !conn.ok {
@@ -152,24 +203,47 @@ impl SlackApiClient {
                     .unwrap_or_else(|| "apps.connections.open failed".to_string()),
             ));
         }
-
-        Ok(())
+        Ok(conn.data.url)
     }
 
-    pub(crate) fn list_conversations(&self) -> Result<Vec<ConversationSummary>, SlackError> {
+    pub(crate) fn list_conversations(
+        &self,
+        include_im_conversations: bool,
+    ) -> Result<Vec<ConversationSummary>, SlackError> {
+        self.list_conversations_with_types(include_im_conversations, true)
+    }
+
+    fn list_conversations_with_types(
+        &self,
+        include_im_conversations: bool,
+        allow_scope_fallback: bool,
+    ) -> Result<Vec<ConversationSummary>, SlackError> {
         let mut all = Vec::new();
         let mut cursor = String::new();
         loop {
-            let mut query = vec![
-                ("types", "im,public_channel,private_channel".to_string()),
-                ("limit", "200".to_string()),
-            ];
+            let types = if include_im_conversations {
+                "im,public_channel,private_channel"
+            } else {
+                "public_channel,private_channel"
+            };
+            let mut query = vec![("types", types.to_string()), ("limit", "200".to_string())];
             if !cursor.is_empty() {
                 query.push(("cursor", cursor.clone()));
             }
 
             let envelope: SlackEnvelope<ConversationsListData> =
-                self.get_with_token("conversations.list", &query, &self.bot_token)?;
+                match self.get_with_token("conversations.list", &query, &self.bot_token) {
+                    Ok(envelope) => envelope,
+                    Err(SlackError::ApiResponse(message))
+                        if allow_scope_fallback
+                            && include_im_conversations
+                            && message.contains("missing_scope")
+                            && message.contains("im:read") =>
+                    {
+                        return self.list_conversations_with_types(false, false);
+                    }
+                    Err(err) => return Err(err),
+                };
             if !envelope.ok {
                 return Err(SlackError::ApiResponse(
                     envelope

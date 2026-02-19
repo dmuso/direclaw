@@ -49,4 +49,5 @@ channels:
 
   slack:
     enabled: false
+    include_im_conversations: true
     allowlisted_channels: []
