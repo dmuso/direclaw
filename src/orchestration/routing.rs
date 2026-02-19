@@ -7,14 +7,13 @@ use crate::memory::{
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
-use crate::orchestration::lexical_router::{resolve_lexical_decision, LexicalRoutingConfig};
 use crate::orchestration::run_store::WorkflowRunStore;
 use crate::orchestration::scheduler::{
     complete_scheduled_execution, parse_trigger_envelope, ScheduledTriggerEnvelope,
 };
 use crate::orchestration::selector::{
-    resolve_orchestrator_id, SelectionResolution, SelectorAction, SelectorRequest, SelectorResult,
-    SelectorStatus,
+    resolve_orchestrator_id, resolve_selector_with_retries, run_selector_attempt_with_provider,
+    SelectionResolution, SelectorAction, SelectorRequest, SelectorResult, SelectorStatus,
 };
 use crate::orchestration::selector_artifacts::SelectorArtifactStore;
 use crate::orchestration::slack_target::{parse_slack_target_ref, validate_profile_mapping};
@@ -109,14 +108,14 @@ where
 
 #[allow(clippy::too_many_arguments)]
 pub fn process_queued_message_with_runner_binaries<F>(
-    _state_root: &Path,
+    state_root: &Path,
     settings: &Settings,
     inbound: &IncomingMessage,
     now: i64,
     active_conversation_runs: &BTreeMap<(String, String), String>,
     functions: &FunctionRegistry,
     runner_binaries: Option<RunnerBinaries>,
-    _next_selector_attempt: F,
+    mut next_selector_attempt: F,
 ) -> Result<RoutedSelectorAction, OrchestratorError>
 where
     F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
@@ -400,33 +399,20 @@ where
     artifact_store.persist_selector_request(&request)?;
     let _ = artifact_store.move_request_to_processing(&request.selector_id)?;
 
-    let selection = if let Some(lexical) = resolve_lexical_decision(
-        &request,
-        &orchestrator,
-        functions,
-        &LexicalRoutingConfig::balanced(),
-    ) {
-        SelectionResolution {
-            result: lexical.result,
-            retries_used: 0,
-            fell_back_to_default_workflow: false,
-        }
-    } else {
-        SelectionResolution {
-            result: SelectorResult {
-                selector_id: request.selector_id.clone(),
-                status: SelectorStatus::Selected,
-                action: Some(SelectorAction::WorkflowStart),
-                selected_workflow: Some(orchestrator.default_workflow.clone()),
-                diagnostics_scope: None,
-                function_id: None,
-                function_args: None,
-                reason: Some("fallback_to_default_workflow_after_lexical_miss".to_string()),
-            },
-            retries_used: 0,
-            fell_back_to_default_workflow: true,
-        }
-    };
+    let selection: SelectionResolution =
+        resolve_selector_with_retries(&orchestrator, &request, |attempt| {
+            next_selector_attempt(attempt, &request, &orchestrator).or_else(|| {
+                run_selector_attempt_with_provider(
+                    state_root,
+                    settings,
+                    &request,
+                    &orchestrator,
+                    attempt,
+                    &runner_binaries,
+                )
+                .ok()
+            })
+        });
     artifact_store.persist_selector_result(&selection.result)?;
     artifact_store.persist_selector_log(
         &request.selector_id,

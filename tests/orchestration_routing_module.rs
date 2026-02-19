@@ -89,7 +89,7 @@ fn write_script(path: &std::path::Path, body: &str) {
 }
 
 #[test]
-fn local_profile_lexical_miss_falls_back_to_default_workflow_without_selector_provider_attempt() {
+fn non_fast_path_retries_selector_attempts_then_falls_back_to_default_workflow() {
     let temp = tempdir().expect("tempdir");
     let workspace_root = temp.path().join("workspaces");
     let private_workspace = workspace_root.join("main");
@@ -191,12 +191,12 @@ channels: {{}}
         Some(binaries),
         |_attempt, _request, _orchestrator| {
             calls.fetch_add(1, Ordering::SeqCst);
-            None
+            Some("{}".to_string())
         },
     )
     .expect("route inbound message");
 
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     match action {
         RoutedSelectorAction::WorkflowStart { workflow_id, .. } => {
             assert_eq!(workflow_id, "quick_answer");
@@ -206,7 +206,7 @@ channels: {{}}
 }
 
 #[test]
-fn lexical_miss_falls_back_to_default_workflow_without_selector_provider_attempt_for_any_channel() {
+fn non_fast_path_honors_valid_selector_selected_workflow() {
     let temp = tempdir().expect("tempdir");
     let workspace_root = temp.path().join("workspaces");
     let private_workspace = workspace_root.join("main");
@@ -235,6 +235,20 @@ workflows:
         type: agent_task
         agent: default
         prompt: answer directly
+        outputs: [summary, artifact]
+        output_files:
+          summary: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
+          artifact: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}.txt
+  - id: feature_delivery
+    version: 1
+    description: feature delivery
+    tags: [delivery]
+    inputs: []
+    steps:
+      - id: deliver
+        type: agent_task
+        agent: default
+        prompt: deliver feature
         outputs: [summary, artifact]
         output_files:
           summary: artifacts/{{workflow.run_id}}/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
@@ -306,19 +320,87 @@ channels: {{}}
             &settings,
         ),
         Some(binaries),
+        |_attempt, request, _orchestrator| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Some(format!(
+                r#"{{
+                  "selectorId":"{}",
+                  "status":"selected",
+                  "action":"workflow_start",
+                  "selectedWorkflow":"feature_delivery"
+                }}"#,
+                request.selector_id
+            ))
+        },
+    )
+    .expect("route inbound message");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    match action {
+        RoutedSelectorAction::WorkflowStart { workflow_id, .. } => {
+            assert_eq!(workflow_id, "feature_delivery");
+        }
+        other => panic!("expected workflow start route, got {other:?}"),
+    }
+}
+
+#[test]
+fn workflow_bound_status_fast_path_skips_selector_attempts() {
+    let settings = serde_yaml::from_str(
+        r#"
+workspaces_path: /tmp/workspace
+shared_workspaces: {}
+orchestrators:
+  main:
+    shared_access: []
+channel_profiles:
+  engineering:
+    channel: slack
+    orchestrator_id: main
+monitoring: {}
+channels: {}
+"#,
+    )
+    .expect("settings");
+    let inbound = IncomingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("engineering".to_string()),
+        sender: "dana".to_string(),
+        sender_id: "U42".to_string(),
+        message: "/status".to_string(),
+        timestamp: 1,
+        message_id: "m-status-fast".to_string(),
+        conversation_id: Some("c1".to_string()),
+        files: vec![],
+        workflow_run_id: Some("run-missing".to_string()),
+        workflow_step_id: None,
+    };
+
+    let state = tempdir().expect("tempdir");
+    let calls = AtomicUsize::new(0);
+    let action = process_queued_message(
+        state.path(),
+        &settings,
+        &inbound,
+        1,
+        &BTreeMap::new(),
+        &FunctionRegistry::new(Vec::new()),
         |_attempt, _request, _orchestrator| {
             calls.fetch_add(1, Ordering::SeqCst);
             None
         },
     )
-    .expect("route inbound message");
+    .expect("status route");
 
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     match action {
-        RoutedSelectorAction::WorkflowStart { workflow_id, .. } => {
-            assert_eq!(workflow_id, "quick_answer");
+        RoutedSelectorAction::WorkflowStatus {
+            run_id, message, ..
+        } => {
+            assert_eq!(run_id.as_deref(), Some("run-missing"));
+            assert!(message.contains("was not found"));
         }
-        other => panic!("expected workflow start route, got {other:?}"),
+        other => panic!("expected workflow status route, got {other:?}"),
     }
 }
 

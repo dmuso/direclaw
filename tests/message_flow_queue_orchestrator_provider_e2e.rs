@@ -311,7 +311,7 @@ fn queue_to_orchestrator_runtime_path_runs_provider_and_persists_selector_artifa
             .join("orchestrator/artifacts/selector-result-sel-msg-1.json"),
     )
     .expect("selector result");
-    assert!(selector_result.contains("fallback_to_default_workflow_after_lexical_miss"));
+    assert!(selector_result.contains("fallback_to_default_workflow_after_retry_limit"));
 }
 
 #[test]

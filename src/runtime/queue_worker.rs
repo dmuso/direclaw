@@ -4,7 +4,6 @@ use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries;
 use crate::orchestration::run_store::{RunState, StepAttemptRecord, WorkflowRunStore};
 use crate::orchestration::scheduler::parse_trigger_envelope;
-use crate::orchestration::selector::run_selector_attempt_with_provider;
 use crate::orchestration::slack_target::{
     parse_slack_target_ref, slack_target_from_conversation, slack_target_ref_to_value,
     validate_profile_mapping, SlackPostingMode,
@@ -379,17 +378,7 @@ fn process_claimed_message(
         &BTreeMap::new(),
         &functions,
         Some(binaries.clone()),
-        |attempt, request, orchestrator_cfg| {
-            run_selector_attempt_with_provider(
-                &scoped.queue_paths.root,
-                settings,
-                request,
-                orchestrator_cfg,
-                attempt,
-                binaries,
-            )
-            .ok()
-        },
+        |_attempt, _request, _orchestrator_cfg| None,
     )
     .map_err(|e| {
         let _ = queue::requeue_failure(&scoped.queue_paths, &scoped.claimed);

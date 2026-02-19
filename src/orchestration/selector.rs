@@ -101,7 +101,7 @@ pub fn run_selector_attempt_with_provider(
     }
 
     let prompt = format!(
-        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Apply the user message and available workflow/function context.\n3. Output exactly one structured JSON selector result to this path:\n{}\n4. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
+        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nDecision policy:\n- Prioritize the user's explicit requested action over surrounding background context.\n- Distinguish contextual setup/background from the actual ask before choosing an action.\n- Use background details only to inform the action, not to override the direct request.\n- Choose from availableWorkflows/defaultWorkflow/availableFunctions exactly as provided.\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Identify the user's requested action separately from contextual setup/background.\n3. Select exactly one supported action and validate any selected workflow/function against the request fields.\n4. Output exactly one structured JSON selector result to this path:\n{}\n5. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
         selector_result_path.display()
     );
     let context = format!(
