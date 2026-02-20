@@ -26,6 +26,7 @@ use std::path::Path;
 const DIAGNOSTICS_MEMORY_TOP_N: usize = 8;
 const BASE36_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 const RUN_SUFFIX_SPACE: u32 = 36 * 36 * 36 * 36;
+const RUN_ID_MAX_GENERATION_ATTEMPTS: usize = 16;
 
 fn base36_encode_u64(mut value: u64) -> String {
     if value == 0 {
@@ -65,6 +66,32 @@ fn generate_compact_run_id(now: i64) -> Result<String, OrchestratorError> {
     let ts = base36_encode_u64(timestamp);
     let suffix = base36_encode_fixed_u32(sample, 4);
     Ok(format!("run-{ts}-{suffix}"))
+}
+
+fn run_metadata_path(state_root: &Path, run_id: &str) -> std::path::PathBuf {
+    state_root
+        .join("workflows/runs")
+        .join(format!("{run_id}.json"))
+}
+
+fn allocate_compact_run_id_with_retry<F>(
+    run_store: &WorkflowRunStore,
+    now: i64,
+    mut next_run_id: F,
+) -> Result<String, OrchestratorError>
+where
+    F: FnMut(i64) -> Result<String, OrchestratorError>,
+{
+    for _ in 0..RUN_ID_MAX_GENERATION_ATTEMPTS {
+        let run_id = next_run_id(now)?;
+        if !run_metadata_path(run_store.state_root(), &run_id).exists() {
+            return Ok(run_id);
+        }
+    }
+    Err(OrchestratorError::SelectorValidation(format!(
+        "failed to allocate unique workflow run id after {} attempts",
+        RUN_ID_MAX_GENERATION_ATTEMPTS
+    )))
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
@@ -270,7 +297,11 @@ pub fn route_selector_action(
                 return Err(err);
             }
 
-            let run_id = generate_compact_run_id(ctx.now)?;
+            let run_id = allocate_compact_run_id_with_retry(
+                ctx.run_store,
+                ctx.now,
+                generate_compact_run_id,
+            )?;
             if let Err(err) = validate_selected_workflow_output_paths(
                 ctx.run_store.state_root(),
                 &run_id,
@@ -728,5 +759,61 @@ pub fn route_selector_action(
                 .reason
                 .unwrap_or_else(|| "selector chose no_response".to_string()),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn seed_run_metadata(state_root: &Path, run_id: &str) {
+        let path = state_root
+            .join("workflows/runs")
+            .join(format!("{run_id}.json"));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create run metadata parent");
+        }
+        fs::write(path, b"{}").expect("seed run metadata");
+    }
+
+    #[test]
+    fn allocates_compact_run_id_by_retrying_on_collision() {
+        let dir = tempdir().expect("tempdir");
+        let state_root = dir.path();
+        let run_store = WorkflowRunStore::new(state_root);
+        seed_run_metadata(state_root, "run-collision");
+
+        let mut attempts = 0usize;
+        let run_id = allocate_compact_run_id_with_retry(&run_store, 1, |_| {
+            attempts += 1;
+            Ok(if attempts == 1 {
+                "run-collision".to_string()
+            } else {
+                "run-unique".to_string()
+            })
+        })
+        .expect("allocate run id");
+
+        assert_eq!(run_id, "run-unique");
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn allocate_compact_run_id_with_retry_fails_after_max_attempts() {
+        let dir = tempdir().expect("tempdir");
+        let state_root = dir.path();
+        let run_store = WorkflowRunStore::new(state_root);
+        seed_run_metadata(state_root, "run-collision");
+
+        let err =
+            allocate_compact_run_id_with_retry(&run_store, 1, |_| Ok("run-collision".to_string()))
+                .expect_err("collisions should exhaust retries");
+
+        assert!(
+            err.to_string()
+                .contains("failed to allocate unique workflow run id"),
+            "unexpected error: {err}"
+        );
     }
 }
