@@ -303,6 +303,13 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
         }
         other => panic!("unexpected route: {other:?}"),
     };
+    let run_id_prefix = "run-2s-";
+    assert!(run_id.starts_with(run_id_prefix));
+    let run_id_suffix = &run_id[run_id_prefix.len()..];
+    assert_eq!(run_id_suffix.len(), 4);
+    assert!(run_id_suffix
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
 
     let run = store.load_run(&run_id).expect("load run");
     assert_eq!(run.state, RunState::Succeeded);

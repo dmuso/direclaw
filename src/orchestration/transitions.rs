@@ -17,12 +17,55 @@ use crate::orchestration::selector::{
 use crate::orchestration::workflow_engine::WorkflowEngine;
 use crate::orchestration::workspace_access::WorkspaceAccessContext;
 use crate::provider::RunnerBinaries;
+use getrandom::getrandom;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 const DIAGNOSTICS_MEMORY_TOP_N: usize = 8;
+const BASE36_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+const RUN_SUFFIX_SPACE: u32 = 36 * 36 * 36 * 36;
+
+fn base36_encode_u64(mut value: u64) -> String {
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut chars = Vec::new();
+    while value > 0 {
+        let idx = (value % 36) as usize;
+        chars.push(BASE36_ALPHABET[idx] as char);
+        value /= 36;
+    }
+    chars.iter().rev().collect()
+}
+
+fn base36_encode_fixed_u32(mut value: u32, width: usize) -> String {
+    let mut chars = vec!['0'; width];
+    for idx in (0..width).rev() {
+        chars[idx] = BASE36_ALPHABET[(value % 36) as usize] as char;
+        value /= 36;
+    }
+    chars.into_iter().collect()
+}
+
+fn generate_compact_run_id(now: i64) -> Result<String, OrchestratorError> {
+    let timestamp = u64::try_from(now).map_err(|_| {
+        OrchestratorError::SelectorValidation(
+            "workflow_start requires a non-negative timestamp".to_string(),
+        )
+    })?;
+    let mut bytes = [0_u8; 4];
+    getrandom(&mut bytes).map_err(|err| {
+        OrchestratorError::SelectorValidation(format!(
+            "workflow_start failed to generate run id randomness: {err}"
+        ))
+    })?;
+    let sample = u32::from_le_bytes(bytes) % RUN_SUFFIX_SPACE;
+    let ts = base36_encode_u64(timestamp);
+    let suffix = base36_encode_fixed_u32(sample, 4);
+    Ok(format!("run-{ts}-{suffix}"))
+}
 
 fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
     OrchestratorError::Io {
@@ -227,7 +270,7 @@ pub fn route_selector_action(
                 return Err(err);
             }
 
-            let run_id = format!("run-{}-{}", request.selector_id, ctx.now);
+            let run_id = generate_compact_run_id(ctx.now)?;
             if let Err(err) = validate_selected_workflow_output_paths(
                 ctx.run_store.state_root(),
                 &run_id,

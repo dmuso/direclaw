@@ -6,6 +6,7 @@ use direclaw::runtime::{
     bootstrap_state_root, drain_queue_once_with_binaries, recover_processing_queue_entries,
     run_supervisor, signal_stop, StatePaths,
 };
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -1553,7 +1554,7 @@ fn queue_runtime_enforces_same_key_ordering_and_cross_key_concurrency() {
         &codex,
         r#"#!/bin/sh
 set -eu
-line=$(printf "%s\n" "$@" | tr ' ' '\n' | grep -o 'run-sel-[^/[:space:]]*' | head -n1 || true)
+line=$(printf "%s\n" "$@" | tr ' ' '\n' | grep -oE 'run-[0-9a-z]+-[0-9a-z]{4}' | head -n1 || true)
 run_id=$(printf "%s" "$line")
 if [ -z "$run_id" ]; then
   run_id="unknown"
@@ -1587,10 +1588,37 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
             .unwrap_or_else(|| panic!("missing `{needle}` in trace:\n{trace}"))
     };
 
-    let start_a1 = idx("start run-sel-a1");
-    let end_a1 = idx("end run-sel-a1");
-    let start_a2 = idx("start run-sel-a2");
-    let start_b1 = idx("start run-sel-b1");
+    let mut run_id_by_message = BTreeMap::new();
+    for entry in fs::read_dir(queue.root.join("workflows/runs")).expect("runs dir") {
+        let entry = entry.expect("run entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read(&path).expect("read run record");
+        let value: serde_json::Value = serde_json::from_slice(&raw).expect("parse run record");
+        let Some(run_id) = value.get("runId").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(source_message_id) = value
+            .get("sourceMessageId")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        if source_message_id == "a1" || source_message_id == "a2" || source_message_id == "b1" {
+            run_id_by_message.insert(source_message_id.to_string(), run_id.to_string());
+        }
+    }
+    assert_eq!(run_id_by_message.len(), 3, "expected run IDs for a1/a2/b1");
+
+    let run_a1 = run_id_by_message.get("a1").expect("run id for a1");
+    let run_a2 = run_id_by_message.get("a2").expect("run id for a2");
+    let run_b1 = run_id_by_message.get("b1").expect("run id for b1");
+    let start_a1 = idx(&format!("start {run_a1}"));
+    let end_a1 = idx(&format!("end {run_a1}"));
+    let start_a2 = idx(&format!("start {run_a2}"));
+    let start_b1 = idx(&format!("start {run_b1}"));
 
     assert!(start_a1 < end_a1);
     assert!(
