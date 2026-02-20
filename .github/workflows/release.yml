@@ -209,6 +209,7 @@ jobs:
         if: github.event_name == 'push' || inputs.publish == true
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.value }}
           body_path: dist/release-notes.md
           files: |
             dist/*.tar.gz
