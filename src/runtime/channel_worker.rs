@@ -2,7 +2,7 @@ use super::{
     heartbeat_worker, memory_worker, now_secs, queue_worker, scheduler_worker, WorkerEvent,
 };
 use crate::channels::slack;
-use crate::config::Settings;
+use crate::config::{Settings, SlackInboundMode};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -31,7 +31,8 @@ pub(crate) enum WorkerRuntime {
     OrchestratorDispatcher,
     Memory,
     Scheduler,
-    Slack,
+    SlackSocket,
+    SlackBackfill,
     Heartbeat,
 }
 
@@ -53,8 +54,25 @@ pub(crate) struct WorkerRunContext {
     pub(crate) queue_max_concurrency: usize,
 }
 
+pub fn tick_slack_socket_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
+    match slack::sync_socket_once(state_root, settings) {
+        Ok(_) => Ok(()),
+        Err(slack::SlackError::RateLimited {
+            retry_after_secs, ..
+        }) => {
+            thread::sleep(rate_limit_sleep_duration(retry_after_secs));
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 pub fn tick_slack_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
-    match slack::sync_runtime_once(state_root, settings) {
+    tick_slack_socket_worker(state_root, settings)
+}
+
+pub fn tick_slack_backfill_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
+    match slack::sync_backfill_once(state_root, settings) {
         Ok(_) => Ok(()),
         Err(slack::SlackError::RateLimited {
             retry_after_secs, ..
@@ -115,11 +133,40 @@ pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
             continue;
         }
         if channel == "slack" {
-            specs.push(WorkerSpec {
-                id: format!("channel:{channel}"),
-                runtime: WorkerRuntime::Slack,
-                interval: Duration::from_secs(2),
-            });
+            match config.inbound_mode {
+                SlackInboundMode::Socket => {
+                    specs.push(WorkerSpec {
+                        id: "channel:slack-socket".to_string(),
+                        runtime: WorkerRuntime::SlackSocket,
+                        interval: Duration::from_secs(2),
+                    });
+                }
+                SlackInboundMode::Poll => {
+                    specs.push(WorkerSpec {
+                        id: "channel:slack-backfill".to_string(),
+                        runtime: WorkerRuntime::SlackBackfill,
+                        interval: Duration::from_secs(
+                            config.history_backfill_interval_seconds.max(1),
+                        ),
+                    });
+                }
+                SlackInboundMode::Hybrid => {
+                    specs.push(WorkerSpec {
+                        id: "channel:slack-socket".to_string(),
+                        runtime: WorkerRuntime::SlackSocket,
+                        interval: Duration::from_secs(2),
+                    });
+                    if config.history_backfill_enabled {
+                        specs.push(WorkerSpec {
+                            id: "channel:slack-backfill".to_string(),
+                            runtime: WorkerRuntime::SlackBackfill,
+                            interval: Duration::from_secs(
+                                config.history_backfill_interval_seconds.max(1),
+                            ),
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -158,7 +205,10 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
         }
     }
 
-    if matches!(spec.runtime, WorkerRuntime::Slack) {
+    if matches!(
+        spec.runtime,
+        WorkerRuntime::SlackSocket | WorkerRuntime::SlackBackfill
+    ) {
         if let Err(err) = slack::validate_startup_credentials(&settings) {
             let _ = events.send(WorkerEvent::Error {
                 worker_id: spec.id.clone(),
@@ -216,7 +266,8 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
             WorkerRuntime::Scheduler => {
                 scheduler_worker::tick_scheduler_worker(&state_root, &settings)
             }
-            WorkerRuntime::Slack => tick_slack_worker(&state_root, &settings),
+            WorkerRuntime::SlackSocket => tick_slack_socket_worker(&state_root, &settings),
+            WorkerRuntime::SlackBackfill => tick_slack_backfill_worker(&state_root, &settings),
             WorkerRuntime::Heartbeat => {
                 heartbeat_worker::tick_heartbeat_worker(&state_root, &settings)
             }

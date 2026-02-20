@@ -30,6 +30,9 @@ When implemented, each adapter must:
 ## Slack Adapter
 
 - Support Socket Mode
+- Socket Mode is the primary inbound path for runtime workers.
+- Outbound delivery remains Slack Web API (`chat.postMessage`).
+- `conversations.history` polling is optional backfill only (`poll` or `hybrid` modes).
 - Support one or more configured Slack channel profiles
 - Resolve inbound event `channelProfileId` deterministically from the receiving app profile/credentials
 - DMs: always process
@@ -50,6 +53,10 @@ When implemented, each adapter must:
   - `targetRef.postingMode` (`channel_post|thread_reply`)
 - Adapter delivery must use one canonical targeted-post function for both channel posts and thread replies.
 - Split outbound text around 3500 chars
+- Required Slack app configuration:
+  - Socket Mode enabled
+  - App-level token (`xapp-...`) with connections permission
+  - Bot token (`xoxb-...`) with channel/DM history and write scopes for supported conversation types
 - For workflow runs, maintain association between `workflowRunId` and Slack thread/conversation id for progress posting
 - While associated workflow run is active (`running|waiting`), post progress updates to the same Slack thread every 15 minutes
 - Support status-check intent in workflow threads and return latest run progress snapshot.

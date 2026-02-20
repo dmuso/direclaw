@@ -110,6 +110,16 @@ pub struct ChannelConfig {
     pub allowlisted_channels: Vec<String>,
     #[serde(default = "default_true")]
     pub include_im_conversations: bool,
+    #[serde(default)]
+    pub inbound_mode: SlackInboundMode,
+    #[serde(default = "default_socket_reconnect_backoff_ms")]
+    pub socket_reconnect_backoff_ms: u64,
+    #[serde(default = "default_socket_idle_timeout_ms")]
+    pub socket_idle_timeout_ms: u64,
+    #[serde(default = "default_true")]
+    pub history_backfill_enabled: bool,
+    #[serde(default = "default_history_backfill_interval_seconds")]
+    pub history_backfill_interval_seconds: u64,
 }
 
 impl Default for ChannelConfig {
@@ -118,8 +128,22 @@ impl Default for ChannelConfig {
             enabled: false,
             allowlisted_channels: Vec::new(),
             include_im_conversations: true,
+            inbound_mode: SlackInboundMode::default(),
+            socket_reconnect_backoff_ms: default_socket_reconnect_backoff_ms(),
+            socket_idle_timeout_ms: default_socket_idle_timeout_ms(),
+            history_backfill_enabled: true,
+            history_backfill_interval_seconds: default_history_backfill_interval_seconds(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackInboundMode {
+    Poll,
+    Hybrid,
+    #[default]
+    Socket,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -141,6 +165,18 @@ pub struct AuthSyncSource {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_socket_reconnect_backoff_ms() -> u64 {
+    1000
+}
+
+fn default_socket_idle_timeout_ms() -> u64 {
+    1500
+}
+
+fn default_history_backfill_interval_seconds() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -230,6 +266,21 @@ impl Settings {
                         "channels.slack.allowlisted_channels entries must be non-empty".to_string(),
                     ));
                 }
+            }
+            if slack_cfg.socket_reconnect_backoff_ms == 0 {
+                return Err(ConfigError::Settings(
+                    "channels.slack.socket_reconnect_backoff_ms must be > 0".to_string(),
+                ));
+            }
+            if slack_cfg.socket_idle_timeout_ms == 0 {
+                return Err(ConfigError::Settings(
+                    "channels.slack.socket_idle_timeout_ms must be > 0".to_string(),
+                ));
+            }
+            if slack_cfg.history_backfill_interval_seconds == 0 {
+                return Err(ConfigError::Settings(
+                    "channels.slack.history_backfill_interval_seconds must be > 0".to_string(),
+                ));
             }
         }
 

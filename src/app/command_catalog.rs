@@ -29,6 +29,9 @@ pub mod function_ids {
     pub const DAEMON_CHAT: &str = "daemon.chat";
     pub const CHANNELS_RESET: &str = "channels.reset";
     pub const CHANNELS_SLACK_SYNC: &str = "channels.slack_sync";
+    pub const CHANNELS_SLACK_SOCKET_STATUS: &str = "channels.slack_socket_status";
+    pub const CHANNELS_SLACK_SOCKET_RECONNECT: &str = "channels.slack_socket_reconnect";
+    pub const CHANNELS_SLACK_BACKFILL_RUN: &str = "channels.slack_backfill_run";
     pub const PROVIDER_SHOW: &str = "provider.show";
     pub const PROVIDER_SET: &str = "provider.set";
     pub const MODEL_SHOW: &str = "model.show";
@@ -222,6 +225,24 @@ pub const V1_FUNCTIONS: &[FunctionDef] = &[
     FunctionDef {
         function_id: function_ids::CHANNELS_SLACK_SYNC,
         description: "Run one Slack sync pass",
+        args: &[],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::CHANNELS_SLACK_SOCKET_STATUS,
+        description: "Read Slack socket connection health",
+        args: &[],
+        read_only: true,
+    },
+    FunctionDef {
+        function_id: function_ids::CHANNELS_SLACK_SOCKET_RECONNECT,
+        description: "Request Slack socket reconnect",
+        args: &[],
+        read_only: false,
+    },
+    FunctionDef {
+        function_id: function_ids::CHANNELS_SLACK_BACKFILL_RUN,
+        description: "Run one Slack history backfill pass",
         args: &[],
         read_only: false,
     },
@@ -665,8 +686,29 @@ pub fn canonical_cli_tokens(function_id: &str) -> Option<Vec<String>> {
     }
 
     let scope = scope_raw.replace('_', "-");
-    if scope_raw == "channels" && action_raw == "slack_sync" {
-        return Some(vec![scope, "slack".to_string(), "sync".to_string()]);
+    if scope_raw == "channels" {
+        return match action_raw {
+            "slack_sync" => Some(vec![scope, "slack".to_string(), "sync".to_string()]),
+            "slack_socket_status" => Some(vec![
+                scope,
+                "slack".to_string(),
+                "socket".to_string(),
+                "status".to_string(),
+            ]),
+            "slack_socket_reconnect" => Some(vec![
+                scope,
+                "slack".to_string(),
+                "socket".to_string(),
+                "reconnect".to_string(),
+            ]),
+            "slack_backfill_run" => Some(vec![
+                scope,
+                "slack".to_string(),
+                "backfill".to_string(),
+                "run".to_string(),
+            ]),
+            _ => Some(vec![scope, action_raw.replace('_', "-")]),
+        };
     }
 
     Some(vec![scope, action_raw.replace('_', "-")])

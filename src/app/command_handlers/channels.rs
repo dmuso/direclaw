@@ -70,5 +70,50 @@ pub fn cmd_channels(args: &[String]) -> Result<String, String> {
             report.profiles_processed, report.inbound_enqueued, report.outbound_messages_sent
         ));
     }
-    Err("usage: channels reset | channels slack sync".to_string())
+    if args.len() == 3 && args[0] == "slack" && args[1] == "socket" && args[2] == "status" {
+        let paths = ensure_runtime_root()?;
+        let settings = load_settings()?;
+        let health = slack::socket_health(&paths.root, &settings);
+        if health.is_empty() {
+            return Ok("connected=false".to_string());
+        }
+        let mut lines = Vec::new();
+        for item in health {
+            lines.push(format!("profile={}", item.profile_id));
+            lines.push(format!("connected={}", item.connected));
+            lines.push(format!(
+                "last_event_ts={}",
+                item.last_event_ts.unwrap_or_else(|| "none".to_string())
+            ));
+            lines.push(format!(
+                "last_reconnect={}",
+                item.last_reconnect
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ));
+            lines.push(format!(
+                "last_error={}",
+                item.last_error.unwrap_or_else(|| "none".to_string())
+            ));
+        }
+        return Ok(lines.join("\n"));
+    }
+    if args.len() == 3 && args[0] == "slack" && args[1] == "socket" && args[2] == "reconnect" {
+        let paths = ensure_runtime_root()?;
+        slack::request_socket_reconnect(&paths.root).map_err(|e| e.to_string())?;
+        return Ok("reconnect_requested=true".to_string());
+    }
+    if args.len() == 3 && args[0] == "slack" && args[1] == "backfill" && args[2] == "run" {
+        let paths = ensure_runtime_root()?;
+        let settings = load_settings()?;
+        let report =
+            slack::sync_backfill_once(&paths.root, &settings).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "slack backfill complete\nprofiles_processed={}\ninbound_enqueued={}\noutbound_messages_sent={}",
+            report.profiles_processed, report.inbound_enqueued, report.outbound_messages_sent
+        ));
+    }
+    Err(
+        "usage: channels reset | channels slack sync | channels slack socket <status|reconnect> | channels slack backfill run".to_string(),
+    )
 }

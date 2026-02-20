@@ -3,19 +3,78 @@ use super::ingest::{enqueue_incoming, should_accept_channel_message};
 use super::{SlackError, SlackProfileRuntime};
 use crate::config::ChannelProfile;
 use crate::queue::QueuePaths;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeSet;
+use std::fs;
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
-const SOCKET_POLL_WINDOW: Duration = Duration::from_millis(1500);
 const SOCKET_IDLE_SLEEP: Duration = Duration::from_millis(40);
+const SOCKET_BUFFER_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SocketHealth {
+    pub connected: bool,
+    pub last_event_ts: Option<String>,
+    pub last_reconnect: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+fn socket_status_path(state_root: &Path, profile_id: &str) -> PathBuf {
+    state_root
+        .join("channels/slack/socket")
+        .join(format!("{profile_id}.health.json"))
+}
+
+fn reconnect_request_path(state_root: &Path) -> PathBuf {
+    state_root.join("channels/slack/socket/reconnect.request")
+}
+
+fn load_health(state_root: &Path, profile_id: &str) -> SocketHealth {
+    let path = socket_status_path(state_root, profile_id);
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return SocketHealth::default();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn save_health(state_root: &Path, profile_id: &str, health: &SocketHealth) {
+    let path = socket_status_path(state_root, profile_id);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(body) = serde_json::to_vec_pretty(health) {
+        let _ = fs::write(&path, body);
+    }
+}
+
+pub(super) fn read_profile_health(state_root: &Path, profile_id: &str) -> SocketHealth {
+    load_health(state_root, profile_id)
+}
+
+pub(super) fn request_reconnect(state_root: &Path) -> Result<(), SlackError> {
+    let path = reconnect_request_path(state_root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| SlackError::Io {
+            path: parent.display().to_string(),
+            source: err,
+        })?;
+    }
+    fs::write(&path, b"1").map_err(|err| SlackError::Io {
+        path: path.display().to_string(),
+        source: err,
+    })?;
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 struct SocketEnvelope {
@@ -54,30 +113,98 @@ struct SocketEvent {
 }
 
 pub(super) fn process_socket_inbound_for_profile(
-    _state_root: &Path,
+    state_root: &Path,
     queue_paths: &QueuePaths,
     profile_id: &str,
     runtime: &SlackProfileRuntime,
+    reconnect_backoff_ms: u64,
+    idle_timeout_ms: u64,
 ) -> Result<usize, SlackError> {
-    let url = runtime.api.open_socket_connection_url()?;
-    let (mut socket, _) = match connect(url.as_str()) {
-        Ok(connection) => connection,
-        Err(_) => return Ok(0),
-    };
-    set_socket_nonblocking(&mut socket)?;
+    let mut health = load_health(state_root, profile_id);
+    let deadline = Instant::now() + Duration::from_millis(idle_timeout_ms.max(1));
+    let reconnect_backoff = Duration::from_millis(reconnect_backoff_ms.max(1));
+    let mut enqueued_total = 0usize;
 
-    let started_at = Instant::now();
-    let mut enqueued = 0usize;
-    while started_at.elapsed() < SOCKET_POLL_WINDOW {
+    let reconnect_request = reconnect_request_path(state_root);
+    let force_reconnect = reconnect_request.exists();
+    if force_reconnect {
+        let _ = fs::remove_file(&reconnect_request);
+    }
+
+    while Instant::now() < deadline {
+        health.last_reconnect = Some(super::now_secs());
+        health.connected = false;
+        let url = runtime.api.open_socket_connection_url()?;
+        let (mut socket, _) = match connect(url.as_str()) {
+            Ok(connection) => connection,
+            Err(_) => {
+                health.last_error = Some("socket connect failed".to_string());
+                save_health(state_root, profile_id, &health);
+                thread::sleep(reconnect_backoff);
+                continue;
+            }
+        };
+        health.connected = true;
+        health.last_error = None;
+        save_health(state_root, profile_id, &health);
+        set_socket_nonblocking(&mut socket)?;
+
+        let enqueued = process_single_connection(
+            &mut socket,
+            queue_paths,
+            profile_id,
+            runtime,
+            deadline,
+            &mut health,
+        )?;
+        enqueued_total += enqueued;
+        save_health(state_root, profile_id, &health);
+        if !force_reconnect {
+            break;
+        }
+        thread::sleep(reconnect_backoff);
+    }
+    health.connected = false;
+    save_health(state_root, profile_id, &health);
+
+    Ok(enqueued_total)
+}
+
+fn process_single_connection(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    queue_paths: &QueuePaths,
+    profile_id: &str,
+    runtime: &SlackProfileRuntime,
+    deadline: Instant,
+    health: &mut SocketHealth,
+) -> Result<usize, SlackError> {
+    let (sender, receiver): (SyncSender<QueueCandidate>, Receiver<QueueCandidate>) =
+        mpsc::sync_channel(SOCKET_BUFFER_CAPACITY);
+    let enqueued = Arc::new(AtomicUsize::new(0));
+    let enqueued_for_worker = Arc::clone(&enqueued);
+    let queue_paths = queue_paths.clone();
+    let profile = runtime.profile.clone();
+    let profile_id = profile_id.to_string();
+    let worker = thread::spawn(move || {
+        while let Ok(candidate) = receiver.recv() {
+            if enqueue_incoming(
+                &queue_paths,
+                profile_id.as_str(),
+                &profile,
+                candidate.channel.as_str(),
+                &candidate.message,
+            )
+            .unwrap_or(false)
+            {
+                enqueued_for_worker.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    });
+
+    while Instant::now() < deadline {
         match socket.read() {
             Ok(Message::Text(text)) => {
-                enqueued += handle_socket_text(
-                    &mut socket,
-                    queue_paths,
-                    profile_id,
-                    runtime,
-                    text.as_str(),
-                )?;
+                handle_socket_text(socket, runtime, text.as_str(), &sender, health);
             }
             Ok(Message::Binary(_)) => {}
             Ok(Message::Ping(payload)) => {
@@ -95,20 +222,29 @@ pub(super) fn process_socket_inbound_for_profile(
             Err(_) => break,
         }
     }
+
+    drop(sender);
+    let _ = worker.join();
     let _ = socket.close(None);
-    Ok(enqueued)
+    Ok(enqueued.load(Ordering::Relaxed))
+}
+
+#[derive(Debug)]
+struct QueueCandidate {
+    channel: String,
+    message: SlackMessage,
 }
 
 fn handle_socket_text(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
-    queue_paths: &QueuePaths,
-    profile_id: &str,
     runtime: &SlackProfileRuntime,
     text: &str,
-) -> Result<usize, SlackError> {
+    sender: &SyncSender<QueueCandidate>,
+    health: &mut SocketHealth,
+) {
     let envelope = match serde_json::from_str::<SocketEnvelope>(text) {
         Ok(value) => value,
-        Err(_) => return Ok(0),
+        Err(_) => return,
     };
 
     if let Some(envelope_id) = envelope.envelope_id {
@@ -117,11 +253,11 @@ fn handle_socket_text(
     }
 
     let Some(event) = envelope.payload.and_then(|payload| payload.event) else {
-        return Ok(0);
+        return;
     };
 
     if !should_enqueue_socket_event(&event, &runtime.profile, &runtime.allowlist) {
-        return Ok(0);
+        return;
     }
 
     let message = SlackMessage {
@@ -134,16 +270,16 @@ fn handle_socket_text(
         reply_count: None,
     };
 
-    if enqueue_incoming(
-        queue_paths,
-        profile_id,
-        &runtime.profile,
-        &event.channel,
-        &message,
-    )? {
-        return Ok(1);
+    match sender.try_send(QueueCandidate {
+        channel: event.channel,
+        message,
+    }) {
+        Ok(()) => {
+            health.last_event_ts = Some(event.ts);
+        }
+        Err(TrySendError::Full(_)) => {}
+        Err(TrySendError::Disconnected(_)) => {}
     }
-    Ok(0)
 }
 
 fn should_enqueue_socket_event(

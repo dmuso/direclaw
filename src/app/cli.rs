@@ -16,10 +16,30 @@ pub fn normalize_cli_args(args: Vec<String>) -> Vec<String> {
     let mut normalized = Vec::with_capacity(args.len() + 1);
     if scope == "daemon" {
         normalized.push(action_raw.replace('_', "-"));
-    } else if scope == "channels" && action_raw == "slack_sync" {
+    } else if scope == "channels" {
         normalized.push(scope);
-        normalized.push("slack".to_string());
-        normalized.push("sync".to_string());
+        match action_raw {
+            "slack_sync" => {
+                normalized.push("slack".to_string());
+                normalized.push("sync".to_string());
+            }
+            "slack_socket_status" => {
+                normalized.push("slack".to_string());
+                normalized.push("socket".to_string());
+                normalized.push("status".to_string());
+            }
+            "slack_socket_reconnect" => {
+                normalized.push("slack".to_string());
+                normalized.push("socket".to_string());
+                normalized.push("reconnect".to_string());
+            }
+            "slack_backfill_run" => {
+                normalized.push("slack".to_string());
+                normalized.push("backfill".to_string());
+                normalized.push("run".to_string());
+            }
+            _ => normalized.push(action_raw.replace('_', "-")),
+        }
     } else {
         normalized.push(scope);
         normalized.push(action_raw.replace('_', "-"));
@@ -73,6 +93,20 @@ mod tests {
                 "channels".to_string(),
                 "slack".to_string(),
                 "sync".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn normalize_cli_args_maps_channels_slack_socket_status_alias() {
+        let args = vec!["channels.slack_socket_status".to_string()];
+        assert_eq!(
+            normalize_cli_args(args),
+            vec![
+                "channels".to_string(),
+                "slack".to_string(),
+                "socket".to_string(),
+                "status".to_string()
             ]
         );
     }

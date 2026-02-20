@@ -914,8 +914,8 @@ fn slack_worker_start_reports_profile_scoped_missing_credentials() {
     wait_for_runtime_state(
         home,
         Duration::from_secs(3),
-        |state| state["workers"]["channel:slack"]["state"] == "error",
-        "worker channel:slack error",
+        |state| state["workers"]["channel:slack-socket"]["state"] == "error",
+        "worker channel:slack-socket error",
     );
 
     let status = run(home, &["status"], &[]);
@@ -936,16 +936,12 @@ fn slack_worker_running_is_exposed_in_status() {
     let home = temp.path();
     write_slack_settings(home, true);
 
-    let server = MockSlackServer::start(3, |path| {
+    let server = MockSlackServer::start(2, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
         }
         if path.starts_with("/api/apps.connections.open") {
             return r#"{"ok":true,"url":"wss://example"}"#.to_string();
-        }
-        if path.starts_with("/api/conversations.list") {
-            return r#"{"ok":true,"conversations":[],"response_metadata":{"next_cursor":""}}"#
-                .to_string();
         }
         r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
     });
@@ -959,8 +955,8 @@ fn slack_worker_running_is_exposed_in_status() {
     wait_for_runtime_state(
         home,
         Duration::from_secs(3),
-        |state| state["workers"]["channel:slack"]["state"] == "running",
-        "worker channel:slack running",
+        |state| state["workers"]["channel:slack-socket"]["state"] == "running",
+        "worker channel:slack-socket running",
     );
 
     let running_status = run(home, &["status"], &[]);
@@ -990,8 +986,8 @@ fn slack_worker_api_failure_is_exposed_in_status() {
     wait_for_runtime_state(
         home,
         Duration::from_secs(4),
-        |state| state["workers"]["channel:slack"]["state"] == "error",
-        "worker channel:slack error",
+        |state| state["workers"]["channel:slack-socket"]["state"] == "error",
+        "worker channel:slack-socket error",
     );
 
     let api_status = run(home, &["status"], &[]);

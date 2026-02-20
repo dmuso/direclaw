@@ -1,4 +1,4 @@
-use crate::config::{ChannelProfile, Settings};
+use crate::config::{ChannelProfile, Settings, SlackInboundMode};
 use crate::queue::QueuePaths;
 use api::SlackApiClient;
 use auth::{configured_slack_allowlist, load_env_config, slack_profiles};
@@ -11,8 +11,10 @@ pub mod api;
 pub mod auth;
 pub mod cursor_store;
 pub mod egress;
+pub mod history_backfill;
 pub mod ingest;
 pub mod socket;
+pub mod socket_ingest;
 
 pub use auth::{profile_credential_health, validate_startup_credentials};
 
@@ -96,6 +98,15 @@ pub struct SlackProfileCredentialHealth {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackSocketHealth {
+    pub profile_id: String,
+    pub connected: bool,
+    pub last_event_ts: Option<String>,
+    pub last_reconnect: Option<i64>,
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct SlackProfileRuntime {
     profile: ChannelProfile,
@@ -154,26 +165,49 @@ fn slack_include_im_conversations(settings: &Settings) -> bool {
 }
 
 pub fn sync_once(state_root: &Path, settings: &Settings) -> Result<SlackSyncReport, SlackError> {
-    sync_once_internal(state_root, settings, false)
+    sync_backfill_once(state_root, settings)
 }
 
 pub fn sync_runtime_once(
     state_root: &Path,
     settings: &Settings,
 ) -> Result<SlackSyncReport, SlackError> {
-    sync_once_internal(state_root, settings, true)
+    sync_socket_once(state_root, settings)
+}
+
+pub fn sync_socket_once(
+    state_root: &Path,
+    settings: &Settings,
+) -> Result<SlackSyncReport, SlackError> {
+    sync_once_internal(state_root, settings, SyncMode::SocketOnly)
+}
+
+pub fn sync_backfill_once(
+    state_root: &Path,
+    settings: &Settings,
+) -> Result<SlackSyncReport, SlackError> {
+    sync_once_internal(state_root, settings, SyncMode::BackfillOnly)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncMode {
+    SocketOnly,
+    BackfillOnly,
 }
 
 fn sync_once_internal(
     state_root: &Path,
     settings: &Settings,
-    include_socket_ingest: bool,
+    mode: SyncMode,
 ) -> Result<SlackSyncReport, SlackError> {
     validate_startup_credentials(settings)?;
     let profiles = slack_profiles(settings);
     let profile_scoped_tokens_required = profiles.len() > 1;
     let config_allowlist = configured_slack_allowlist(settings);
     let include_im_conversations = slack_include_im_conversations(settings);
+    let channel_cfg = settings.channels.get("slack").cloned().unwrap_or_default();
+    let run_backfill = mode == SyncMode::BackfillOnly && channel_cfg.history_backfill_enabled;
+    let run_socket = mode == SyncMode::SocketOnly;
 
     let mut bot_token_profile = BTreeMap::<String, String>::new();
     let mut app_token_profile = BTreeMap::<String, String>::new();
@@ -201,9 +235,9 @@ fn sync_once_internal(
             });
         }
         let api = SlackApiClient::new(env.bot_token, env.app_token);
-        if include_socket_ingest {
+        if run_socket {
             api.validate_auth()?;
-        } else {
+        } else if run_backfill {
             api.validate_connection()?;
         }
         runtimes.insert(
@@ -232,14 +266,22 @@ fn sync_once_internal(
             .map_err(|e| io_error(&queue_paths.incoming, e))?;
         fs::create_dir_all(&queue_paths.outgoing)
             .map_err(|e| io_error(&queue_paths.outgoing, e))?;
-        report.inbound_enqueued +=
-            ingest::process_inbound_for_profile(state_root, &queue_paths, profile_id, runtime)?;
-        if include_socket_ingest {
-            report.inbound_enqueued += socket::process_socket_inbound_for_profile(
+        if run_backfill {
+            report.inbound_enqueued += history_backfill::process_inbound_for_profile(
                 state_root,
                 &queue_paths,
                 profile_id,
                 runtime,
+            )?;
+        }
+        if run_socket {
+            report.inbound_enqueued += socket_ingest::process_socket_inbound_for_profile(
+                state_root,
+                &queue_paths,
+                profile_id,
+                runtime,
+                channel_cfg.socket_reconnect_backoff_ms,
+                channel_cfg.socket_idle_timeout_ms,
             )?;
         }
         outbound_roots.insert(runtime_root);
@@ -249,6 +291,33 @@ fn sync_once_internal(
         report.outbound_messages_sent += egress::process_outbound(&queue_paths, &runtimes)?;
     }
     Ok(report)
+}
+
+pub fn inbound_mode(settings: &Settings) -> SlackInboundMode {
+    settings
+        .channels
+        .get("slack")
+        .map(|cfg| cfg.inbound_mode)
+        .unwrap_or_default()
+}
+
+pub fn socket_health(state_root: &Path, settings: &Settings) -> Vec<SlackSocketHealth> {
+    let mut health = Vec::new();
+    for profile_id in slack_profiles(settings).keys() {
+        let profile_health = socket::read_profile_health(state_root, profile_id);
+        health.push(SlackSocketHealth {
+            profile_id: profile_id.clone(),
+            connected: profile_health.connected,
+            last_event_ts: profile_health.last_event_ts,
+            last_reconnect: profile_health.last_reconnect,
+            last_error: profile_health.last_error,
+        });
+    }
+    health
+}
+
+pub fn request_socket_reconnect(state_root: &Path) -> Result<(), SlackError> {
+    socket::request_reconnect(state_root)
 }
 
 #[cfg(test)]

@@ -38,6 +38,12 @@ Global config `~/.direclaw/config.yaml` must support:
   - for `slack` profiles include `slack_app_user_id` and `require_mention_in_channels`
 - `monitoring` controls
 - `channels` enablement controls
+  - Slack channel runtime options:
+    - `inbound_mode: socket|poll|hybrid` (default `socket`)
+    - `socket_reconnect_backoff_ms`
+    - `socket_idle_timeout_ms`
+    - `history_backfill_enabled`
+    - `history_backfill_interval_seconds`
 
 Per-orchestrator config requirements:
 
@@ -169,6 +175,13 @@ Required subcommands:
 - channel and credentials identity metadata
 - mapped `orchestrator_id`
 - effective mention policy (for slack profiles)
+
+Slack channel command surface must include:
+
+- `channels slack sync`
+- `channels slack socket status`
+- `channels slack socket reconnect`
+- `channels slack backfill run`
 
 ## Provider and Model Commands
 

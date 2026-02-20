@@ -209,7 +209,7 @@ channels:
                 "memory_worker",
                 "scheduler",
                 "heartbeat",
-                "channel:slack"
+                "channel:slack-socket"
             ]
         );
 

@@ -63,6 +63,83 @@ impl MockSocketServer {
     }
 }
 
+struct ReconnectingSocketServer {
+    url: String,
+    acknowledgements: Arc<Mutex<Vec<String>>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl ReconnectingSocketServer {
+    fn start(sessions: Vec<Vec<String>>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind reconnecting socket server");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let addr = listener.local_addr().expect("socket addr");
+        let acknowledgements = Arc::new(Mutex::new(Vec::new()));
+        let acknowledgements_for_thread = Arc::clone(&acknowledgements);
+        let handle = thread::spawn(move || {
+            for payloads in sessions {
+                let accept_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(500);
+                let (stream, _) = loop {
+                    match listener.accept() {
+                        Ok(conn) => break conn,
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            if std::time::Instant::now() >= accept_deadline {
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => return,
+                    }
+                };
+                let mut websocket = tungstenite::accept(stream).expect("accept websocket");
+                for payload in payloads {
+                    websocket
+                        .send(Message::Text(payload))
+                        .expect("send socket payload");
+                }
+                let _ = websocket.get_mut().set_nonblocking(true);
+                let ack_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_millis(150);
+                loop {
+                    match websocket.read() {
+                        Ok(Message::Text(message)) => acknowledgements_for_thread
+                            .lock()
+                            .expect("lock acks")
+                            .push(message.to_string()),
+                        Err(tungstenite::Error::Io(err))
+                            if err.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            if std::time::Instant::now() >= ack_deadline {
+                                break;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Ok(Message::Close(_)) => break,
+                        Err(_) => break,
+                        _ => {}
+                    }
+                }
+                let _ = websocket.close(None);
+            }
+        });
+        Self {
+            url: format!("ws://{addr}"),
+            acknowledgements,
+            handle: Some(handle),
+        }
+    }
+
+    fn finish(mut self) -> Vec<String> {
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("join reconnecting socket server");
+        }
+        self.acknowledgements.lock().expect("lock acks").clone()
+    }
+}
+
 impl MockSlackServer {
     fn start<F>(expected_requests: usize, responder: F) -> Self
     where
@@ -224,6 +301,7 @@ fn sample_settings_with_dm_listing(
             enabled: true,
             allowlisted_channels,
             include_im_conversations,
+            ..ChannelConfig::default()
         },
     );
 
@@ -237,6 +315,35 @@ fn sample_settings_with_dm_listing(
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
     }
+}
+
+fn sample_socket_mode_settings(workspaces_path: &Path) -> Settings {
+    serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: {}
+shared_workspaces: {{}}
+orchestrators:
+  main:
+    private_workspace: null
+    shared_access: []
+channel_profiles:
+  slack_main:
+    channel: slack
+    orchestrator_id: main
+    slack_app_user_id: UAPP
+    require_mention_in_channels: true
+monitoring: {{}}
+channels:
+  slack:
+    enabled: true
+    inbound_mode: socket
+    socket_reconnect_backoff_ms: 10
+    socket_idle_timeout_ms: 400
+    history_backfill_enabled: false
+"#,
+        workspaces_path.display()
+    ))
+    .expect("parse socket settings")
 }
 
 #[test]
@@ -302,19 +409,12 @@ fn sync_ingests_dm_from_socket_mode_event_without_im_read() {
         r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello via socket","ts":"1700000100.1"}}}"#.to_string(),
     ]);
     let socket_url = socket.url.clone();
-    let server = MockSlackServer::start(4, move |path| {
+    let server = MockSlackServer::start(2, move |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
         }
         if path.starts_with("/api/apps.connections.open") {
             return format!(r#"{{"ok":true,"url":"{socket_url}"}}"#);
-        }
-        if path.starts_with("/api/conversations.list") {
-            return r#"{"ok":true,"conversations":[{"id":"C222","is_im":false}],"response_metadata":{"next_cursor":""}}"#.to_string();
-        }
-        if path.starts_with("/api/conversations.history") {
-            return r#"{"ok":true,"messages":[],"response_metadata":{"next_cursor":""}}"#
-                .to_string();
         }
         r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
     });
@@ -890,6 +990,105 @@ fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
     fs::create_dir_all(&state_root).expect("state root");
     let err = sync_once(&state_root, &settings).expect_err("missing scoped env should fail");
     assert!(matches!(err, SlackError::MissingProfileScopedEnvVar { .. }));
+}
+
+#[test]
+fn socket_sync_reconnects_acks_envelopes_and_suppresses_replay_duplicates() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let socket = ReconnectingSocketServer::start(vec![
+        vec![r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello once","ts":"1700000100.1"}}}"#.to_string()],
+        vec![r#"{"envelope_id":"env-2","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello once","ts":"1700000100.1"}}}"#.to_string()],
+    ]);
+    let socket_url = socket.url.clone();
+    let server = MockSlackServer::start(2, move |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return format!(r#"{{"ok":true,"url":"{socket_url}"}}"#);
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let settings = sample_socket_mode_settings(temp.path());
+    let queue = queue_for_profile(&settings, "slack_main");
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+    direclaw::channels::slack::request_socket_reconnect(&state_root).expect("request reconnect");
+
+    let report = direclaw::channels::slack::sync_socket_once(&state_root, &settings)
+        .expect("socket sync succeeds");
+    assert_eq!(report.inbound_enqueued, 1);
+
+    let acks = socket.finish();
+    assert!(
+        acks.iter()
+            .any(|ack| ack.contains("\"envelope_id\":\"env-1\"")),
+        "missing ack for env-1: {acks:?}"
+    );
+    assert!(
+        acks.iter()
+            .any(|ack| ack.contains("\"envelope_id\":\"env-2\"")),
+        "missing ack for env-2: {acks:?}"
+    );
+
+    let requests = server.finish();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.path.starts_with("/api/conversations.history")),
+        "socket mode should not call conversations.history: {:?}",
+        requests.iter().map(|r| r.path.clone()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn socket_sync_ingests_dm_and_channel_events_without_history_backfill() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let socket = ReconnectingSocketServer::start(vec![vec![
+        r#"{"envelope_id":"env-dm","type":"events_api","payload":{"event":{"type":"message","channel":"D111","channel_type":"im","user":"U777","text":"dm event","ts":"1700000200.1"}}}"#.to_string(),
+        r#"{"envelope_id":"env-channel","type":"events_api","payload":{"event":{"type":"message","channel":"C222","channel_type":"channel","user":"U888","text":"channel event","ts":"1700000201.1","thread_ts":"1700000000.1"}}}"#.to_string(),
+    ]]);
+    let socket_url = socket.url.clone();
+    let server = MockSlackServer::start(2, move |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return format!(r#"{{"ok":true,"url":"{socket_url}"}}"#);
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let settings = sample_socket_mode_settings(temp.path());
+    let queue = queue_for_profile(&settings, "slack_main");
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let report = direclaw::channels::slack::sync_socket_once(&state_root, &settings)
+        .expect("socket sync succeeds");
+    assert_eq!(report.inbound_enqueued, 2);
+    assert_eq!(
+        fs::read_dir(&queue.incoming)
+            .expect("incoming list")
+            .count(),
+        2
+    );
+
+    let _ = socket.finish();
+    let requests = server.finish();
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.path.starts_with("/api/conversations.history")),
+        "socket mode should not call conversations.history"
+    );
 }
 
 #[test]

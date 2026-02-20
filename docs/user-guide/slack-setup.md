@@ -57,6 +57,11 @@ Make sure your `~/.direclaw/config.yaml` has Slack enabled under `channels`:
 channels:
   slack:
     enabled: true
+    inbound_mode: socket # socket|poll|hybrid
+    socket_reconnect_backoff_ms: 1000
+    socket_idle_timeout_ms: 1500
+    history_backfill_enabled: true
+    history_backfill_interval_seconds: 300
     include_im_conversations: true # set false to disable DM polling (no im:read scope needed)
     allowlisted_channels: [] # optional channel ids, for example ["C12345678"]
 ```
@@ -88,6 +93,7 @@ Expected fields include:
 direclaw start
 direclaw status
 direclaw channels slack sync
+direclaw channels slack socket status
 ```
 
 `status` should show the Slack worker when `channels.slack.enabled=true` and should show channel-profile state.
@@ -96,6 +102,12 @@ direclaw channels slack sync
 - validates Slack connectivity using `auth.test` + `apps.connections.open`
 - pulls inbound Slack messages into `~/.direclaw/queue/incoming`
 - delivers queued Slack replies from `~/.direclaw/queue/outgoing`
+
+Additional diagnostics and control commands:
+
+- `direclaw channels slack socket status`
+- `direclaw channels slack socket reconnect`
+- `direclaw channels slack backfill run`
 
 ## 6. Test in Slack
 

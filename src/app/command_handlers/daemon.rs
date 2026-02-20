@@ -136,7 +136,11 @@ fn slack_profile_status_lines(
         .get("slack")
         .map(|cfg| cfg.enabled)
         .unwrap_or(false);
-    let worker = state.workers.get("channel:slack");
+    let worker = state
+        .workers
+        .get("channel:slack-socket")
+        .or_else(|| state.workers.get("channel:slack-backfill"))
+        .or_else(|| state.workers.get("channel:slack"));
 
     let mut lines = Vec::new();
     for health in slack::profile_credential_health(settings) {
@@ -238,6 +242,32 @@ pub fn cmd_status() -> Result<String, String> {
     }
     if let Ok(settings) = load_settings() {
         lines.extend(slack_profile_status_lines(&settings, &state));
+        if let Ok(paths) = ensure_runtime_root() {
+            for health in slack::socket_health(&paths.root, &settings) {
+                lines.push(format!(
+                    "slack_socket:{}.connected={}",
+                    health.profile_id, health.connected
+                ));
+                lines.push(format!(
+                    "slack_socket:{}.last_event_ts={}",
+                    health.profile_id,
+                    health.last_event_ts.unwrap_or_else(|| "none".to_string())
+                ));
+                lines.push(format!(
+                    "slack_socket:{}.last_reconnect={}",
+                    health.profile_id,
+                    health
+                        .last_reconnect
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                ));
+                lines.push(format!(
+                    "slack_socket:{}.last_error={}",
+                    health.profile_id,
+                    health.last_error.unwrap_or_else(|| "none".to_string())
+                ));
+            }
+        }
     }
     Ok(lines.join("\n"))
 }
