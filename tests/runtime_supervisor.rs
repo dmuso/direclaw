@@ -605,14 +605,31 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
         "running=true",
     );
 
-    let outgoing_dir = runtime_root.join("queue/outgoing");
-    fs::create_dir_all(&outgoing_dir).expect("outgoing dir");
+    let incoming_dir = runtime_root.join("queue/incoming");
+    fs::create_dir_all(&incoming_dir).expect("incoming dir");
     let start = Instant::now();
-    while fs::read_dir(&outgoing_dir)
-        .expect("outgoing")
-        .next()
-        .is_none()
-    {
+    loop {
+        let message_still_pending_in_incoming = fs::read_dir(&incoming_dir)
+            .expect("incoming")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("msg-recovered-supervisor")
+            });
+        let message_still_pending_in_processing = fs::read_dir(&processing_dir)
+            .expect("processing")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("msg-recovered-supervisor")
+            });
+        if !message_still_pending_in_incoming && !message_still_pending_in_processing {
+            break;
+        }
         assert!(
             start.elapsed() < Duration::from_secs(20),
             "recovered message was not processed"

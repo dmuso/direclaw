@@ -17,19 +17,14 @@ pub fn configured_heartbeat_interval(settings: &Settings) -> Option<Duration> {
 
 pub fn resolve_heartbeat_prompt(
     agent_dir: &Path,
-    orchestrator_id: &str,
-    agent_id: &str,
-) -> Result<String, String> {
+    _orchestrator_id: &str,
+    _agent_id: &str,
+) -> Result<Option<String>, String> {
     let prompt_path = agent_dir.join("heartbeat.md");
     match fs::read_to_string(&prompt_path) {
-        Ok(body) => Ok(body.trim().to_string()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(format!(
-            "Fallback heartbeat prompt for orchestrator `{orchestrator_id}` agent `{agent_id}`: respond with short runtime health status."
-        )),
-        Err(err) => Err(format!(
-            "failed to read {}: {err}",
-            prompt_path.display()
-        )),
+        Ok(body) => Ok(Some(body.trim().to_string())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("failed to read {}: {err}", prompt_path.display())),
     }
 }
 
@@ -159,7 +154,19 @@ pub fn tick_heartbeat_worker(state_root: &Path, settings: &Settings) -> Result<(
         for (agent_id, agent) in &orchestrator.agents {
             let agent_dir = resolve_agent_workspace_root(&private_workspace, agent_id, agent);
             let prompt = match resolve_heartbeat_prompt(&agent_dir, orchestrator_id, agent_id) {
-                Ok(prompt) => prompt,
+                Ok(Some(prompt)) => prompt,
+                Ok(None) => {
+                    append_runtime_log(
+                        &paths,
+                        "info",
+                        "heartbeat.prompt.missing",
+                        &format!(
+                            "orchestrator={orchestrator_id} agent={agent_id} path={}",
+                            agent_dir.join("heartbeat.md").display()
+                        ),
+                    );
+                    continue;
+                }
                 Err(err) => {
                     failures.push(err);
                     continue;

@@ -100,19 +100,24 @@ fn sample_outgoing(
     }
 }
 
+fn write_heartbeat_prompt(root: &Path, agent: &str, body: &str) {
+    let agent_dir = root.join(format!("agents/{agent}"));
+    fs::create_dir_all(&agent_dir).expect("agent dir");
+    fs::write(agent_dir.join("heartbeat.md"), body).expect("heartbeat prompt");
+}
+
 #[test]
-fn runtime_heartbeat_worker_module_resolves_prompt_from_file_or_fallback() {
+fn runtime_heartbeat_worker_module_resolves_prompt_from_file_or_none_when_missing() {
     let temp = tempdir().expect("tempdir");
     let agent_dir = temp.path().join("agents/worker");
     fs::create_dir_all(&agent_dir).expect("agent dir");
 
-    let fallback = resolve_heartbeat_prompt(&agent_dir, "orch-a", "worker").expect("fallback");
-    assert!(fallback.contains("orch-a"));
-    assert!(fallback.contains("worker"));
+    let missing = resolve_heartbeat_prompt(&agent_dir, "orch-a", "worker").expect("missing");
+    assert_eq!(missing, None);
 
     fs::write(agent_dir.join("heartbeat.md"), "Custom heartbeat prompt").expect("prompt");
     let custom = resolve_heartbeat_prompt(&agent_dir, "orch-a", "worker").expect("custom");
-    assert_eq!(custom, "Custom heartbeat prompt");
+    assert_eq!(custom, Some("Custom heartbeat prompt".to_string()));
 }
 
 #[test]
@@ -229,15 +234,9 @@ fn runtime_heartbeat_worker_module_tick_enqueues_all_agents_across_orchestrators
 
     let orch_a = temp.path().join("orch-a");
     let orch_b = temp.path().join("orch-b");
-    fs::create_dir_all(orch_a.join("agents/worker-a")).expect("agent dir");
-    fs::create_dir_all(orch_b.join("agents/worker-b")).expect("agent dir");
+    write_heartbeat_prompt(&orch_a, "worker-a", "heartbeat from worker-a");
+    write_heartbeat_prompt(&orch_b, "worker-b", "heartbeat from file");
     fs::create_dir_all(orch_b.join("agents/worker-c")).expect("agent dir");
-
-    fs::write(
-        orch_b.join("agents/worker-b/heartbeat.md"),
-        "heartbeat from file",
-    )
-    .expect("heartbeat prompt");
 
     write_orchestrator_config(&orch_a.join("orchestrator.yaml"), "orch_a", &["worker-a"]);
     write_orchestrator_config(
@@ -262,11 +261,8 @@ fn runtime_heartbeat_worker_module_tick_enqueues_all_agents_across_orchestrators
         .filter_map(|entry| entry.ok())
         .count();
 
-    assert_eq!(entries_a, 2, "router + worker-a should each get heartbeat");
-    assert_eq!(
-        entries_b, 3,
-        "router + worker-b + worker-c should each get heartbeat"
-    );
+    assert_eq!(entries_a, 1, "only worker-a has heartbeat prompt");
+    assert_eq!(entries_b, 1, "only worker-b has heartbeat prompt");
 
     let worker_b_payload = fs::read_dir(&queue_b.incoming)
         .expect("incoming b")
@@ -288,14 +284,16 @@ fn runtime_heartbeat_worker_module_tick_enqueues_all_agents_across_orchestrators
             let raw = fs::read_to_string(path).ok()?;
             let payload: IncomingMessage = serde_json::from_str(&raw).ok()?;
             (payload.sender_id == "heartbeat-worker-c").then_some(payload)
-        })
-        .expect("worker-c payload");
+        });
     assert!(
-        worker_c_payload
-            .message
-            .contains("Fallback heartbeat prompt"),
-        "missing heartbeat.md should use deterministic fallback"
+        worker_c_payload.is_none(),
+        "missing heartbeat.md should skip enqueue"
     );
+
+    let runtime_log = fs::read_to_string(state_root.join("logs/runtime.log")).expect("log");
+    assert!(runtime_log.contains("heartbeat.prompt.missing"));
+    assert!(runtime_log.contains("orchestrator=orch_b"));
+    assert!(runtime_log.contains("agent=worker-c"));
 }
 
 #[test]
@@ -354,7 +352,7 @@ fn runtime_heartbeat_worker_module_logs_matched_response_metadata() {
     let state_root = temp.path().join(".direclaw");
 
     let orch = temp.path().join("orch");
-    fs::create_dir_all(orch.join("agents/worker")).expect("agent dir");
+    write_heartbeat_prompt(&orch, "worker", "heartbeat from worker");
     write_orchestrator_config(&orch.join("orchestrator.yaml"), "orch", &["worker"]);
     let settings = write_settings(&[("orch", &orch)]);
 
@@ -389,7 +387,8 @@ fn runtime_heartbeat_worker_module_routes_heartbeat_messages_through_queue_lifec
     let state_root = temp.path().join(".direclaw");
 
     let orch = temp.path().join("orch");
-    fs::create_dir_all(orch.join("agents/worker")).expect("agent dir");
+    write_heartbeat_prompt(&orch, "router", "router heartbeat");
+    write_heartbeat_prompt(&orch, "worker", "worker heartbeat");
     write_orchestrator_config(&orch.join("orchestrator.yaml"), "orch", &["worker"]);
     let settings = write_settings(&[("orch", &orch)]);
 
@@ -417,7 +416,7 @@ fn runtime_heartbeat_worker_module_does_not_match_responses_across_ticks_without
     let state_root = temp.path().join(".direclaw");
 
     let orch = temp.path().join("orch");
-    fs::create_dir_all(orch.join("agents/worker")).expect("agent dir");
+    write_heartbeat_prompt(&orch, "worker", "worker heartbeat");
     write_orchestrator_config(&orch.join("orchestrator.yaml"), "orch", &["worker"]);
     let settings = write_settings(&[("orch", &orch)]);
 

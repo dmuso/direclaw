@@ -14,7 +14,7 @@ Defines periodic agent heartbeat message generation and response logging.
 For each configured agent:
 
 1. Load `<agent_dir>/heartbeat.md`.
-2. If missing, use default short fallback prompt.
+2. If missing, skip enqueue for that agent and log `heartbeat.prompt.missing`.
 3. Enqueue heartbeat message targeting that specific agent.
 4. Heartbeat payload ids/correlation metadata must be deterministic per orchestrator-agent tick (`messageId`, `conversationId`, `workflowRunId`).
 
@@ -32,6 +32,6 @@ Post-enqueue behavior:
 
 ## Acceptance Criteria
 
-- Heartbeat messages are generated for every configured agent on schedule.
-- Missing `heartbeat.md` does not block heartbeat execution.
+- Heartbeat messages are generated on schedule for agents that define `<agent_dir>/heartbeat.md`.
+- Missing `heartbeat.md` does not block heartbeat execution and emits `heartbeat.prompt.missing`.
 - Matching outbound responses are observable in logs.
