@@ -418,6 +418,20 @@ fn read_runtime_log(home: &Path) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
+fn wait_for_runtime_log_contains(home: &Path, timeout: Duration, needle: &str) {
+    let start = Instant::now();
+    loop {
+        if read_runtime_log(home).contains(needle) {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for runtime log to contain: {needle}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn start_stop_idempotency_and_duplicate_start_protection() {
     let temp = tempdir().expect("tempdir");
@@ -637,8 +651,11 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
         thread::sleep(Duration::from_millis(20));
     }
 
-    let runtime_log = read_runtime_log(home);
-    assert!(runtime_log.contains("\"event\":\"queue.recovered\""));
+    wait_for_runtime_log_contains(
+        home,
+        Duration::from_secs(4),
+        "\"event\":\"queue.recovered\"",
+    );
     stop_if_running(home);
 }
 

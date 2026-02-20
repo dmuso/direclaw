@@ -25,15 +25,13 @@ pub fn consume_reset_flag(agent_flag: &Path) -> Result<ResetResolution, Provider
 
 pub fn write_file_backed_prompt(
     workspace: &Path,
-    request_id: &str,
+    _request_id: &str,
     prompt: &str,
     context: &str,
 ) -> Result<PromptArtifacts, ProviderError> {
-    let prompt_dir = workspace.join("provider_prompts");
-    fs::create_dir_all(&prompt_dir).map_err(|err| io_error(&prompt_dir, err))?;
-
-    let prompt_file = prompt_dir.join(format!("{}_prompt.md", request_id));
-    let context_file = prompt_dir.join(format!("{}_context.md", request_id));
+    fs::create_dir_all(workspace).map_err(|err| io_error(workspace, err))?;
+    let prompt_file = workspace.join("prompt.md");
+    let context_file = workspace.join("context.md");
 
     fs::write(&prompt_file, prompt).map_err(|err| io_error(&prompt_file, err))?;
     fs::write(&context_file, context).map_err(|err| io_error(&context_file, err))?;

@@ -339,12 +339,12 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
         .is_file());
     assert!(state_root
         .join(format!(
-            "workflows/runs/{run_id}/steps/plan/attempts/1/provider_prompts/{run_id}-plan-1_prompt.md"
+            "workflows/runs/{run_id}/steps/plan/attempts/1/prompt.md"
         ))
         .is_file());
     assert!(state_root
         .join(format!(
-            "workflows/runs/{run_id}/steps/plan/attempts/1/provider_prompts/{run_id}-plan-1_context.md"
+            "workflows/runs/{run_id}/steps/plan/attempts/1/context.md"
         ))
         .is_file());
     assert!(state_root

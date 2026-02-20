@@ -165,3 +165,4 @@ New/updated assertions:
 This is a running log of refactor changes made to iteratively reach the desired structures. Record the date and description of work
 
 2026-02-20 12:34 - Initial document creation
+2026-02-20 12:43 - Flattened prompt artifact file layout by updating `write_file_backed_prompt` to write `prompt.md` and `context.md` directly in attempt roots, updated workflow/e2e tests to assert new prompt paths, and stabilized `runtime_supervisor` recovery log assertion with a bounded wait helper so full-suite runs are deterministic.

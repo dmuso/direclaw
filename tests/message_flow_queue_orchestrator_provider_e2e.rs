@@ -553,14 +553,7 @@ fi
     assert_eq!(processed_second, 1);
 
     let second_run_dir = latest_run_dir(&support_queue);
-    let run_id = second_run_dir
-        .file_name()
-        .and_then(|value| value.to_str())
-        .expect("run id")
-        .to_string();
-    let prompt_path = second_run_dir.join(format!(
-        "steps/start/attempts/1/provider_prompts/{run_id}-start-1_prompt.md"
-    ));
+    let prompt_path = second_run_dir.join("steps/start/attempts/1/prompt.md");
     let prompt_text = fs::read_to_string(prompt_path).expect("read step prompt");
     assert!(
         prompt_text.contains("projectcycloneanchor"),

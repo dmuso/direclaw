@@ -15,6 +15,8 @@ fn prompt_files_module_supports_prompt_io_and_reset_consumption() {
 
     assert_eq!(prompt, "prompt body");
     assert_eq!(artifacts.context_files.len(), 1);
+    assert_eq!(artifacts.prompt_file, dir.path().join("prompt.md"));
+    assert_eq!(artifacts.context_files[0], dir.path().join("context.md"));
 
     let reset_flag = dir.path().join("agents/a1/reset.flag");
     fs::create_dir_all(reset_flag.parent().expect("parent")).expect("create parent");
