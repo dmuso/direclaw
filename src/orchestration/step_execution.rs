@@ -290,16 +290,47 @@ fn json_error(path: &Path, source: serde_json::Error) -> OrchestratorError {
 }
 
 fn provider_instruction_message(artifacts: &PromptArtifacts) -> String {
-    let context_paths = artifacts
-        .context_files
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let prompt_parent = artifacts.prompt_file.parent();
+    let shared_parent = prompt_parent.is_some()
+        && artifacts
+            .context_files
+            .iter()
+            .all(|path| path.parent() == prompt_parent);
+
+    if shared_parent {
+        let mut file_names = Vec::with_capacity(artifacts.context_files.len() + 1);
+        file_names.push(
+            artifacts
+                .prompt_file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("prompt.md")
+                .to_string(),
+        );
+        file_names.extend(artifacts.context_files.iter().map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("context.md")
+                .to_string()
+        }));
+        return format!(
+            "Read file(s) {} from {}. Execute exactly as instructed in those files.",
+            file_names.join(", "),
+            prompt_parent.unwrap_or_else(|| Path::new(".")).display()
+        );
+    }
+
+    let mut paths = Vec::with_capacity(artifacts.context_files.len() + 1);
+    paths.push(artifacts.prompt_file.display().to_string());
+    paths.extend(
+        artifacts
+            .context_files
+            .iter()
+            .map(|path| path.display().to_string()),
+    );
     format!(
-        "Read prompt file at {} and context file(s) at {}. Execute exactly as instructed in those files.",
-        artifacts.prompt_file.display(),
-        context_paths
+        "Read file(s) {}. Execute exactly as instructed in those files.",
+        paths.join(", ")
     )
 }
 
@@ -357,4 +388,42 @@ fn load_latest_step_outputs(
         }
     }
     Ok(outputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_instruction_message;
+    use crate::provider::PromptArtifacts;
+    use std::path::PathBuf;
+
+    #[test]
+    fn provider_instruction_message_uses_shared_parent_once() {
+        let artifacts = PromptArtifacts {
+            prompt_file: PathBuf::from(
+                "/tmp/.direclaw/workflows/runs/run-abc/steps/plan/attempts/1/prompt.md",
+            ),
+            context_files: vec![PathBuf::from(
+                "/tmp/.direclaw/workflows/runs/run-abc/steps/plan/attempts/1/context.md",
+            )],
+        };
+
+        let message = provider_instruction_message(&artifacts);
+
+        assert!(message.contains("Read file(s) prompt.md, context.md from"));
+        assert!(message.contains("/tmp/.direclaw/workflows/runs/run-abc/steps/plan/attempts/1"));
+        assert!(!message.contains("prompt file at"));
+    }
+
+    #[test]
+    fn provider_instruction_message_falls_back_to_explicit_paths_when_roots_differ() {
+        let artifacts = PromptArtifacts {
+            prompt_file: PathBuf::from("/tmp/a/prompt.md"),
+            context_files: vec![PathBuf::from("/tmp/b/context.md")],
+        };
+
+        let message = provider_instruction_message(&artifacts);
+
+        assert!(message.contains("/tmp/a/prompt.md, /tmp/b/context.md"));
+        assert!(!message.contains("from /tmp/a"));
+    }
 }
