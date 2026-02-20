@@ -5,7 +5,7 @@
 1. Download the matching archive for your platform from this release.
 2. Extract the archive: `tar -xzf direclaw-{{TAG}}-<target>.tar.gz`.
 3. Move `direclaw` onto your `PATH` (for example `/usr/local/bin/direclaw`).
-4. Verify install: `direclaw --help`.
+4. Verify install: `direclaw`.
 
 ## SHA256 Verification
 

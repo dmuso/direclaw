@@ -51,7 +51,7 @@ Primary reference:
 - Acceptance Criteria:
   - End users can install from release page without source build.
 - Automated Test Requirements:
-  - Smoke test installs from generated artifacts and runs core commands (`setup`, `status`, `--help`).
+  - Smoke test installs from generated artifacts and runs core commands (`setup`, `status`).
 
 ### P05-T04 Define update command behavior aligned with release system
 

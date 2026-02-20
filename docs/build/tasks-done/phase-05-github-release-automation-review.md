@@ -4,8 +4,8 @@
 
 1. **High** - Artifact smoke test does not validate install-from-archive behavior required by Phase 05.
 - Spec alignment: `docs/build/tasks/phase-05-github-release-automation.md` (P05-T03 Automated Test Requirements) requires smoke testing install from generated artifacts; `docs/build/release-readiness-plan.md:121` and `docs/build/release-readiness-plan.md:147` require release artifact validation via smoke execution.
-- Current implementation: `.github/workflows/release.yml` runs `--help`, `setup`, and `status` against `target/<triple>/release/direclaw` before packaging, but does not extract and execute from `dist/direclaw-<tag>-<target>.tar.gz`.
-- Action required: add an archive-install smoke step that untars the generated artifact and runs `direclaw --help`, `direclaw setup`, and `direclaw status` from the extracted binary.
+- Current implementation: `.github/workflows/release.yml` runs `setup`, and `status` against `target/<triple>/release/direclaw` before packaging, but does not extract and execute from `dist/direclaw-<tag>-<target>.tar.gz`.
+- Action required: add an archive-install smoke step that untars the generated artifact and runs `direclaw`, `direclaw setup`, and `direclaw status` from the extracted binary.
 
 2. **Medium** - Checksum generation exists, but checksum verification is not executed in workflow validation.
 - Spec alignment: `docs/build/release-readiness-plan.md:147` calls out checksum verification as part of release artifact checks.

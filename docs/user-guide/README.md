@@ -48,7 +48,7 @@ sudo mv direclaw /usr/local/bin/direclaw
 5. Confirm install:
 
 ```bash
-direclaw --help
+direclaw
 ```
 
 ### 2. Bootstrap runtime state

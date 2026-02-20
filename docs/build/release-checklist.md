@@ -34,7 +34,7 @@ Complete every item before tagging `v1.0.0`.
 
 - [ ] Build matrix artifacts generated for all release targets.
 - [ ] `checksums.txt` generated and verified.
-- [ ] Archive smoke test (`--help`, `setup`, `status`) passes per target.
+- [ ] Archive smoke test (`direclaw`, `setup`, `status`) passes per target.
 
 ## RB-6 User and Operator Docs from Clean Install
 
