@@ -681,8 +681,8 @@ workflows:
     assert!(
         outgoing_messages
             .iter()
-            .any(|message| message.message.contains("Running step")),
-        "expected lifecycle start update in outbound messages"
+            .all(|message| !message.message.contains("Running step")),
+        "did not expect running-step lifecycle updates in outbound messages"
     );
     assert!(
         outgoing_messages

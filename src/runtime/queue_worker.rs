@@ -634,13 +634,6 @@ fn workflow_lifecycle_messages(
     }
 
     for attempt in &attempts {
-        messages.push((
-            format!(
-                "Running step `{}` (attempt {})...",
-                attempt.step_id, attempt.attempt
-            ),
-            "orchestrator".to_string(),
-        ));
         match attempt.state.as_str() {
             "failed_retryable" => messages.push((
                 format!(
@@ -850,7 +843,7 @@ fn extract_output_label_value(text: &str, label: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::final_user_message;
+    use super::{final_user_message, workflow_lifecycle_messages};
     use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunStore};
     use serde_json::{Map, Value};
     use tempfile::tempdir;
@@ -955,5 +948,23 @@ mod tests {
 
         let message = final_user_message(&store, "run-1", Some(&attempt));
         assert_eq!(message, "artifact output");
+    }
+
+    #[test]
+    fn lifecycle_messages_do_not_emit_running_step_updates() {
+        let dir = tempdir().expect("tempdir");
+        let store = WorkflowRunStore::new(dir.path());
+        store.create_run("run-1", "plan", 1).expect("create run");
+
+        let attempt =
+            succeeded_attempt_with_outputs("summary output", "artifact output", &["summary"]);
+        store
+            .persist_step_attempt(&attempt)
+            .expect("persist step attempt");
+
+        let messages = workflow_lifecycle_messages(&store, "run-1");
+        assert!(messages
+            .iter()
+            .all(|(message, _sender)| !message.contains("Running step")));
     }
 }
