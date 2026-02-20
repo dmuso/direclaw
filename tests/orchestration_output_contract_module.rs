@@ -91,3 +91,34 @@ fn output_contract_module_accepts_prefixed_review_decision_values() {
     .expect("parse envelope");
     assert!(parse_review_decision(&parsed).expect("review decision"));
 }
+
+#[test]
+fn output_contract_module_rejects_reserved_attempt_root_output_targets() {
+    let reserved_templates = ["prompt.md", "context.md", "provider_invocation.json"];
+
+    for template in reserved_templates {
+        let step = WorkflowStepConfig {
+            id: "plan".to_string(),
+            step_type: WorkflowStepType::AgentTask,
+            agent: "worker".to_string(),
+            prompt: "write".to_string(),
+            prompt_type: WorkflowStepPromptType::FileOutput,
+            workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
+            next: None,
+            on_approve: None,
+            on_reject: None,
+            outputs: vec![OutputKey::parse("artifact").expect("artifact key")],
+            output_files: BTreeMap::from_iter([(
+                OutputKey::parse_output_file_key("artifact").expect("artifact output key"),
+                PathTemplate::parse(template).expect("template"),
+            )]),
+            final_output_priority: vec![OutputKey::parse("artifact").expect("artifact key")],
+            limits: None,
+        };
+
+        let err =
+            resolve_step_output_paths(std::path::Path::new("/tmp/.direclaw"), "run-1", &step, 1)
+                .expect_err("reserved attempt-root target should be blocked");
+        assert!(err.to_string().contains("reserved"));
+    }
+}

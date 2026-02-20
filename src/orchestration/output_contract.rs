@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+const RESERVED_ATTEMPT_ROOT_OUTPUT_TARGETS: [&str; 3] =
+    ["prompt.md", "context.md", "provider_invocation.json"];
+
 fn io_error(path: &Path, source: std::io::Error) -> OrchestratorError {
     OrchestratorError::Io {
         path: path.display().to_string(),
@@ -364,6 +367,16 @@ pub fn resolve_step_output_paths(
             interpolate_output_template(template.as_str(), run_id, &step.id, attempt);
         let relative =
             validate_relative_output_template(&interpolated, &step.id, template.as_str())?;
+        if is_reserved_attempt_root_output_target(relative) {
+            return Err(OrchestratorError::OutputPathValidation {
+                step_id: step.id.clone(),
+                template: template.to_string(),
+                reason: format!(
+                    "output template targets reserved attempt artifact `{}`",
+                    relative.display()
+                ),
+            });
+        }
         let resolved = normalize_absolute_path(&output_root.join(relative))?;
         if !resolved.starts_with(&output_root) {
             return Err(OrchestratorError::OutputPathValidation {
@@ -426,4 +439,14 @@ fn validate_relative_output_template<'a>(
     }
 
     Ok(relative)
+}
+
+fn is_reserved_attempt_root_output_target(relative: &Path) -> bool {
+    if relative.components().count() != 1 {
+        return false;
+    }
+    let Some(file_name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    RESERVED_ATTEMPT_ROOT_OUTPUT_TARGETS.contains(&file_name)
 }
