@@ -26,9 +26,11 @@ direclaw setup >/dev/null
 if ! direclaw orchestrator list | grep -qx "main"; then
   direclaw orchestrator add main >/dev/null
 fi
-direclaw channel-profile add slack_main slack main \
-  --slack-app-user-id U0123456789 \
-  --require-mention-in-channels true >/dev/null
+if ! direclaw channel-profile list | grep -qx "slack_main"; then
+  direclaw channel-profile add slack_main slack main \
+    --slack-app-user-id U0123456789 \
+    --require-mention-in-channels true >/dev/null
+fi
 
 direclaw start >/dev/null
 direclaw status >/dev/null
@@ -40,8 +42,14 @@ if [[ -z "$MESSAGE_ID" ]]; then
   echo "expected message_id in send output" >&2
   exit 1
 fi
-if ! find "$HOME/.direclaw/queue" -maxdepth 2 -type f -name "${MESSAGE_ID}.json" | grep -q .; then
-  echo "expected queued file for message_id=$MESSAGE_ID in queue directories" >&2
+PRIVATE_WORKSPACE="$(direclaw orchestrator show main | awk -F= '/^private_workspace=/{print $2}')"
+if [[ -z "$PRIVATE_WORKSPACE" ]]; then
+  echo "failed to resolve private_workspace for orchestrator main" >&2
+  exit 1
+fi
+QUEUE_ROOT="$PRIVATE_WORKSPACE/queue"
+if ! find "$QUEUE_ROOT" -maxdepth 2 -type f -name "${MESSAGE_ID}.json" | grep -q .; then
+  echo "expected queued file for message_id=$MESSAGE_ID in $QUEUE_ROOT" >&2
   exit 1
 fi
 
