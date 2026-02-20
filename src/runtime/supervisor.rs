@@ -116,7 +116,7 @@ pub fn run_supervisor(
             );
         }
 
-        match events_rx.recv_timeout(Duration::from_millis(200)) {
+        match events_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(event) => handle_worker_event(&paths, &mut state, &mut active, event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -126,7 +126,7 @@ pub fn run_supervisor(
     let shutdown_timeout = shutdown_wait_timeout();
     let deadline = std::time::Instant::now() + shutdown_timeout;
     while !active.is_empty() && std::time::Instant::now() < deadline {
-        match events_rx.recv_timeout(Duration::from_millis(100)) {
+        match events_rx.recv_timeout(Duration::from_millis(25)) {
             Ok(event) => handle_worker_event(&paths, &mut state, &mut active, event),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -169,6 +169,13 @@ pub fn run_supervisor(
 }
 
 fn shutdown_wait_timeout() -> Duration {
+    if let Some(milliseconds) = std::env::var("DIRECLAW_SHUTDOWN_TIMEOUT_MILLISECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        return Duration::from_millis(milliseconds);
+    }
     let seconds = std::env::var("DIRECLAW_SHUTDOWN_TIMEOUT_SECONDS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())

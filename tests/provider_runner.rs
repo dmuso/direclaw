@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn write_script(path: &Path, body: &str) {
@@ -113,9 +113,10 @@ fn provider_non_zero_exit_is_explicit() {
 
 #[test]
 fn provider_timeout_is_explicit() {
+    let start = Instant::now();
     let dir = tempdir().expect("tempdir");
     let bin = dir.path().join("claude-timeout");
-    write_script(&bin, "#!/bin/sh\nsleep 2\necho late\n");
+    write_script(&bin, "#!/bin/sh\nwhile :; do :; done\n");
 
     let artifacts =
         write_file_backed_prompt(dir.path(), "req-d", "prompt", "ctx").expect("artifacts");
@@ -137,6 +138,10 @@ fn provider_timeout_is_explicit() {
         }
         other => panic!("unexpected error: {other:?}"),
     }
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "provider timeout test exceeded performance budget"
+    );
 }
 
 #[test]

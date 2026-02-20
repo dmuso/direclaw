@@ -59,11 +59,22 @@ pub fn tick_slack_worker(state_root: &Path, settings: &Settings) -> Result<(), S
         Err(slack::SlackError::RateLimited {
             retry_after_secs, ..
         }) => {
-            thread::sleep(Duration::from_secs(retry_after_secs));
+            thread::sleep(rate_limit_sleep_duration(retry_after_secs));
             Ok(())
         }
         Err(e) => Err(e.to_string()),
     }
+}
+
+fn rate_limit_sleep_duration(retry_after_secs: u64) -> Duration {
+    let requested = Duration::from_secs(retry_after_secs);
+    let Some(cap_ms) = std::env::var("DIRECLAW_SLACK_RATE_LIMIT_SLEEP_MAX_MILLISECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+    else {
+        return requested;
+    };
+    requested.min(Duration::from_millis(cap_ms))
 }
 
 pub(crate) fn build_worker_specs(settings: &Settings) -> Vec<WorkerSpec> {
@@ -248,7 +259,7 @@ fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
         if stop.load(Ordering::Relaxed) {
             return false;
         }
-        let step = remaining.min(Duration::from_millis(200));
+        let step = remaining.min(Duration::from_millis(25));
         thread::sleep(step);
         remaining = remaining.saturating_sub(step);
     }
@@ -256,6 +267,13 @@ fn sleep_with_stop(stop: &AtomicBool, total: Duration) -> bool {
 }
 
 fn slow_shutdown_delay() -> Duration {
+    if let Some(milliseconds) = std::env::var("DIRECLAW_SLOW_SHUTDOWN_DELAY_MILLISECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    {
+        return Duration::from_millis(milliseconds);
+    }
     let seconds = std::env::var("DIRECLAW_SLOW_SHUTDOWN_DELAY_SECONDS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())

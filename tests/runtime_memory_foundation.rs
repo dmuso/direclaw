@@ -1,7 +1,7 @@
 use direclaw::runtime::{load_supervisor_state, run_supervisor, StatePaths, WorkerState};
 use std::fs;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn settings_yaml(workspace: &std::path::Path, memory_enabled: bool) -> String {
@@ -34,58 +34,100 @@ memory:
     )
 }
 
-#[test]
-fn supervisor_registers_memory_worker_only_when_memory_enabled() {
+fn wait_for_worker_state(
+    root: &std::path::Path,
+    worker_id: &str,
+    expected: WorkerState,
+    timeout: Duration,
+) {
+    let start = Instant::now();
+    loop {
+        let state = load_supervisor_state(&StatePaths::new(root)).expect("load state");
+        if state
+            .workers
+            .get(worker_id)
+            .map(|worker| worker.state == expected)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        assert!(
+            start.elapsed() < timeout,
+            "timed out waiting for worker `{worker_id}` to reach state `{expected:?}`"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn run_memory_worker_registration_case(memory_enabled: bool) {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join("state");
     let workspace = dir.path().join("workspaces");
     fs::create_dir_all(workspace.join("alpha")).expect("workspace");
 
-    for enabled in [true, false] {
-        let settings = serde_yaml::from_str(&settings_yaml(&workspace, enabled)).expect("settings");
-        let root = state_root.join(if enabled { "enabled" } else { "disabled" });
-        fs::create_dir_all(&root).expect("state root");
-        let stop_path = StatePaths::new(&root).stop_signal_path();
+    let settings =
+        serde_yaml::from_str(&settings_yaml(&workspace, memory_enabled)).expect("settings");
+    let root = state_root.join(if memory_enabled {
+        "enabled"
+    } else {
+        "disabled"
+    });
+    fs::create_dir_all(&root).expect("state root");
+    let stop_path = StatePaths::new(&root).stop_signal_path();
 
-        let handle = thread::spawn({
-            let root = root.clone();
-            move || run_supervisor(&root, settings)
-        });
+    let handle = thread::spawn({
+        let root = root.clone();
+        move || run_supervisor(&root, settings)
+    });
 
-        thread::sleep(Duration::from_millis(350));
-        fs::write(&stop_path, "stop").expect("stop");
-        handle.join().expect("join").expect("supervisor");
+    wait_for_worker_state(
+        &root,
+        "orchestrator_dispatcher",
+        WorkerState::Running,
+        Duration::from_secs(2),
+    );
+    fs::write(&stop_path, "stop").expect("stop");
+    handle.join().expect("join").expect("supervisor");
 
-        let state = load_supervisor_state(&StatePaths::new(&root)).expect("load state");
-        let has_memory_worker = state.workers.contains_key("memory_worker");
-        assert_eq!(has_memory_worker, enabled);
+    let state = load_supervisor_state(&StatePaths::new(&root)).expect("load state");
+    let has_memory_worker = state.workers.contains_key("memory_worker");
+    assert_eq!(has_memory_worker, memory_enabled);
 
-        if enabled {
-            let runtime_root = workspace.join("alpha");
-            let memory_root = runtime_root.join("memory");
-            let ingest = memory_root.join("ingest");
-            let processed = ingest.join("processed");
-            let rejected = ingest.join("rejected");
-            let bulletins = memory_root.join("bulletins");
-            let orchestrator_log = runtime_root.join("logs/orchestrator.log");
+    if memory_enabled {
+        let runtime_root = workspace.join("alpha");
+        let memory_root = runtime_root.join("memory");
+        let ingest = memory_root.join("ingest");
+        let processed = ingest.join("processed");
+        let rejected = ingest.join("rejected");
+        let bulletins = memory_root.join("bulletins");
+        let orchestrator_log = runtime_root.join("logs/orchestrator.log");
 
-            assert!(ingest.is_dir(), "missing {}", ingest.display());
-            assert!(processed.is_dir(), "missing {}", processed.display());
-            assert!(rejected.is_dir(), "missing {}", rejected.display());
-            assert!(bulletins.is_dir(), "missing {}", bulletins.display());
-            assert!(
-                orchestrator_log.is_file(),
-                "missing {}",
-                orchestrator_log.display()
-            );
+        assert!(ingest.is_dir(), "missing {}", ingest.display());
+        assert!(processed.is_dir(), "missing {}", processed.display());
+        assert!(rejected.is_dir(), "missing {}", rejected.display());
+        assert!(bulletins.is_dir(), "missing {}", bulletins.display());
+        assert!(
+            orchestrator_log.is_file(),
+            "missing {}",
+            orchestrator_log.display()
+        );
 
-            let log_body = fs::read_to_string(&orchestrator_log).expect("read orchestrator log");
-            assert!(
-                log_body.contains("\"event\":\"memory.worker.bootstrap_complete\""),
-                "expected bootstrap line in orchestrator log"
-            );
-        }
+        let log_body = fs::read_to_string(&orchestrator_log).expect("read orchestrator log");
+        assert!(
+            log_body.contains("\"event\":\"memory.worker.bootstrap_complete\""),
+            "expected bootstrap line in orchestrator log"
+        );
     }
+}
+
+#[test]
+fn supervisor_registers_memory_worker_when_memory_enabled() {
+    run_memory_worker_registration_case(true);
+}
+
+#[test]
+fn supervisor_omits_memory_worker_when_memory_disabled() {
+    run_memory_worker_registration_case(false);
 }
 
 #[test]
@@ -105,7 +147,12 @@ fn supervisor_surfaces_memory_worker_startup_failures_in_worker_health() {
         move || run_supervisor(&state_root, settings)
     });
 
-    thread::sleep(Duration::from_millis(450));
+    wait_for_worker_state(
+        &state_root,
+        "memory_worker",
+        WorkerState::Error,
+        Duration::from_secs(2),
+    );
     fs::write(&stop_path, "stop").expect("stop");
     handle.join().expect("join").expect("supervisor");
 
@@ -143,7 +190,12 @@ fn supervisor_reports_corrupt_memory_store_as_degraded_while_runtime_continues()
         move || run_supervisor(&state_root, settings)
     });
 
-    thread::sleep(Duration::from_millis(800));
+    wait_for_worker_state(
+        &state_root,
+        "memory_worker",
+        WorkerState::Error,
+        Duration::from_secs(2),
+    );
     let running_state = load_supervisor_state(&StatePaths::new(&state_root)).expect("load state");
     let memory = running_state
         .workers

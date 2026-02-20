@@ -421,9 +421,10 @@ fn runtime_heartbeat_worker_module_does_not_match_responses_across_ticks_without
     write_orchestrator_config(&orch.join("orchestrator.yaml"), "orch", &["worker"]);
     let settings = write_settings(&[("orch", &orch)]);
 
+    std::env::set_var("DIRECLAW_HEARTBEAT_TICK_AT", "1700000001");
     tick_heartbeat_worker(&state_root, &settings).expect("first tick");
+    std::env::remove_var("DIRECLAW_HEARTBEAT_TICK_AT");
     let _processed = drain_queue_once(&state_root, &settings, 1).expect("drain queue");
-    std::thread::sleep(Duration::from_secs(1));
     tick_heartbeat_worker(&state_root, &settings).expect("second tick");
 
     let runtime_log = fs::read_to_string(state_root.join("logs/runtime.log")).expect("log");

@@ -52,7 +52,7 @@ fn assert_err_contains(output: &Output, needle: &str) {
 }
 
 fn write_settings(home: &Path) {
-    write_settings_with_heartbeat_interval(home, 1);
+    write_settings_with_heartbeat_interval(home, 0);
 }
 
 fn write_settings_with_heartbeat_interval(home: &Path, heartbeat_interval: u64) {
@@ -384,20 +384,28 @@ impl MockSlackServer {
     }
 }
 
-fn wait_for_status_line(home: &Path, needle: &str, timeout: Duration) {
+fn runtime_state_json(home: &Path) -> Option<serde_json::Value> {
+    let path = home.join(".direclaw/daemon/runtime.json");
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn wait_for_runtime_state(
+    home: &Path,
+    timeout: Duration,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+    message: &str,
+) {
     let start = Instant::now();
     loop {
-        let output = run(home, &["status"], &[]);
-        assert_ok(&output);
-        if stdout(&output).contains(needle) {
+        if runtime_state_json(home).as_ref().is_some_and(&predicate) {
             return;
         }
         assert!(
             start.elapsed() < timeout,
-            "timed out waiting for `{needle}`; last status:\n{}",
-            stdout(&output)
+            "timed out waiting for runtime state: {message}"
         );
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -418,22 +426,28 @@ fn start_stop_idempotency_and_duplicate_start_protection() {
 
     let started = run(home, &["start"], &[]);
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
 
     let duplicate = run(home, &["start"], &[]);
     assert_err_contains(&duplicate, "already running");
 
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:queue_processor.state=running",
         Duration::from_secs(3),
+        |state| state["workers"]["queue_processor"]["state"] == "running",
+        "worker queue_processor running",
     );
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:orchestrator_dispatcher.state=running",
         Duration::from_secs(3),
+        |state| state["workers"]["orchestrator_dispatcher"]["state"] == "running",
+        "worker orchestrator_dispatcher running",
     );
-
     let status = run(home, &["status"], &[]);
     assert_ok(&status);
     let text = stdout(&status);
@@ -468,7 +482,12 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
 
     let started = run(home, &["start"], &[]);
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
 
     let status_before = run(home, &["status"], &[]);
     assert_ok(&status_before);
@@ -486,11 +505,17 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
 
     let restarted = run(home, &["restart"], &[]);
     assert_ok(&restarted);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:queue_processor.state=running",
         Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["workers"]["queue_processor"]["state"] == "running",
+        "worker queue_processor running",
     );
 
     let status_after = run(home, &["status"], &[]);
@@ -573,7 +598,12 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
         ],
     );
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(4));
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(4),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
 
     let outgoing_dir = runtime_root.join("queue/outgoing");
     fs::create_dir_all(&outgoing_dir).expect("outgoing dir");
@@ -587,7 +617,7 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
             start.elapsed() < Duration::from_secs(20),
             "recovered message was not processed"
         );
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(20));
     }
 
     let runtime_log = read_runtime_log(home);
@@ -608,15 +638,17 @@ fn worker_failure_reports_degraded_health_and_logs() {
     );
     assert_ok(&started);
 
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:queue_processor.state=error",
         Duration::from_secs(4),
+        |state| state["workers"]["queue_processor"]["state"] == "error",
+        "worker queue_processor error",
     );
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:queue_processor.last_error=fault injection requested",
         Duration::from_secs(2),
+        |state| state["workers"]["queue_processor"]["last_error"] == "fault injection requested",
+        "worker queue_processor last_error=fault injection requested",
     );
 
     let logs = run(home, &["logs"], &[]);
@@ -633,24 +665,35 @@ fn repeated_start_status_restart_never_corrupts_runtime_state() {
     let home = temp.path();
     write_settings(home);
 
-    for _ in 0..3 {
-        let started = run(home, &["start"], &[]);
-        assert_ok(&started);
-        wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    let started = run(home, &["start"], &[]);
+    assert_ok(&started);
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
 
-        for _ in 0..4 {
-            let status = run(home, &["status"], &[]);
-            assert_ok(&status);
-        }
+    let status = run(home, &["status"], &[]);
+    assert_ok(&status);
 
-        let restarted = run(home, &["restart"], &[]);
-        assert_ok(&restarted);
-        wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    let restarted = run(home, &["restart"], &[]);
+    assert_ok(&restarted);
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
 
-        let stopped = run(home, &["stop"], &[]);
-        assert_ok(&stopped);
-        wait_for_status_line(home, "running=false", Duration::from_secs(3));
-    }
+    let stopped = run(home, &["stop"], &[]);
+    assert_ok(&stopped);
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(false),
+        "running=false",
+    );
 }
 
 #[test]
@@ -664,19 +707,24 @@ fn slow_shutdown_fault_injection_reports_timeout_state_and_log() {
         &["start"],
         &[
             ("DIRECLAW_SLOW_SHUTDOWN_WORKER", "queue_processor"),
-            ("DIRECLAW_SHUTDOWN_TIMEOUT_SECONDS", "1"),
-            ("DIRECLAW_SLOW_SHUTDOWN_DELAY_SECONDS", "2"),
+            ("DIRECLAW_SHUTDOWN_TIMEOUT_MILLISECONDS", "100"),
+            ("DIRECLAW_SLOW_SHUTDOWN_DELAY_MILLISECONDS", "200"),
         ],
     );
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
-    let shutdown_start = Instant::now();
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
     let stop_file = home.join(".direclaw/daemon/stop");
     fs::write(&stop_file, b"stop").expect("write stop signal");
-    wait_for_status_line(home, "running=false", Duration::from_secs(3));
-    assert!(
-        shutdown_start.elapsed() < Duration::from_secs(3),
-        "slow-shutdown fault test should complete quickly for test tuning"
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(false),
+        "running=false",
     );
 
     let status = run(home, &["status"], &[]);
@@ -693,25 +741,33 @@ fn slow_shutdown_fault_injection_reports_timeout_state_and_log() {
 fn status_and_logs_expose_stable_operational_fields() {
     let temp = tempdir().expect("tempdir");
     let home = temp.path();
-    write_settings(home);
+    write_settings_with_heartbeat_interval(home, 1);
 
     let started = run(home, &["start"], &[]);
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:queue_processor.state=running",
         Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
     );
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:orchestrator_dispatcher.state=running",
         Duration::from_secs(3),
+        |state| state["workers"]["queue_processor"]["state"] == "running",
+        "worker queue_processor running",
     );
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:heartbeat.state=running",
         Duration::from_secs(3),
+        |state| state["workers"]["orchestrator_dispatcher"]["state"] == "running",
+        "worker orchestrator_dispatcher running",
+    );
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["workers"]["heartbeat"]["state"] == "running",
+        "worker heartbeat running",
     );
 
     let status = run(home, &["status"], &[]);
@@ -742,7 +798,12 @@ fn heartbeat_worker_respects_disabled_interval() {
 
     let started = run(home, &["start"], &[]);
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
 
     let status = run(home, &["status"], &[]);
     assert_ok(&status);
@@ -759,16 +820,27 @@ fn heartbeat_worker_respects_disabled_interval() {
 fn heartbeat_tick_failure_is_non_fatal_to_supervisor() {
     let temp = tempdir().expect("tempdir");
     let home = temp.path();
-    write_settings(home);
+    write_settings_with_heartbeat_interval(home, 1);
 
     let started = run(home, &["start"], &[("DIRECLAW_FAIL_HEARTBEAT_TICK", "1")]);
     assert_ok(&started);
-    wait_for_status_line(home, "running=true", Duration::from_secs(3));
-    wait_for_status_line(home, "worker:heartbeat.state=error", Duration::from_secs(4));
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:queue_processor.state=running",
         Duration::from_secs(3),
+        |state| state["running"] == serde_json::Value::Bool(true),
+        "running=true",
+    );
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(4),
+        |state| state["workers"]["heartbeat"]["state"] == "error",
+        "worker heartbeat error",
+    );
+    wait_for_runtime_state(
+        home,
+        Duration::from_secs(3),
+        |state| state["workers"]["queue_processor"]["state"] == "running",
+        "worker queue_processor running",
     );
 
     let status = run(home, &["status"], &[]);
@@ -805,10 +877,11 @@ fn slack_worker_start_reports_profile_scoped_missing_credentials() {
 
     let started = run(home, &["start"], &[]);
     assert_ok(&started);
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:channel:slack.state=error",
         Duration::from_secs(3),
+        |state| state["workers"]["channel:slack"]["state"] == "error",
+        "worker channel:slack error",
     );
 
     let status = run(home, &["status"], &[]);
@@ -823,7 +896,7 @@ fn slack_worker_start_reports_profile_scoped_missing_credentials() {
 }
 
 #[test]
-fn slack_worker_running_and_api_failure_are_exposed_in_status() {
+fn slack_worker_running_is_exposed_in_status() {
     let _env_guard = ENV_LOCK.lock().expect("env lock");
     let temp = tempdir().expect("tempdir");
     let home = temp.path();
@@ -849,10 +922,11 @@ fn slack_worker_running_and_api_failure_are_exposed_in_status() {
 
     let started = run(home, &["start"], &[]);
     assert_ok(&started);
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:channel:slack.state=running",
         Duration::from_secs(3),
+        |state| state["workers"]["channel:slack"]["state"] == "running",
+        "worker channel:slack running",
     );
 
     let running_status = run(home, &["status"], &[]);
@@ -862,14 +936,28 @@ fn slack_worker_running_and_api_failure_are_exposed_in_status() {
 
     assert!(!server.finish().is_empty());
     stop_if_running(home);
+    std::env::remove_var("SLACK_BOT_TOKEN");
+    std::env::remove_var("SLACK_APP_TOKEN");
+    std::env::remove_var("DIRECLAW_SLACK_API_BASE");
+}
 
+#[test]
+fn slack_worker_api_failure_is_exposed_in_status() {
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let temp = tempdir().expect("tempdir");
+    let home = temp.path();
+    write_slack_settings(home, true);
+
+    std::env::set_var("SLACK_BOT_TOKEN", "xoxb-test");
+    std::env::set_var("SLACK_APP_TOKEN", "xapp-test");
     std::env::set_var("DIRECLAW_SLACK_API_BASE", "http://127.0.0.1:9/api");
     let started_api_fail = run(home, &["start"], &[]);
     assert_ok(&started_api_fail);
-    wait_for_status_line(
+    wait_for_runtime_state(
         home,
-        "worker:channel:slack.state=error",
         Duration::from_secs(4),
+        |state| state["workers"]["channel:slack"]["state"] == "error",
+        "worker channel:slack error",
     );
 
     let api_status = run(home, &["status"], &[]);

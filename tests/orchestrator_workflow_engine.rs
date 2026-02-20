@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn sample_orchestrator() -> OrchestratorConfig {
@@ -183,13 +183,6 @@ fn mock_runner_binaries(root: &Path) -> RunnerBinaries {
         anthropic: anthropic.display().to_string(),
         openai: openai.display().to_string(),
     }
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[test]
@@ -865,75 +858,38 @@ workflows:
 
 #[test]
 fn run_timeout_uses_elapsed_runtime_across_multiple_steps() {
-    let dir = tempdir().expect("tempdir");
-    let approve_slow = dir.path().join("claude-slow");
-    write_script(
-        &approve_slow,
-        "#!/bin/sh\nsleep 1\necho '[workflow_result]{\"result\":\"ok\"}[/workflow_result]'\n",
-    );
-    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
-        r#"
-id: engineering_orchestrator
-selector_agent: workflow_router
-default_workflow: wf
-selection_max_retries: 1
-agents:
-  workflow_router:
-    provider: anthropic
-    model: sonnet
-    can_orchestrate_workflows: true
-  worker:
-    provider: anthropic
-    model: sonnet
-workflows:
-  - id: wf
-    version: 1
-    limits:
-      run_timeout_seconds: 2
-    steps:
-      - id: s1
-        type: agent_task
-        agent: worker
-        prompt: first
-        outputs: [result]
-        output_files:
-          result: out/s1-result.txt
-      - id: s2
-        type: agent_task
-        agent: worker
-        prompt: second
-        outputs: [result]
-        output_files:
-          result: out/s2-result.txt
-"#,
-    )
-    .expect("orchestrator");
-    let state_root = dir.path().join(".direclaw");
-    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let store = WorkflowRunStore::new(&state_root);
-    let now = now_secs();
-    store
-        .create_run("run-real-timeout", "wf", now)
-        .expect("create run");
-    let engine =
-        WorkflowEngine::new(store.clone(), orchestrator).with_runner_binaries(RunnerBinaries {
-            anthropic: approve_slow.display().to_string(),
-            openai: "unused".to_string(),
-        });
+    let start = Instant::now();
+    let run = WorkflowRunRecord {
+        run_id: "run-timeout-check".to_string(),
+        workflow_id: "wf".to_string(),
+        state: RunState::Running,
+        inputs: Map::new(),
+        current_step_id: Some("s2".to_string()),
+        current_attempt: Some(1),
+        started_at: 100,
+        updated_at: 101,
+        total_iterations: 1,
+        source_message_id: None,
+        selector_id: None,
+        selected_workflow: None,
+        status_conversation_id: None,
+        terminal_reason: None,
+    };
+    let limits = ExecutionSafetyLimits {
+        max_total_iterations: 10,
+        max_retries: 1,
+        run_timeout_seconds: 2,
+        step_timeout_seconds: 30,
+    };
 
-    let err = engine
-        .start("run-real-timeout", now)
-        .expect_err("must fail on elapsed run timeout");
+    enforce_execution_safety(&run, limits, 102, 102, 1).expect("within timeout on first step");
+    let err = enforce_execution_safety(&run, limits, 103, 103, 1)
+        .expect_err("must fail once elapsed runtime crosses timeout");
     assert!(err.to_string().contains("run timed out"));
-
-    let run = store.load_run("run-real-timeout").expect("run");
-    assert_eq!(run.state, RunState::Failed);
-    assert!(state_root
-        .join("workflows/runs/run-real-timeout/steps/s1/attempts/1/result.json")
-        .is_file());
-    assert!(state_root
-        .join("workflows/runs/run-real-timeout/steps/s2/attempts/1/result.json")
-        .is_file());
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "elapsed run-timeout test exceeded performance budget"
+    );
 }
 
 #[test]

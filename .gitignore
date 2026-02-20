@@ -1,2 +1,4 @@
 .DS_Store
 target/
+docs/build/review/slow-tests/*.tsv
+docs/build/review/slow-tests/*.md

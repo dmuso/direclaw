@@ -1188,7 +1188,7 @@ fn provider_timeout_is_logged_and_falls_back_deterministically() {
         &claude,
         "#!/bin/sh\necho '{\"selectorId\":\"unused\",\"status\":\"selected\",\"action\":\"workflow_start\",\"selectedWorkflow\":\"triage\"}'\n",
     );
-    write_script(&codex_timeout, "#!/bin/sh\nsleep 2\necho too-late\n");
+    write_script(&codex_timeout, "#!/bin/sh\nwhile :; do :; done\n");
     let settings = write_settings_and_orchestrator(
         dir.path(),
         &dir.path().join("orch-timeout"),
@@ -1227,8 +1227,8 @@ workflows:
           summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
           artifact: outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt
 workflow_orchestration:
-  default_step_timeout_seconds: 1
-  max_step_timeout_seconds: 1
+  default_step_timeout_seconds: 0
+  max_step_timeout_seconds: 0
 "#,
     )
     .expect("rewrite orchestrator for step timeout");
@@ -1514,7 +1514,7 @@ fn supervisor_start_recovers_processing_entries_and_processes_message() {
             start.elapsed() < Duration::from_secs(20),
             "runtime did not process recovered queue entry"
         );
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(20));
     }
 
     signal_stop(&StatePaths::new(&state_root)).expect("signal stop");
@@ -1566,7 +1566,7 @@ if [ -z "$run_id" ]; then
   run_id="unknown"
 fi
 echo "start $run_id" >> "$PWD/trace.log"
-sleep 1
+sleep 0.08
 echo "end $run_id" >> "$PWD/trace.log"
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"status\":\"complete\",\"summary\":\"ok\",\"artifact\":\"ok\"}[/workflow_result]"}}'
 "#,

@@ -106,7 +106,7 @@ shared_workspaces:
 orchestrators: {{}}
 channel_profiles: {{}}
 monitoring:
-  heartbeat_interval: 5
+  heartbeat_interval: 0
 channels:
   slack:
     enabled: true
@@ -154,7 +154,7 @@ fn workflow_run_ids(home: &Path) -> BTreeSet<String> {
 }
 
 #[test]
-fn daemon_command_surface_works() {
+fn daemon_start_status_stop_command_surface_works() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
 
@@ -180,6 +180,25 @@ fn daemon_command_surface_works() {
     }
 
     assert_ok(&run(temp.path(), &["logs"]));
+
+    assert_ok(&run(temp.path(), &["stop"]));
+}
+
+#[test]
+fn daemon_restart_command_surface_works() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["setup"]));
+    assert_ok(&run(temp.path(), &["restart"]));
+    assert_ok(&run(temp.path(), &["stop"]));
+}
+
+#[test]
+fn daemon_auxiliary_command_surface_works() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+
+    assert_ok(&run(temp.path(), &["setup"]));
     assert_ok(&run(temp.path(), &["attach"]));
     let update = run_with_env(
         temp.path(),
@@ -199,10 +218,6 @@ fn daemon_command_surface_works() {
     assert_ok(&run(temp.path(), &["auth", "sync"]));
     let send_missing_profile = run(temp.path(), &["send", "missing-profile", "hello"]);
     assert_err_contains(&send_missing_profile, "unknown channel profile");
-
-    assert_ok(&run(temp.path(), &["stop"]));
-    assert_ok(&run(temp.path(), &["restart"]));
-    assert_ok(&run(temp.path(), &["stop"]));
 }
 
 #[test]
@@ -358,7 +373,7 @@ fn cli_output_contracts_include_structured_health_and_remediation() {
 }
 
 #[test]
-fn orchestrator_and_agent_commands_work() {
+fn orchestrator_commands_work() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
 
@@ -390,6 +405,13 @@ fn orchestrator_and_agent_commands_work() {
         temp.path(),
         &["orchestrator", "set-selection-max-retries", "alpha", "2"],
     ));
+}
+
+#[test]
+fn orchestrator_agent_commands_work() {
+    let temp = tempdir().expect("tempdir");
+    write_settings(temp.path(), true);
+    assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
 
     assert_ok(&run(
         temp.path(),
@@ -1078,7 +1100,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         max_total_iterations: Some(4),
         default_run_timeout_seconds: Some(30),
         default_step_timeout_seconds: Some(5),
-        max_step_timeout_seconds: Some(1),
+        max_step_timeout_seconds: Some(0),
     });
     orchestrator.agents.insert(
         "default".to_string(),
@@ -1145,7 +1167,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         &codex,
         r#"#!/bin/sh
 set -eu
-sleep 2
+while :; do :; done
 echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"slow-ok\",\"result\":\"slow-ok\"}[/workflow_result]"}}'
 "#,
     )
@@ -1167,7 +1189,7 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
             codex.to_str().expect("utf8"),
         )],
     );
-    assert_err_contains(&step_timeout_run, "workflow step timed out after 1s");
+    assert_err_contains(&step_timeout_run, "workflow step timed out after 0s");
 
     let after_step_timeout_ids = workflow_run_ids(temp.path());
     assert_eq!(after_step_timeout_ids.len(), before_ids.len() + 1);
@@ -1192,7 +1214,7 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
     assert!(first_run_record["terminalReason"]
         .as_str()
         .unwrap_or_default()
-        .contains("workflow step timed out after 1s"));
+        .contains("workflow step timed out after 0s"));
 }
 
 #[test]

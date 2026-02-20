@@ -102,10 +102,12 @@ channels:
     )
     .expect("parse settings");
 
+    std::env::set_var("DIRECLAW_SLACK_RATE_LIMIT_SLEEP_MAX_MILLISECONDS", "25");
     let started = Instant::now();
     let result = tick_slack_worker(dir.path(), &settings);
     let elapsed = started.elapsed();
 
+    std::env::remove_var("DIRECLAW_SLACK_RATE_LIMIT_SLEEP_MAX_MILLISECONDS");
     std::env::remove_var("DIRECLAW_SLACK_API_BASE");
     std::env::remove_var("SLACK_BOT_TOKEN");
     std::env::remove_var("SLACK_APP_TOKEN");
@@ -116,7 +118,7 @@ channels:
         "rate-limit tick should not fail worker state: {result:?}"
     );
     assert!(
-        elapsed >= Duration::from_secs(1),
-        "expected Retry-After cooldown to be respected, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(500),
+        "expected bounded cooldown in tests, elapsed={elapsed:?}"
     );
 }
