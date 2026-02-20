@@ -22,8 +22,8 @@ Entropy:
 - Equivalent entropy: `log2(36^4) ~= 20.68` bits.
 
 Example:
-- Unix timestamp `1771356898` -> base-36 `tazw56`
-- Run id: `run-tazw56-k3f2`
+- Unix timestamp `1771356898` -> base-36 `tambqa`
+- Run id: `run-tambqa-k3f2`
 
 ## Current vs Target Layout
 
@@ -47,7 +47,7 @@ Before:
 `/Users/dharper/.direclaw/workspaces/main/workflows/runs/run-sel-msg-1771356898643544000-1771356898/steps/step_1/attempts/1/provider_prompts/run-sel-msg-1771356898643544000-1771356898-step_1-1_context.md`
 
 After:
-`/Users/dharper/.direclaw/workspaces/main/workflows/runs/run-tazw56-k3f2/steps/step_1/attempts/1/context.md`
+`/Users/dharper/.direclaw/workspaces/main/workflows/runs/run-tambqa-k3f2/steps/step_1/attempts/1/context.md`
 
 ## Design Decisions
 
@@ -106,8 +106,12 @@ Selector prompt/context artifact paths become flatter via the same helper.
 No schema changes needed.
 
 ## 5) `src/orchestration/prompt_render.rs`
-No required schema changes for this plan.
-Optional follow-up (not in this change): relative paths in context JSON to reduce tokens further.
+Context artifact contract was updated to reduce path-token overhead:
+- `outputPathRoot`: shared parent directory across resolved output paths (or `null` when none).
+- `outputPaths`: per-key path values compacted relative to `outputPathRoot` when possible.
+
+Prompt placeholder behavior remains unchanged:
+- `{{workflow.output_paths.<key>}}` still resolves to absolute output paths in the rendered prompt.
 
 ## Test Changes
 
@@ -173,7 +177,8 @@ This is a running log of refactor changes made to iteratively reach the desired 
 2026-02-20 13:14 - Reduced context artifact path token overhead by compacting `outputPaths` to shared-root-relative values and adding `outputPathRoot` in `render_step_prompt`, added TDD coverage asserting the new context shape for flattened attempt paths, and revalidated with full `fmt`, `clippy -D warnings`, and `cargo test --all` in `nix-shell`.
 2026-02-20 13:27 - TODO [status: done] Added selector workflow-start run-id collision protection via bounded metadata-existence retries in `route_selector_action`/`transitions`, with unit tests covering retry-on-collision success and exhaustion failure paths.
 2026-02-20 13:27 - TODO [status: done] Aligned CLI `workflow run` run-id generation with the compact `run-<base36_ts>-<rand36_4>` format for scope parity with selector-started runs, including bounded collision retries against persisted run metadata and CLI integration assertions validating compact-ID shape.
-2026-02-20 13:27 - TODO [status: todo] Correct the base36 conversion example in this document (`1771356898` currently maps to the wrong value). Instruction: once complete, update this item to `status: done` and note the corrected example.
-2026-02-20 13:27 - TODO [status: todo] Reconcile the plan text with implemented prompt-render schema changes (`outputPathRoot` + compacted `outputPaths`) so the design section and running log are consistent. Instruction: once complete, update this item to `status: done` and note the final documented contract.
+2026-02-20 13:27 - TODO [status: done] Corrected the base36 conversion example in this document: `1771356898` -> `tambqa`, with run-id example updated to `run-tambqa-k3f2`.
+2026-02-20 13:27 - TODO [status: done] Reconciled plan text with implemented prompt-render schema contract: context artifacts include `outputPathRoot` and `outputPaths` values compacted relative to that root, while prompt placeholders continue to resolve absolute output paths.
 2026-02-20 13:56 - Implemented compact selector run-id collision handling by introducing `allocate_compact_run_id_with_retry` with a bounded uniqueness check against persisted run metadata paths, added TDD unit coverage for collision retry and retry exhaustion, and revalidated with full `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all` in `nix-shell`.
 2026-02-20 14:03 - Implemented compact CLI workflow-run IDs in `cmd_workflow run` (`run-<base36_ts>-<rand36_4>`) with bounded uniqueness retries, added TDD coverage in CLI command-surface tests (`assert_compact_run_id`), and revalidated with full `cargo fmt --all`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all` in `nix-shell`.
+2026-02-20 14:04 - Reconciled documentation with implemented behavior by correcting the base36 timestamp example (`1771356898` -> `tambqa`), updating compact run-id/path examples accordingly, and documenting the final prompt-render context contract (`outputPathRoot` + compacted `outputPaths`).
