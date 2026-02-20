@@ -125,6 +125,34 @@ fn run_id_from(output: &Output) -> String {
         .expect("run id in output")
 }
 
+fn assert_compact_run_id(run_id: &str) {
+    let mut segments = run_id.split('-');
+    assert_eq!(segments.next(), Some("run"));
+    let timestamp = segments.next().expect("base36 timestamp segment");
+    assert!(
+        !timestamp.is_empty(),
+        "run id timestamp segment must not be empty"
+    );
+    assert!(
+        timestamp
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch.is_ascii_lowercase()),
+        "run id timestamp segment must be lowercase base36: {run_id}"
+    );
+    let suffix = segments.next().expect("suffix segment");
+    assert_eq!(suffix.len(), 4, "run id suffix length mismatch: {run_id}");
+    assert!(
+        suffix
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch.is_ascii_lowercase()),
+        "run id suffix must be lowercase base36: {run_id}"
+    );
+    assert!(
+        segments.next().is_none(),
+        "run id must contain exactly three '-' separated segments: {run_id}"
+    );
+}
+
 fn workflow_run_ids(home: &Path) -> BTreeSet<String> {
     let workspace_root = home.join("workspace");
     if !workspace_root.exists() {
@@ -516,6 +544,7 @@ fn workflow_commands_work() {
     );
     assert_ok(&run_output);
     let run_id = run_id_from(&run_output);
+    assert_compact_run_id(&run_id);
 
     let status = run(temp.path(), &["workflow", "status", &run_id]);
     assert_ok(&status);
@@ -599,6 +628,7 @@ fn fresh_setup_default_workflow_runs_successfully() {
     );
     assert_ok(&run_output);
     let run_id = run_id_from(&run_output);
+    assert_compact_run_id(&run_id);
     let status = run(temp.path(), &["workflow", "status", &run_id]);
     assert_ok(&status);
     assert!(stdout(&status).contains("state=succeeded"));

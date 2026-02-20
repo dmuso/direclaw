@@ -1,5 +1,5 @@
 use crate::app::command_support::{
-    load_orchestrator_or_err, load_settings, now_nanos, now_secs, save_orchestrator_config,
+    load_orchestrator_or_err, load_settings, now_secs, save_orchestrator_config,
 };
 use crate::config::{
     normalize_workflow_input_key, WorkflowConfig, WorkflowId, WorkflowInputs, WorkflowStepConfig,
@@ -12,9 +12,14 @@ use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_output_priority,
     default_step_scaffold,
 };
+use getrandom::getrandom;
 use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
+
+const BASE36_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+const RUN_SUFFIX_SPACE: u32 = 36 * 36 * 36 * 36;
+const RUN_ID_MAX_GENERATION_ATTEMPTS: usize = 16;
 
 pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
     if args.is_empty() {
@@ -146,15 +151,14 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
             fs::create_dir_all(&runtime_root)
                 .map_err(|e| format!("failed to create {}: {e}", runtime_root.display()))?;
             let store = WorkflowRunStore::new(&runtime_root);
-            let run_id = format!("run-{}-{}-{}", orchestrator_id, workflow_id, now_nanos());
+            let now = now_secs();
+            let run_id = allocate_compact_run_id_with_retry(store.state_root(), now)?;
             store
-                .create_run_with_inputs(run_id.clone(), workflow_id.clone(), input_map, now_secs())
+                .create_run_with_inputs(run_id.clone(), workflow_id.clone(), input_map, now)
                 .map_err(|e| e.to_string())?;
             let engine = WorkflowEngine::new(store.clone(), orchestrator.clone())
                 .with_workspace_access_context(workspace_context);
-            engine
-                .start(&run_id, now_secs())
-                .map_err(|e| e.to_string())?;
+            engine.start(&run_id, now).map_err(|e| e.to_string())?;
             Ok(format!("workflow started\nrun_id={run_id}"))
         }
         "status" => {
@@ -238,6 +242,53 @@ fn parse_key_value_inputs(args: &[String]) -> Result<Map<String, Value>, String>
     }
 
     Ok(map)
+}
+
+fn base36_encode_u64(mut value: u64) -> String {
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut chars = Vec::new();
+    while value > 0 {
+        let idx = (value % 36) as usize;
+        chars.push(BASE36_ALPHABET[idx] as char);
+        value /= 36;
+    }
+    chars.iter().rev().collect()
+}
+
+fn base36_encode_fixed_u32(mut value: u32, width: usize) -> String {
+    let mut chars = vec!['0'; width];
+    for idx in (0..width).rev() {
+        chars[idx] = BASE36_ALPHABET[(value % 36) as usize] as char;
+        value /= 36;
+    }
+    chars.into_iter().collect()
+}
+
+fn generate_compact_run_id(now: i64) -> Result<String, String> {
+    let timestamp = u64::try_from(now)
+        .map_err(|_| "workflow.run requires a non-negative timestamp".to_string())?;
+    let mut bytes = [0_u8; 4];
+    getrandom(&mut bytes)
+        .map_err(|err| format!("workflow.run failed to generate run id randomness: {err}"))?;
+    let sample = u32::from_le_bytes(bytes) % RUN_SUFFIX_SPACE;
+    let ts = base36_encode_u64(timestamp);
+    let suffix = base36_encode_fixed_u32(sample, 4);
+    Ok(format!("run-{ts}-{suffix}"))
+}
+
+fn allocate_compact_run_id_with_retry(state_root: &Path, now: i64) -> Result<String, String> {
+    for _ in 0..RUN_ID_MAX_GENERATION_ATTEMPTS {
+        let run_id = generate_compact_run_id(now)?;
+        if !run_record_exists(state_root, &run_id) {
+            return Ok(run_id);
+        }
+    }
+    Err(format!(
+        "failed to allocate unique workflow run id after {} attempts",
+        RUN_ID_MAX_GENERATION_ATTEMPTS
+    ))
 }
 
 fn run_store_for_run_id(
