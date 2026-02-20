@@ -109,6 +109,46 @@ where
     Ok(rendered)
 }
 
+fn shared_output_root_and_paths(
+    output_paths: &BTreeMap<String, PathBuf>,
+) -> (Option<PathBuf>, BTreeMap<String, String>) {
+    let mut shared_root: Option<PathBuf> = None;
+    for path in output_paths.values() {
+        let Some(parent) = path.parent() else {
+            shared_root = None;
+            break;
+        };
+        match &mut shared_root {
+            None => shared_root = Some(parent.to_path_buf()),
+            Some(root) => {
+                while !parent.starts_with(&*root) {
+                    if !root.pop() {
+                        shared_root = None;
+                        break;
+                    }
+                }
+            }
+        }
+        if shared_root.is_none() {
+            break;
+        }
+    }
+
+    let rendered_paths = output_paths
+        .iter()
+        .map(|(key, path)| {
+            let rendered = shared_root
+                .as_ref()
+                .and_then(|root| path.strip_prefix(root).ok())
+                .map(|relative| relative.display().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            (key.clone(), rendered)
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    (shared_root, rendered_paths)
+}
+
 pub fn render_step_prompt(
     run: &WorkflowRunRecord,
     workflow: &WorkflowConfig,
@@ -152,6 +192,8 @@ pub fn render_step_prompt(
         step_id: step.id.clone(),
         reason: format!("failed to render output schema json: {err}"),
     })?;
+    let (output_path_root, context_output_paths) = shared_output_root_and_paths(output_paths);
+
     let output_paths_json = serde_json::to_string_pretty(
         &output_paths
             .iter()
@@ -325,9 +367,17 @@ pub fn render_step_prompt(
         ),
         (
             "outputPaths".to_string(),
-            Value::Object(Map::from_iter(output_paths.iter().map(|(k, path)| {
-                (k.clone(), Value::String(path.display().to_string()))
-            }))),
+            Value::Object(Map::from_iter(
+                context_output_paths
+                    .iter()
+                    .map(|(k, path)| (k.clone(), Value::String(path.clone()))),
+            )),
+        ),
+        (
+            "outputPathRoot".to_string(),
+            output_path_root
+                .map(|root| Value::String(root.display().to_string()))
+                .unwrap_or(Value::Null),
         ),
         (
             "memoryContext".to_string(),

@@ -174,3 +174,101 @@ fn prompt_render_module_injects_memory_context_bundle_with_bounded_citations() {
     assert!(rendered.context.contains("\"memoryContext\""));
     assert!(rendered.prompt.len() < 5000);
 }
+
+#[test]
+fn prompt_render_module_context_uses_relative_output_paths_with_shared_root() {
+    let run = WorkflowRunRecord {
+        run_id: "run-ctx".to_string(),
+        workflow_id: "wf-default".to_string(),
+        state: RunState::Running,
+        inputs: Map::new(),
+        current_step_id: Some("plan".to_string()),
+        current_attempt: Some(1),
+        started_at: 10,
+        updated_at: 11,
+        total_iterations: 1,
+        source_message_id: None,
+        selector_id: None,
+        selected_workflow: None,
+        status_conversation_id: None,
+        terminal_reason: None,
+    };
+
+    let step = WorkflowStepConfig {
+        id: "plan".to_string(),
+        step_type: WorkflowStepType::AgentTask,
+        agent: "worker".to_string(),
+        prompt: "ok".to_string(),
+        prompt_type: WorkflowStepPromptType::FileOutput,
+        workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
+        next: None,
+        on_approve: None,
+        on_reject: None,
+        outputs: vec![
+            OutputKey::parse("summary").expect("key"),
+            OutputKey::parse("artifact").expect("key"),
+        ],
+        output_files: BTreeMap::from_iter([
+            (
+                OutputKey::parse_output_file_key("summary").expect("key"),
+                PathTemplate::parse("summary.md").expect("template"),
+            ),
+            (
+                OutputKey::parse_output_file_key("artifact").expect("key"),
+                PathTemplate::parse("logs/artifact.txt").expect("template"),
+            ),
+        ]),
+        final_output_priority: vec![OutputKey::parse("summary").expect("key")],
+        limits: None,
+    };
+    let workflow = WorkflowConfig {
+        id: "wf-default".to_string(),
+        version: 1,
+        description: "workflow".to_string(),
+        tags: vec![],
+        inputs: WorkflowInputs::default(),
+        limits: None,
+        steps: vec![step.clone()],
+    };
+    let output_paths = BTreeMap::from_iter([
+        (
+            "summary".to_string(),
+            Path::new("/tmp/.direclaw/workflows/runs/run-ctx/steps/plan/attempts/1/summary.md")
+                .to_path_buf(),
+        ),
+        (
+            "artifact".to_string(),
+            Path::new(
+                "/tmp/.direclaw/workflows/runs/run-ctx/steps/plan/attempts/1/logs/artifact.txt",
+            )
+            .to_path_buf(),
+        ),
+    ]);
+
+    let rendered = render_step_prompt(
+        &run,
+        &workflow,
+        &step,
+        1,
+        Path::new("/tmp/.direclaw/workflows/runs/run-ctx/workspace"),
+        &output_paths,
+        &BTreeMap::new(),
+    )
+    .expect("render prompt");
+
+    let context_json: Value = serde_json::from_str(&rendered.context).expect("context json");
+    assert_eq!(
+        context_json.get("outputPathRoot"),
+        Some(&Value::String(
+            "/tmp/.direclaw/workflows/runs/run-ctx/steps/plan/attempts/1".to_string()
+        ))
+    );
+    assert_eq!(
+        context_json.pointer("/outputPaths/summary"),
+        Some(&Value::String("summary.md".to_string()))
+    );
+    assert_eq!(
+        context_json.pointer("/outputPaths/artifact"),
+        Some(&Value::String("logs/artifact.txt".to_string()))
+    );
+}
