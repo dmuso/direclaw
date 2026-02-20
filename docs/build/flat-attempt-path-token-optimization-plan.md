@@ -166,3 +166,4 @@ This is a running log of refactor changes made to iteratively reach the desired 
 
 2026-02-20 12:34 - Initial document creation
 2026-02-20 12:43 - Flattened prompt artifact file layout by updating `write_file_backed_prompt` to write `prompt.md` and `context.md` directly in attempt roots, updated workflow/e2e tests to assert new prompt paths, and stabilized `runtime_supervisor` recovery log assertion with a bounded wait helper so full-suite runs are deterministic.
+2026-02-20 12:46 - Flattened step output path resolution by updating `resolve_step_output_paths` to resolve templates at attempt root (no implicit `outputs/` segment), and updated integration/CLI/output-contract tests to assert the new artifact locations.

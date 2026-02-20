@@ -354,8 +354,7 @@ pub fn resolve_step_output_paths(
             .join("steps")
             .join(&step.id)
             .join("attempts")
-            .join(attempt.to_string())
-            .join("outputs"),
+            .join(attempt.to_string()),
     )?;
 
     let mut output_paths = BTreeMap::new();

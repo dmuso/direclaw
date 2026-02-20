@@ -723,9 +723,9 @@ workflows:
             .is_file());
     }
 
-    let plan_output = run_root.join("steps/plan/attempts/1/outputs/artifacts/plan.md");
-    let summary_output = run_root.join("steps/plan/attempts/1/outputs/artifacts/summary.txt");
-    let result_output = run_root.join("steps/done/attempts/1/outputs/artifacts/result.json");
+    let plan_output = run_root.join("steps/plan/attempts/1/artifacts/plan.md");
+    let summary_output = run_root.join("steps/plan/attempts/1/artifacts/summary.txt");
+    let result_output = run_root.join("steps/done/attempts/1/artifacts/result.json");
     for output in [&plan_output, &summary_output, &result_output] {
         assert!(output.is_file(), "missing output file {}", output.display());
         let canonical = fs::canonicalize(output).expect("canonical output path");

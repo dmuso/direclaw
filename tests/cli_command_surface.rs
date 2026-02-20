@@ -1012,14 +1012,12 @@ fi
         serde_json::Value::String("succeeded".to_string())
     );
 
-    let plan_output = run_root.join(format!(
-        "steps/plan/attempts/2/outputs/reports/{run_id}/plan-2.md"
-    ));
+    let plan_output = run_root.join(format!("steps/plan/attempts/2/reports/{run_id}/plan-2.md"));
     let summary_output = run_root.join(format!(
-        "steps/plan/attempts/2/outputs/reports/{run_id}/summary-2.txt"
+        "steps/plan/attempts/2/reports/{run_id}/summary-2.txt"
     ));
     let result_output = run_root.join(format!(
-        "steps/finalize/attempts/1/outputs/reports/{run_id}/result.json"
+        "steps/finalize/attempts/1/reports/{run_id}/result.json"
     ));
     assert_eq!(
         fs::read_to_string(plan_output).expect("plan output"),

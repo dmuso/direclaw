@@ -71,7 +71,7 @@ fn output_contract_module_parses_envelope_and_resolves_paths() {
         .expect("feedback path")
         .display()
         .to_string()
-        .ends_with("workflows/runs/run-1/steps/plan/attempts/2/outputs/artifacts/run-1/plan.md"));
+        .ends_with("workflows/runs/run-1/steps/plan/attempts/2/artifacts/run-1/plan.md"));
 
     let evaluation = evaluate_step_result(
         &workflow,
