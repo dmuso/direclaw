@@ -4,8 +4,10 @@ use direclaw::provider::{
 };
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::OpenOptions;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
@@ -97,7 +99,18 @@ fn provider_non_zero_exit_is_explicit() {
         openai: "unused".to_string(),
     };
 
+    // Reproduce transient ETXTBSY seen in CI by briefly keeping the script open for write.
+    let writer = OpenOptions::new()
+        .write(true)
+        .open(&bin)
+        .expect("open script for write");
+    let release_writer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(40));
+        drop(writer);
+    });
+
     let err = run_provider(&request, &bins).expect_err("expected failure");
+    release_writer.join().expect("release writer");
     match err {
         ProviderError::NonZeroExit { exit_code, log, .. } => {
             let log = *log;

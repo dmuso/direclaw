@@ -10,6 +10,9 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const EXECUTABLE_BUSY_RETRY_DELAY_MS: u64 = 10;
+const EXECUTABLE_BUSY_MAX_ATTEMPTS: usize = 50;
+
 #[derive(Debug, Clone)]
 pub struct RunnerBinaries {
     pub anthropic: String,
@@ -55,16 +58,26 @@ pub fn run_provider(
         command.env(k, v);
     }
 
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ProviderError::MissingBinary {
-                provider: request.provider.clone(),
-                binary: spec.binary,
-                log: Box::new(base_log),
-            })
+    let mut busy_attempts = 0usize;
+    let mut child = loop {
+        match command.spawn() {
+            Ok(child) => break child,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ProviderError::MissingBinary {
+                    provider: request.provider.clone(),
+                    binary: spec.binary,
+                    log: Box::new(base_log),
+                })
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                if busy_attempts + 1 >= EXECUTABLE_BUSY_MAX_ATTEMPTS {
+                    return Err(io_error(&request.cwd, err));
+                }
+                busy_attempts += 1;
+                thread::sleep(Duration::from_millis(EXECUTABLE_BUSY_RETRY_DELAY_MS));
+            }
+            Err(err) => return Err(io_error(&request.cwd, err)),
         }
-        Err(err) => return Err(io_error(&request.cwd, err)),
     };
 
     let stdout = child
