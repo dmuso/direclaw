@@ -147,6 +147,7 @@ mod tests {
             stopped_at: None,
             workers: BTreeMap::new(),
             last_error: None,
+            slack_profiles: Vec::new(),
         };
         save_supervisor_state(&paths, &stale).expect("save stale");
         fs::write(paths.supervisor_lock_path(), "999999").expect("lock");

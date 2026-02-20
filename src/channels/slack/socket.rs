@@ -10,16 +10,22 @@ use std::fs;
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message, WebSocket};
 
 const SOCKET_IDLE_SLEEP: Duration = Duration::from_millis(40);
 const SOCKET_BUFFER_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryClass {
+    Retryable,
+    NonRetryable,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SocketHealth {
@@ -120,64 +126,249 @@ pub(super) fn process_socket_inbound_for_profile(
     reconnect_backoff_ms: u64,
     idle_timeout_ms: u64,
 ) -> Result<usize, SlackError> {
-    let mut health = load_health(state_root, profile_id);
     let deadline = Instant::now() + Duration::from_millis(idle_timeout_ms.max(1));
+    run_socket_loop(
+        state_root,
+        queue_paths,
+        profile_id,
+        runtime,
+        reconnect_backoff_ms,
+        Some(deadline),
+        None,
+    )
+}
+
+pub(super) fn run_socket_inbound_for_profile_until_stop(
+    state_root: &Path,
+    queue_paths: &QueuePaths,
+    profile_id: &str,
+    runtime: &SlackProfileRuntime,
+    reconnect_backoff_ms: u64,
+    stop: &AtomicBool,
+) -> Result<usize, SlackError> {
+    run_socket_loop(
+        state_root,
+        queue_paths,
+        profile_id,
+        runtime,
+        reconnect_backoff_ms,
+        None,
+        Some(stop),
+    )
+}
+
+fn run_socket_loop(
+    state_root: &Path,
+    queue_paths: &QueuePaths,
+    profile_id: &str,
+    runtime: &SlackProfileRuntime,
+    reconnect_backoff_ms: u64,
+    deadline: Option<Instant>,
+    stop: Option<&AtomicBool>,
+) -> Result<usize, SlackError> {
+    let mut health = load_health(state_root, profile_id);
     let reconnect_backoff = Duration::from_millis(reconnect_backoff_ms.max(1));
     let mut enqueued_total = 0usize;
-
     let reconnect_request = reconnect_request_path(state_root);
-    let force_reconnect = reconnect_request.exists();
-    if force_reconnect {
+    let mut force_reconnect_once = reconnect_request.exists();
+    if force_reconnect_once {
         let _ = fs::remove_file(&reconnect_request);
     }
 
-    while Instant::now() < deadline {
+    loop {
+        if should_stop(stop) || deadline_reached(deadline) {
+            break;
+        }
+
         health.last_reconnect = Some(super::now_secs());
-        health.connected = false;
-        let url = runtime.api.open_socket_connection_url()?;
+        let url = match runtime.api.open_socket_connection_url() {
+            Ok(value) => value,
+            Err(err @ SlackError::RateLimited { .. }) => {
+                health.connected = false;
+                health.last_error = Some(err.to_string());
+                save_health(state_root, profile_id, &health);
+                return Err(err);
+            }
+            Err(err) => {
+                let class = classify_socket_failure(&err.to_string());
+                let message =
+                    format_socket_error("socket url open failed", &err.to_string(), class);
+                health.connected = false;
+                health.last_error = Some(message.clone());
+                save_health(state_root, profile_id, &health);
+                if class == RetryClass::NonRetryable {
+                    return Err(SlackError::ApiRequest(message));
+                }
+                if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                    break;
+                }
+                continue;
+            }
+        };
+
         let (mut socket, _) = match connect(url.as_str()) {
             Ok(connection) => connection,
-            Err(_) => {
-                health.last_error = Some("socket connect failed".to_string());
+            Err(err) => {
+                let class = classify_socket_failure(&err.to_string());
+                let message = format_socket_error("socket connect failed", &err.to_string(), class);
+                health.connected = false;
+                health.last_error = Some(message);
                 save_health(state_root, profile_id, &health);
-                thread::sleep(reconnect_backoff);
+                if class == RetryClass::NonRetryable {
+                    return Err(SlackError::ApiRequest(
+                        health.last_error.clone().unwrap_or_default(),
+                    ));
+                }
+                if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                    break;
+                }
                 continue;
             }
         };
         health.connected = true;
         health.last_error = None;
         save_health(state_root, profile_id, &health);
-        set_socket_nonblocking(&mut socket)?;
+        if let Err(err) = set_socket_nonblocking(&mut socket) {
+            health.connected = false;
+            health.last_error = Some(err.to_string());
+            save_health(state_root, profile_id, &health);
+            return Err(err);
+        }
 
-        let enqueued = process_single_connection(
+        let control = LoopControl { deadline, stop };
+        let (enqueued, outcome) = process_single_connection(
+            state_root,
             &mut socket,
             queue_paths,
             profile_id,
             runtime,
-            deadline,
+            control,
             &mut health,
         )?;
         enqueued_total += enqueued;
+        health.connected = false;
         save_health(state_root, profile_id, &health);
-        if !force_reconnect {
-            break;
+
+        if force_reconnect_once {
+            force_reconnect_once = false;
+            if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                break;
+            }
+            continue;
         }
-        thread::sleep(reconnect_backoff);
+
+        match outcome {
+            SocketLoopOutcome::StopRequested | SocketLoopOutcome::DeadlineReached => break,
+            SocketLoopOutcome::ReconnectRequested | SocketLoopOutcome::Disconnected => {
+                if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                    break;
+                }
+            }
+        }
     }
-    health.connected = false;
-    save_health(state_root, profile_id, &health);
+
+    if health.connected {
+        health.connected = false;
+        save_health(state_root, profile_id, &health);
+    }
 
     Ok(enqueued_total)
 }
 
+fn should_stop(stop: Option<&AtomicBool>) -> bool {
+    stop.map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+fn deadline_reached(deadline: Option<Instant>) -> bool {
+    deadline
+        .map(|value| Instant::now() >= value)
+        .unwrap_or(false)
+}
+
+fn sleep_reconnect(
+    backoff: Duration,
+    stop: Option<&AtomicBool>,
+    deadline: Option<Instant>,
+) -> bool {
+    let jittered = backoff + reconnect_jitter(backoff);
+    let mut remaining = jittered;
+    while remaining > Duration::ZERO {
+        if should_stop(stop) || deadline_reached(deadline) {
+            return false;
+        }
+        let step = remaining.min(Duration::from_millis(25));
+        thread::sleep(step);
+        remaining = remaining.saturating_sub(step);
+    }
+    !should_stop(stop) && !deadline_reached(deadline)
+}
+
+fn reconnect_jitter(backoff: Duration) -> Duration {
+    let ceiling = backoff.min(Duration::from_millis(500)).as_millis() as u64;
+    if ceiling == 0 {
+        return Duration::ZERO;
+    }
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_nanos() as u64)
+        .unwrap_or(0);
+    Duration::from_millis(seed % (ceiling + 1))
+}
+
+fn classify_socket_failure(message: &str) -> RetryClass {
+    let lower = message.to_ascii_lowercase();
+    if [
+        "invalid_auth",
+        "not_authed",
+        "token_revoked",
+        "account_inactive",
+        "missing_scope",
+        "403",
+        "401",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        RetryClass::NonRetryable
+    } else {
+        RetryClass::Retryable
+    }
+}
+
+fn format_socket_error(context: &str, detail: &str, class: RetryClass) -> String {
+    let class = match class {
+        RetryClass::Retryable => "retryable",
+        RetryClass::NonRetryable => "non_retryable",
+    };
+    format!("{context} ({class}): {detail}")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocketLoopOutcome {
+    Disconnected,
+    ReconnectRequested,
+    StopRequested,
+    DeadlineReached,
+}
+
+#[derive(Clone, Copy)]
+struct LoopControl<'a> {
+    deadline: Option<Instant>,
+    stop: Option<&'a AtomicBool>,
+}
+
 fn process_single_connection(
+    state_root: &Path,
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     queue_paths: &QueuePaths,
     profile_id: &str,
     runtime: &SlackProfileRuntime,
-    deadline: Instant,
+    control: LoopControl<'_>,
     health: &mut SocketHealth,
-) -> Result<usize, SlackError> {
+) -> Result<(usize, SocketLoopOutcome), SlackError> {
+    let reconnect_request = reconnect_request_path(state_root);
+
     let (sender, receiver): (SyncSender<QueueCandidate>, Receiver<QueueCandidate>) =
         mpsc::sync_channel(SOCKET_BUFFER_CAPACITY);
     let enqueued = Arc::new(AtomicUsize::new(0));
@@ -201,7 +392,22 @@ fn process_single_connection(
         }
     });
 
-    while Instant::now() < deadline {
+    let mut outcome = SocketLoopOutcome::Disconnected;
+    loop {
+        if should_stop(control.stop) {
+            outcome = SocketLoopOutcome::StopRequested;
+            break;
+        }
+        if deadline_reached(control.deadline) {
+            outcome = SocketLoopOutcome::DeadlineReached;
+            break;
+        }
+        if reconnect_request.exists() {
+            let _ = fs::remove_file(&reconnect_request);
+            outcome = SocketLoopOutcome::ReconnectRequested;
+            break;
+        }
+
         match socket.read() {
             Ok(Message::Text(text)) => {
                 handle_socket_text(socket, runtime, text.as_str(), &sender, health);
@@ -219,14 +425,22 @@ fn process_single_connection(
                 thread::sleep(SOCKET_IDLE_SLEEP);
             }
             Err(tungstenite::Error::ConnectionClosed) => break,
-            Err(_) => break,
+            Err(err) => {
+                let class = classify_socket_failure(&err.to_string());
+                health.last_error = Some(format_socket_error(
+                    "socket read failed",
+                    &err.to_string(),
+                    class,
+                ));
+                break;
+            }
         }
     }
 
     drop(sender);
     let _ = worker.join();
     let _ = socket.close(None);
-    Ok(enqueued.load(Ordering::Relaxed))
+    Ok((enqueued.load(Ordering::Relaxed), outcome))
 }
 
 #[derive(Debug)]
@@ -287,7 +501,7 @@ fn should_enqueue_socket_event(
     profile: &ChannelProfile,
     allowlist: &BTreeSet<String>,
 ) -> bool {
-    if event.r#type != "message" {
+    if event.r#type != "message" && event.r#type != "app_mention" {
         return false;
     }
     if event.channel.trim().is_empty() || event.ts.trim().is_empty() {
@@ -296,7 +510,7 @@ fn should_enqueue_socket_event(
     if event.user.is_none() || event.bot_id.is_some() || event.subtype.is_some() {
         return false;
     }
-    let Some(channel_type) = event.channel_type.as_deref() else {
+    let Some(channel_type) = resolve_channel_type(event) else {
         return false;
     };
     if channel_type != "im" && channel_type != "channel" && channel_type != "group" {
@@ -315,6 +529,23 @@ fn should_enqueue_socket_event(
         return false;
     }
     true
+}
+
+fn resolve_channel_type(event: &SocketEvent) -> Option<&str> {
+    event
+        .channel_type
+        .as_deref()
+        .or_else(|| infer_channel_type(event.channel.as_str()))
+}
+
+fn infer_channel_type(channel_id: &str) -> Option<&'static str> {
+    let mut chars = channel_id.chars();
+    match chars.next() {
+        Some('D') => Some("im"),
+        Some('C') => Some("channel"),
+        Some('G') => Some("group"),
+        _ => None,
+    }
 }
 
 fn set_socket_nonblocking(
@@ -385,5 +616,42 @@ mod tests {
             &profile(Some("UAPP")),
             &BTreeSet::new()
         ));
+    }
+
+    #[test]
+    fn app_mentions_without_channel_type_are_accepted() {
+        let mut event = base_event("channel");
+        event.r#type = "app_mention".to_string();
+        event.channel_type = None;
+        event.text = Some("<@UAPP> run this".to_string());
+        assert!(should_enqueue_socket_event(
+            &event,
+            &profile(Some("UAPP")),
+            &BTreeSet::new()
+        ));
+    }
+
+    #[test]
+    fn socket_error_classification_marks_auth_errors_non_retryable() {
+        assert_eq!(
+            classify_socket_failure("invalid_auth while opening socket"),
+            RetryClass::NonRetryable
+        );
+        assert_eq!(
+            classify_socket_failure("temporary dns resolution failure"),
+            RetryClass::Retryable
+        );
+    }
+
+    #[test]
+    fn socket_error_message_includes_details_and_classification() {
+        let message = format_socket_error(
+            "socket connect failed",
+            "tls handshake eof",
+            RetryClass::Retryable,
+        );
+        assert!(message.contains("socket connect failed"));
+        assert!(message.contains("tls handshake eof"));
+        assert!(message.contains("retryable"));
     }
 }

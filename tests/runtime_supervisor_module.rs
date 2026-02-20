@@ -23,6 +23,7 @@ fn runtime_supervisor_module_exposes_supervisor_state_and_lock_apis() {
         stopped_at: None,
         workers: BTreeMap::new(),
         last_error: None,
+        slack_profiles: Vec::new(),
     };
 
     save_supervisor_state(&paths, &stale).expect("save stale");

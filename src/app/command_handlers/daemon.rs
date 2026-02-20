@@ -141,24 +141,28 @@ fn slack_profile_status_lines(
         .get("channel:slack-socket")
         .or_else(|| state.workers.get("channel:slack-backfill"))
         .or_else(|| state.workers.get("channel:slack"));
+    let credential_health = state
+        .slack_profiles
+        .iter()
+        .map(|item| (item.profile_id.clone(), item.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
 
     let mut lines = Vec::new();
-    for health in slack::profile_credential_health(settings) {
+    for (profile_id, _) in settings
+        .channel_profiles
+        .iter()
+        .filter(|(_, profile)| profile.channel == crate::config::ChannelKind::Slack)
+    {
+        let health = credential_health.get(profile_id);
         let (status, reason) = classify_slack_profile_health(
             worker,
             state.running,
-            health.ok,
-            health.reason.as_deref(),
+            health.map(|value| value.ok).unwrap_or(true),
+            health.and_then(|value| value.reason.as_deref()),
             slack_enabled,
         );
-        lines.push(format!(
-            "slack_profile:{}.health={status}",
-            health.profile_id
-        ));
-        lines.push(format!(
-            "slack_profile:{}.reason={reason}",
-            health.profile_id
-        ));
+        lines.push(format!("slack_profile:{profile_id}.health={status}"));
+        lines.push(format!("slack_profile:{profile_id}.reason={reason}"));
     }
     lines
 }
@@ -326,4 +330,51 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::SupervisorState;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn slack_profile_status_uses_runtime_credential_health() {
+        let settings: crate::config::Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp
+shared_workspaces: {}
+orchestrators: {}
+channel_profiles:
+  eng:
+    channel: slack
+    orchestrator_id: eng
+    slack_app_user_id: U123
+channels:
+  slack:
+    enabled: true
+monitoring: {}
+"#,
+        )
+        .expect("parse settings");
+        let state = SupervisorState {
+            running: true,
+            pid: Some(1),
+            started_at: Some(1),
+            stopped_at: None,
+            workers: BTreeMap::new(),
+            last_error: None,
+            slack_profiles: vec![slack::SlackProfileCredentialHealth {
+                profile_id: "eng".to_string(),
+                ok: false,
+                reason: Some("missing required env var `SLACK_BOT_TOKEN_ENG`".to_string()),
+            }],
+        };
+
+        let lines = slack_profile_status_lines(&settings, &state);
+        assert!(lines.contains(&"slack_profile:eng.health=auth_missing".to_string()));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("SLACK_BOT_TOKEN_ENG")));
+    }
 }

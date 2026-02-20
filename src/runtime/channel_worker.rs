@@ -67,6 +67,65 @@ pub fn tick_slack_socket_worker(state_root: &Path, settings: &Settings) -> Resul
     }
 }
 
+fn run_slack_socket_worker_until_stop(
+    spec: &WorkerSpec,
+    state_root: &Path,
+    settings: &Settings,
+    stop: &Arc<AtomicBool>,
+    events: &Sender<WorkerEvent>,
+    slow_shutdown: bool,
+) {
+    let heartbeat_stop = Arc::new(AtomicBool::new(false));
+    let heartbeat_worker_stop = Arc::clone(stop);
+    let heartbeat_local_stop = Arc::clone(&heartbeat_stop);
+    let heartbeat_events = events.clone();
+    let heartbeat_worker_id = spec.id.clone();
+    let heartbeat_interval = spec.interval.max(Duration::from_secs(1));
+    let heartbeat_thread = thread::spawn(move || {
+        while !heartbeat_local_stop.load(Ordering::Relaxed)
+            && !heartbeat_worker_stop.load(Ordering::Relaxed)
+        {
+            thread::sleep(heartbeat_interval);
+            if heartbeat_local_stop.load(Ordering::Relaxed)
+                || heartbeat_worker_stop.load(Ordering::Relaxed)
+            {
+                break;
+            }
+            let _ = heartbeat_events.send(WorkerEvent::Heartbeat {
+                worker_id: heartbeat_worker_id.clone(),
+                at: now_secs(),
+            });
+        }
+    });
+
+    while !stop.load(Ordering::Relaxed) {
+        let result = slack::run_socket_runtime_until_stop(state_root, settings, Arc::clone(stop));
+        if let Err(err) = result {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: spec.id.clone(),
+                at: now_secs(),
+                message: err.to_string(),
+                fatal: false,
+            });
+            if !sleep_with_stop(stop, spec.interval) {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
+
+    heartbeat_stop.store(true, Ordering::Relaxed);
+    let _ = heartbeat_thread.join();
+    if slow_shutdown {
+        thread::sleep(slow_shutdown_delay());
+    }
+    let _ = events.send(WorkerEvent::Stopped {
+        worker_id: spec.id.clone(),
+        at: now_secs(),
+    });
+}
+
 pub fn tick_slack_worker(state_root: &Path, settings: &Settings) -> Result<(), String> {
     tick_slack_socket_worker(state_root, settings)
 }
@@ -247,6 +306,18 @@ pub(crate) fn run_worker(spec: WorkerSpec, context: WorkerRunContext) {
             events,
             slow_shutdown,
             queue_max_concurrency,
+        );
+        return;
+    }
+
+    if matches!(spec.runtime, WorkerRuntime::SlackSocket) {
+        run_slack_socket_worker_until_stop(
+            &spec,
+            &state_root,
+            &settings,
+            &stop,
+            &events,
+            slow_shutdown,
         );
         return;
     }

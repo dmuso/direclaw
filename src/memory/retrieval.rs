@@ -792,7 +792,7 @@ fn decode_embedding(memory_id: &str, blob: &[u8]) -> Result<Vec<f32>, MemoryReca
         return Ok(parsed);
     }
 
-    if blob.len() % 4 != 0 {
+    if !blob.len().is_multiple_of(4) {
         return Err(MemoryRecallError::InvalidEmbedding {
             memory_id: memory_id.to_string(),
         });

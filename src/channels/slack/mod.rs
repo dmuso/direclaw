@@ -5,6 +5,11 @@ use auth::{configured_slack_allowlist, load_env_config, slack_profiles};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod api;
@@ -91,7 +96,7 @@ pub struct SlackSyncReport {
     pub outbound_messages_sent: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlackProfileCredentialHealth {
     pub profile_id: String,
     pub ok: bool,
@@ -201,55 +206,12 @@ fn sync_once_internal(
     mode: SyncMode,
 ) -> Result<SlackSyncReport, SlackError> {
     validate_startup_credentials(settings)?;
-    let profiles = slack_profiles(settings);
-    let profile_scoped_tokens_required = profiles.len() > 1;
-    let config_allowlist = configured_slack_allowlist(settings);
     let include_im_conversations = slack_include_im_conversations(settings);
     let channel_cfg = settings.channels.get("slack").cloned().unwrap_or_default();
     let run_backfill = mode == SyncMode::BackfillOnly && channel_cfg.history_backfill_enabled;
     let run_socket = mode == SyncMode::SocketOnly;
-
-    let mut bot_token_profile = BTreeMap::<String, String>::new();
-    let mut app_token_profile = BTreeMap::<String, String>::new();
-    let mut runtimes = BTreeMap::new();
-    for (profile_id, profile) in profiles {
-        let env = load_env_config(
-            &profile_id,
-            profile_scoped_tokens_required,
-            &config_allowlist,
-        )?;
-        if let Some(existing) = bot_token_profile.insert(env.bot_token.clone(), profile_id.clone())
-        {
-            return Err(SlackError::DuplicateProfileCredential {
-                credential: "bot".to_string(),
-                profile_a: existing,
-                profile_b: profile_id,
-            });
-        }
-        if let Some(existing) = app_token_profile.insert(env.app_token.clone(), profile_id.clone())
-        {
-            return Err(SlackError::DuplicateProfileCredential {
-                credential: "app".to_string(),
-                profile_a: existing,
-                profile_b: profile_id,
-            });
-        }
-        let api = SlackApiClient::new(env.bot_token, env.app_token);
-        if run_socket {
-            api.validate_auth()?;
-        } else if run_backfill {
-            api.validate_connection()?;
-        }
-        runtimes.insert(
-            profile_id,
-            SlackProfileRuntime {
-                profile,
-                api,
-                allowlist: env.allowlist,
-                include_im_conversations,
-            },
-        );
-    }
+    let runtimes =
+        build_profile_runtimes(settings, include_im_conversations, run_socket, run_backfill)?;
 
     let mut report = SlackSyncReport {
         profiles_processed: runtimes.len(),
@@ -291,6 +253,137 @@ fn sync_once_internal(
         report.outbound_messages_sent += egress::process_outbound(&queue_paths, &runtimes)?;
     }
     Ok(report)
+}
+
+fn build_profile_runtimes(
+    settings: &Settings,
+    include_im_conversations: bool,
+    validate_socket_auth: bool,
+    validate_backfill_connection: bool,
+) -> Result<BTreeMap<String, SlackProfileRuntime>, SlackError> {
+    let profiles = slack_profiles(settings);
+    let profile_scoped_tokens_required = profiles.len() > 1;
+    let config_allowlist = configured_slack_allowlist(settings);
+
+    let mut bot_token_profile = BTreeMap::<String, String>::new();
+    let mut app_token_profile = BTreeMap::<String, String>::new();
+    let mut runtimes = BTreeMap::new();
+    for (profile_id, profile) in profiles {
+        let env = load_env_config(
+            &profile_id,
+            profile_scoped_tokens_required,
+            &config_allowlist,
+        )?;
+        if let Some(existing) = bot_token_profile.insert(env.bot_token.clone(), profile_id.clone())
+        {
+            return Err(SlackError::DuplicateProfileCredential {
+                credential: "bot".to_string(),
+                profile_a: existing,
+                profile_b: profile_id,
+            });
+        }
+        if let Some(existing) = app_token_profile.insert(env.app_token.clone(), profile_id.clone())
+        {
+            return Err(SlackError::DuplicateProfileCredential {
+                credential: "app".to_string(),
+                profile_a: existing,
+                profile_b: profile_id,
+            });
+        }
+        let api = SlackApiClient::new(env.bot_token, env.app_token);
+        if validate_socket_auth {
+            api.validate_auth()?;
+        } else if validate_backfill_connection {
+            api.validate_connection()?;
+        }
+        runtimes.insert(
+            profile_id,
+            SlackProfileRuntime {
+                profile,
+                api,
+                allowlist: env.allowlist,
+                include_im_conversations,
+            },
+        );
+    }
+
+    Ok(runtimes)
+}
+
+pub fn run_socket_runtime_until_stop(
+    state_root: &Path,
+    settings: &Settings,
+    stop: Arc<AtomicBool>,
+) -> Result<(), SlackError> {
+    validate_startup_credentials(settings)?;
+    let channel_cfg = settings.channels.get("slack").cloned().unwrap_or_default();
+    let reconnect_backoff_ms = channel_cfg.socket_reconnect_backoff_ms;
+    let runtimes = build_profile_runtimes(
+        settings,
+        slack_include_im_conversations(settings),
+        true,
+        false,
+    )?;
+
+    let mut outbound_roots = BTreeSet::<PathBuf>::new();
+    let (result_tx, result_rx) = mpsc::channel::<Result<(), SlackError>>();
+    let mut handles = Vec::new();
+    let runtimes_for_sockets = Arc::new(runtimes.clone());
+
+    for (profile_id, runtime) in runtimes.clone() {
+        let runtime_root = settings
+            .resolve_channel_profile_runtime_root(&profile_id)
+            .map_err(|err| SlackError::Config(err.to_string()))?;
+        let queue_paths = QueuePaths::from_state_root(&runtime_root);
+        fs::create_dir_all(&queue_paths.incoming)
+            .map_err(|e| io_error(&queue_paths.incoming, e))?;
+        fs::create_dir_all(&queue_paths.outgoing)
+            .map_err(|e| io_error(&queue_paths.outgoing, e))?;
+        outbound_roots.insert(runtime_root);
+
+        let root = state_root.to_path_buf();
+        let profile = profile_id.clone();
+        let stop_for_socket = Arc::clone(&stop);
+        let tx = result_tx.clone();
+        handles.push(thread::spawn(move || {
+            let outcome = socket_ingest::run_socket_inbound_for_profile_until_stop(
+                &root,
+                &queue_paths,
+                &profile,
+                &runtime,
+                reconnect_backoff_ms,
+                stop_for_socket.as_ref(),
+            )
+            .map(|_| ());
+            let _ = tx.send(outcome);
+        }));
+    }
+    drop(result_tx);
+
+    let outbound_interval = Duration::from_secs(1);
+    while !stop.load(Ordering::Relaxed) {
+        for runtime_root in &outbound_roots {
+            let queue_paths = QueuePaths::from_state_root(runtime_root);
+            let _ = egress::process_outbound(&queue_paths, runtimes_for_sockets.as_ref())?;
+        }
+
+        while let Ok(outcome) = result_rx.try_recv() {
+            if let Err(err) = outcome {
+                stop.store(true, Ordering::Relaxed);
+                for handle in handles {
+                    let _ = handle.join();
+                }
+                return Err(err);
+            }
+        }
+
+        thread::sleep(outbound_interval);
+    }
+
+    for handle in handles {
+        let _ = handle.join();
+    }
+    Ok(())
 }
 
 pub fn inbound_mode(settings: &Settings) -> SlackInboundMode {

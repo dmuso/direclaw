@@ -82,10 +82,9 @@ pub fn apply_worker_event(
         }
         WorkerEvent::Heartbeat { worker_id, at } => {
             let entry = workers.entry(worker_id).or_default();
-            if entry.state != WorkerState::Error {
-                entry.state = WorkerState::Running;
-            }
+            entry.state = WorkerState::Running;
             entry.last_heartbeat = Some(at);
+            entry.last_error = None;
             None
         }
         WorkerEvent::Error {
@@ -117,6 +116,41 @@ pub fn apply_worker_event(
                 message: worker_id,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_recovers_worker_from_error_state() {
+        let mut workers = BTreeMap::new();
+        let mut active = BTreeSet::new();
+        workers.insert(
+            "channel:slack-socket".to_string(),
+            WorkerHealth {
+                state: WorkerState::Error,
+                last_heartbeat: Some(10),
+                last_error: Some("transient network drop".to_string()),
+            },
+        );
+
+        apply_worker_event(
+            &mut workers,
+            &mut active,
+            WorkerEvent::Heartbeat {
+                worker_id: "channel:slack-socket".to_string(),
+                at: 20,
+            },
+        );
+
+        let worker = workers
+            .get("channel:slack-socket")
+            .expect("worker health exists");
+        assert_eq!(worker.state, WorkerState::Running);
+        assert_eq!(worker.last_heartbeat, Some(20));
+        assert_eq!(worker.last_error, None);
     }
 }
 

@@ -2,6 +2,7 @@ use super::{
     append_runtime_log, atomic_write_file, bootstrap_state_root, channel_worker, now_secs,
     ownership_lock, queue_worker, RuntimeError, StatePaths, WorkerEvent, WorkerState,
 };
+use crate::channels::slack;
 use crate::runtime::worker_registry::apply_worker_event;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,6 +24,8 @@ pub struct SupervisorState {
     pub stopped_at: Option<i64>,
     pub workers: BTreeMap<String, WorkerHealth>,
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub slack_profiles: Vec<slack::SlackProfileCredentialHealth>,
 }
 
 pub use super::ownership_lock::{
@@ -51,6 +54,7 @@ pub fn run_supervisor(
         stopped_at: None,
         workers: BTreeMap::new(),
         last_error: None,
+        slack_profiles: slack::profile_credential_health(&settings),
     };
 
     for spec in &specs {
