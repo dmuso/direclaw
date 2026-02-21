@@ -14,19 +14,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v17
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Format Check
-        run: nix-shell --run 'cargo fmt --all -- --check'
+        run: cargo fmt --all -- --check
 
       - name: Lint Check
-        run: nix-shell --run 'cargo clippy --all-targets --all-features -- -D warnings'
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Test Suite
-        run: nix-shell --run 'cargo test --all'
+        run: cargo test --all
 
       - name: Docs Clean Install Smoke
         run: |
-          nix-shell --run 'cargo build --locked'
-          nix-shell --run './scripts/ci/docs-clean-install-smoke.sh target/debug/direclaw'
+          cargo build --locked
+          ./scripts/ci/docs-clean-install-smoke.sh target/debug/direclaw
