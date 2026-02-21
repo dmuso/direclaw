@@ -1250,8 +1250,17 @@ fn diagnostics_persists_findings_back_into_memory_graph() {
         .expect("query diagnostics memories");
     assert!(count >= 1, "expected diagnostics memory to be persisted");
     assert!(
-        memory_id.starts_with("diagnostics-diag-selector-1-430"),
-        "unexpected diagnostics memory id: {memory_id}"
+        memory_id.starts_with("d-"),
+        "unexpected diagnostics memory id prefix: {memory_id}"
+    );
+    assert_eq!(
+        memory_id.len(),
+        8,
+        "unexpected diagnostics memory id length: {memory_id}"
+    );
+    assert!(
+        memory_id[2..].chars().all(|ch| ch.is_ascii_hexdigit()),
+        "unexpected diagnostics memory id format: {memory_id}"
     );
 
     let embedding_count: i64 = db

@@ -513,7 +513,7 @@ fn memory_enabled_cross_channel_recall_changes_workflow_output() {
         r#"#!/bin/sh
 set -eu
 args="$*"
-if printf "%s" "$args" | grep -q "transcript-msg-memory-a"; then
+if printf "%s" "$args" | grep -Eq "t-[0-9a-f]{6}"; then
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"memory_hit\",\"artifact\":\"memory_hit\"}[/workflow_result]"}}'
 else
   echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_result]{\"summary\":\"memory_miss\",\"artifact\":\"memory_miss\"}[/workflow_result]"}}'
@@ -561,8 +561,8 @@ fi
         "expected workflow step prompt to include recalled memory context; prompt={prompt_text}"
     );
     assert!(
-        prompt_text.contains("transcript-msg-memory-a"),
-        "expected workflow step prompt to include citation-ready memory id; prompt={prompt_text}"
+        prompt_text.contains("t-"),
+        "expected workflow step prompt to include compact citation id prefix; prompt={prompt_text}"
     );
 }
 

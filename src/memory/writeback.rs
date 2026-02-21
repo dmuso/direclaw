@@ -7,6 +7,7 @@ use super::repository::{
     MemoryRepository, MemoryRepositoryError, MemorySourceRecord, PersistOutcome,
 };
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -33,7 +34,7 @@ pub fn persist_transcript_observation(
         captured_by: MemoryCapturedBy::User,
     };
     let node = MemoryNode {
-        memory_id: format!("transcript-{message_id}"),
+        memory_id: compact_memory_id("t", &[message_id]),
         orchestrator_id: orchestrator_id.to_string(),
         node_type: MemoryNodeType::Observation,
         importance: 45,
@@ -89,12 +90,7 @@ pub fn persist_workflow_output_memories(
         };
         let node_type = node_type_for_output_key(key);
         nodes.push(MemoryNode {
-            memory_id: format!(
-                "workflow-{}-{}-{}",
-                input.run_id,
-                input.step_id,
-                sanitize_id_component(key)
-            ),
+            memory_id: compact_memory_id("w", &[input.run_id, input.step_id, key]),
             orchestrator_id: input.orchestrator_id.to_string(),
             node_type,
             importance: importance_for_node_type(node_type),
@@ -142,7 +138,7 @@ pub fn persist_diagnostics_findings(
     }
 
     let summary = summarize(&content, 120);
-    let diagnostics_memory_id = format!("diagnostics-{}", input.diagnostics_id);
+    let diagnostics_memory_id = compact_memory_id("d", &[input.diagnostics_id]);
     let node = MemoryNode {
         memory_id: diagnostics_memory_id.clone(),
         orchestrator_id: input.orchestrator_id.to_string(),
@@ -291,4 +287,49 @@ fn sanitize_id_component(raw: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+fn compact_memory_id(prefix: &str, parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(prefix.as_bytes());
+    hasher.update([0]);
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = hasher.finalize();
+    format!(
+        "{prefix}-{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2]
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compact_memory_id;
+
+    #[test]
+    fn compact_memory_id_uses_prefix_and_six_hex_chars() {
+        let id = compact_memory_id("w", &["run-1", "review", "decision"]);
+        assert!(id.starts_with("w-"), "unexpected prefix: {id}");
+        assert_eq!(id.len(), 8, "unexpected length: {id}");
+        assert!(
+            id[2..].chars().all(|ch| ch.is_ascii_hexdigit()),
+            "expected hex suffix: {id}"
+        );
+    }
+
+    #[test]
+    fn compact_memory_id_is_deterministic_for_same_input() {
+        let first = compact_memory_id("d", &["diag-1"]);
+        let second = compact_memory_id("d", &["diag-1"]);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn compact_memory_id_changes_with_different_inputs() {
+        let first = compact_memory_id("t", &["msg-a"]);
+        let second = compact_memory_id("t", &["msg-b"]);
+        assert_ne!(first, second);
+    }
 }

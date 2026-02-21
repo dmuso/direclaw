@@ -554,7 +554,19 @@ fn workflow_output_writeback_updates_existing_memory_for_later_attempts() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("read memory");
-    assert_eq!(memory_id, "workflow-run-1-review-decision");
+    assert!(
+        memory_id.starts_with("w-"),
+        "expected compact workflow memory id prefix; got {memory_id}"
+    );
+    assert_eq!(
+        memory_id.len(),
+        8,
+        "expected compact workflow memory id length; got {memory_id}"
+    );
+    assert!(
+        memory_id[2..].chars().all(|ch| ch.is_ascii_hexdigit()),
+        "expected hex suffix in compact workflow memory id; got {memory_id}"
+    );
     assert_eq!(content, "reject");
     assert_eq!(updated_at, 200);
 }
