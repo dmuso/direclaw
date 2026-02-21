@@ -83,6 +83,7 @@ pub struct MemoryProvenanceHandle {
 pub struct FullTextCandidate {
     pub memory: MemoryNode,
     pub provenance: MemoryProvenanceHandle,
+    pub matched_span: Option<MemoryMatchedSpan>,
     pub rank: usize,
     pub bm25_score: f64,
 }
@@ -114,8 +115,18 @@ pub struct HybridRecallMemory {
     pub memory: MemoryNode,
     pub provenance: MemoryProvenanceHandle,
     pub citation: MemoryCitation,
+    pub snippet: Option<String>,
+    pub snippet_span_id: Option<String>,
     pub final_score: f64,
     pub unresolved_contradiction: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryMatchedSpan {
+    pub span_id: String,
+    pub text: String,
+    pub start_char: usize,
+    pub end_char: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -190,41 +201,61 @@ pub fn query_full_text(
                 m.captured_by,
                 m.created_at,
                 m.updated_at,
-                bm25(memory_fts) AS bm25_score
-            FROM memory_fts
+                s.span_id,
+                s.text,
+                s.start_char,
+                s.end_char,
+                bm25(memory_span_fts) AS bm25_score
+            FROM memory_span_fts
+            JOIN memory_spans s
+              ON s.orchestrator_id = memory_span_fts.orchestrator_id
+             AND s.memory_id = memory_span_fts.memory_id
+             AND s.span_id = memory_span_fts.span_id
             JOIN memories m
-              ON m.orchestrator_id = memory_fts.orchestrator_id
-             AND m.memory_id = memory_fts.memory_id
-            WHERE memory_fts MATCH ?1
+              ON m.orchestrator_id = s.orchestrator_id
+             AND m.memory_id = s.memory_id
+            WHERE memory_span_fts MATCH ?1
+              AND memory_span_fts.orchestrator_id = ?2
               AND m.orchestrator_id = ?2
               AND m.status != 'retracted'
-            ORDER BY bm25_score ASC, m.memory_id ASC
-            LIMIT ?3
+            ORDER BY bm25_score ASC, s.seq ASC, m.memory_id ASC
             ",
         )
         .map_err(|source| MemoryRecallError::Sql { source })?;
 
     let rows = statement
-        .query_map(
-            params![safe_query, repo.orchestrator_id(), top_k as i64],
-            |row| {
-                let (memory, provenance) = map_memory_row(row)?;
-                let score: f64 = row.get(16)?;
-                Ok((memory, provenance, score))
-            },
-        )
+        .query_map(params![safe_query, repo.orchestrator_id()], |row| {
+            let (memory, provenance) = map_memory_row(row)?;
+            let span = MemoryMatchedSpan {
+                span_id: row.get::<_, String>(16)?,
+                text: row.get::<_, String>(17)?,
+                start_char: row.get::<_, i64>(18)? as usize,
+                end_char: row.get::<_, i64>(19)? as usize,
+            };
+            let score: f64 = row.get(20)?;
+            Ok((memory, provenance, span, score))
+        })
         .map_err(|source| MemoryRecallError::Sql { source })?;
 
     let mut out = Vec::new();
-    for (idx, row) in rows.enumerate() {
-        let (memory, provenance, bm25_score) =
+    let mut seen = HashSet::new();
+    for row in rows {
+        let (memory, provenance, matched_span, bm25_score) =
             row.map_err(|source| MemoryRecallError::Sql { source })?;
+        if seen.contains(&memory.memory_id) {
+            continue;
+        }
+        seen.insert(memory.memory_id.clone());
         out.push(FullTextCandidate {
             memory,
             provenance,
-            rank: idx + 1,
+            matched_span: Some(matched_span),
+            rank: out.len() + 1,
             bm25_score,
         });
+        if out.len() >= top_k {
+            break;
+        }
     }
     Ok(out)
 }
@@ -444,6 +475,8 @@ fn fuse_rankings(
             citation: citation_for(&hit.memory, &hit.provenance),
             memory: hit.memory.clone(),
             provenance: hit.provenance.clone(),
+            snippet: hit.matched_span.as_ref().map(|span| span.text.clone()),
+            snippet_span_id: hit.matched_span.as_ref().map(|span| span.span_id.clone()),
             final_score: 0.0,
             unresolved_contradiction: false,
         });
@@ -457,6 +490,8 @@ fn fuse_rankings(
             citation: citation_for(&hit.memory, &hit.provenance),
             memory: hit.memory.clone(),
             provenance: hit.provenance.clone(),
+            snippet: None,
+            snippet_span_id: None,
             final_score: 0.0,
             unresolved_contradiction: false,
         });

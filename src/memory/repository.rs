@@ -142,12 +142,29 @@ impl MemoryRepository {
                     PRIMARY KEY (orchestrator_id, memory_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS memory_spans (
+                    orchestrator_id TEXT NOT NULL,
+                    span_id TEXT NOT NULL,
+                    memory_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    start_char INTEGER NOT NULL,
+                    end_char INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (orchestrator_id, span_id),
+                    FOREIGN KEY (orchestrator_id, memory_id)
+                        REFERENCES memories(orchestrator_id, memory_id)
+                        ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_memories_orchestrator_updated
                     ON memories(orchestrator_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_memory_edges_orchestrator_from
                     ON memory_edges(orchestrator_id, from_memory_id);
                 CREATE INDEX IF NOT EXISTS idx_memory_sources_orchestrator_processed
                     ON memory_sources(orchestrator_id, processed_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_memory_spans_orchestrator_memory
+                    ON memory_spans(orchestrator_id, memory_id);
                 ",
             )
             .map_err(|source| MemoryRepositoryError::Sql { source })?;
@@ -284,6 +301,55 @@ impl MemoryRepository {
                 ],
             )
             .map_err(|source| MemoryRepositoryError::Sql { source })?;
+
+            tx.execute(
+                "
+                DELETE FROM memory_spans
+                WHERE orchestrator_id = ?1 AND memory_id = ?2
+                ",
+                params![node.orchestrator_id, node.memory_id],
+            )
+            .map_err(|source| MemoryRepositoryError::Sql { source })?;
+
+            tx.execute(
+                "
+                DELETE FROM memory_span_fts
+                WHERE orchestrator_id = ?1 AND memory_id = ?2
+                ",
+                params![node.orchestrator_id, node.memory_id],
+            )
+            .map_err(|source| MemoryRepositoryError::Sql { source })?;
+
+            for span in split_content_into_spans(&node.content, 320) {
+                let span_id = format!("{}:s{}", node.memory_id, span.seq);
+                tx.execute(
+                    "
+                    INSERT INTO memory_spans (
+                        orchestrator_id, span_id, memory_id, seq, start_char, end_char, text, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    ",
+                    params![
+                        node.orchestrator_id,
+                        span_id,
+                        node.memory_id,
+                        span.seq as i64,
+                        span.start_char as i64,
+                        span.end_char as i64,
+                        span.text,
+                        node.updated_at,
+                    ],
+                )
+                .map_err(|source| MemoryRepositoryError::Sql { source })?;
+
+                tx.execute(
+                    "
+                    INSERT INTO memory_span_fts (orchestrator_id, memory_id, span_id, text)
+                    VALUES (?1, ?2, ?3, ?4)
+                    ",
+                    params![node.orchestrator_id, node.memory_id, span_id, span.text],
+                )
+                .map_err(|source| MemoryRepositoryError::Sql { source })?;
+            }
         }
 
         for edge in edges {
@@ -573,9 +639,123 @@ fn ensure_fts_table(connection: &Connection) -> Result<(), MemoryRepositoryError
                 content,
                 summary
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_span_fts
+            USING fts5(
+                orchestrator_id UNINDEXED,
+                memory_id UNINDEXED,
+                span_id UNINDEXED,
+                text
+            );
             ",
         )
         .map_err(|source| MemoryRepositoryError::Sql { source })?;
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct ContentSpan {
+    seq: usize,
+    start_char: usize,
+    end_char: usize,
+    text: String,
+}
+
+fn split_content_into_spans(content: &str, max_chars: usize) -> Vec<ContentSpan> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    let mut seq = 0usize;
+    for (mut start, mut end) in sentence_ranges(content) {
+        while start < end
+            && content[start..]
+                .chars()
+                .next()
+                .is_some_and(char::is_whitespace)
+        {
+            start += content[start..]
+                .chars()
+                .next()
+                .map(|ch| ch.len_utf8())
+                .unwrap_or(1);
+        }
+        while end > start
+            && content[..end]
+                .chars()
+                .last()
+                .is_some_and(char::is_whitespace)
+        {
+            end -= content[..end]
+                .chars()
+                .last()
+                .map(|ch| ch.len_utf8())
+                .unwrap_or(1);
+        }
+        if start >= end {
+            continue;
+        }
+
+        let sentence = &content[start..end];
+        if sentence.chars().count() <= max_chars {
+            seq += 1;
+            spans.push(ContentSpan {
+                seq,
+                start_char: start,
+                end_char: end,
+                text: sentence.to_string(),
+            });
+            continue;
+        }
+
+        // Long sentence fallback: split into bounded spans without dropping text.
+        let mut cursor = start;
+        while cursor < end {
+            let mut take_end = cursor;
+            let mut count = 0usize;
+            for (idx, ch) in content[cursor..end].char_indices() {
+                take_end = cursor + idx + ch.len_utf8();
+                count += 1;
+                if count >= max_chars {
+                    break;
+                }
+            }
+            if take_end <= cursor {
+                break;
+            }
+            seq += 1;
+            spans.push(ContentSpan {
+                seq,
+                start_char: cursor,
+                end_char: take_end,
+                text: content[cursor..take_end].trim().to_string(),
+            });
+            cursor = take_end;
+        }
+    }
+
+    spans
+}
+
+fn sentence_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    for (idx, ch) in content.char_indices() {
+        if matches!(ch, '.' | '!' | '?' | '\n') {
+            let end = idx + ch.len_utf8();
+            if end > start {
+                ranges.push((start, end));
+            }
+            start = end;
+        }
+    }
+    if start < content.len() {
+        ranges.push((start, content.len()));
+    }
+    if ranges.is_empty() {
+        ranges.push((0, content.len()));
+    }
+    ranges
 }

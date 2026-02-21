@@ -92,7 +92,8 @@ pub fn build_memory_bulletin(
         .collect::<Vec<_>>();
 
     for entry in &recall.memories {
-        let line = format!("- {} [{}]", entry.memory.summary, entry.memory.memory_id);
+        let summary = entry.snippet.as_deref().unwrap_or(&entry.memory.summary);
+        let line = format!("- {} [{}]", summary, entry.memory.memory_id);
         match entry.memory.node_type {
             super::domain::MemoryNodeType::Goal => {
                 find_section_mut(&mut sections, BulletinSectionName::ActiveGoals)
@@ -124,10 +125,7 @@ pub fn build_memory_bulletin(
                 BulletinSectionName::ConflictsAndUncertainties,
             )
             .lines
-            .push(format!(
-                "- {} [{}]",
-                entry.memory.summary, entry.memory.memory_id
-            ));
+            .push(format!("- {} [{}]", summary, entry.memory.memory_id));
         }
     }
 

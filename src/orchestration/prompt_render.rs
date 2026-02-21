@@ -29,6 +29,12 @@ fn build_memory_context_bundle(inputs: &Map<String, Value>) -> MemoryContextBund
         .unwrap_or_default()
         .to_string();
     if bulletin.chars().count() > MEMORY_CONTEXT_MAX_BULLETIN_CHARS {
+        let (value, was_truncated) =
+            truncate_memory_bulletin_by_lines(&bulletin, MEMORY_CONTEXT_MAX_BULLETIN_CHARS);
+        bulletin = value;
+        truncated = was_truncated;
+    }
+    if bulletin.chars().count() > MEMORY_CONTEXT_MAX_BULLETIN_CHARS {
         bulletin = bulletin
             .chars()
             .take(MEMORY_CONTEXT_MAX_BULLETIN_CHARS)
@@ -57,6 +63,36 @@ fn build_memory_context_bundle(inputs: &Map<String, Value>) -> MemoryContextBund
         citations,
         truncated,
     }
+}
+
+fn truncate_memory_bulletin_by_lines(input: &str, max_chars: usize) -> (String, bool) {
+    if input.chars().count() <= max_chars {
+        return (input.to_string(), false);
+    }
+
+    let mut out = String::new();
+    let mut used = 0usize;
+    let mut truncated = false;
+    for line in input.lines() {
+        let line_chars = line.chars().count();
+        let separator = if out.is_empty() { 0 } else { 1 };
+        if used + separator + line_chars > max_chars {
+            if out.is_empty() {
+                let hard = line.chars().take(max_chars).collect::<String>();
+                return (hard, true);
+            }
+            truncated = true;
+            break;
+        }
+        if separator == 1 {
+            out.push('\n');
+            used += 1;
+        }
+        out.push_str(line);
+        used += line_chars;
+    }
+
+    (out, truncated || used < input.chars().count())
 }
 
 fn resolve_json_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {

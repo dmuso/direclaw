@@ -181,6 +181,61 @@ fn full_text_adapter_handles_punctuation_without_fts_parse_errors() {
 }
 
 #[test]
+fn bulletin_prefers_query_relevant_sentence_from_long_memory_content() {
+    let (dir, repo, paths) = setup_repo();
+    let src = dir.path().join("source.txt");
+    fs::write(&src, "x").expect("write source");
+
+    let node = memory_node(
+        "mem-long",
+        "alpha",
+        MemoryNodeType::Fact,
+        "This paragraph starts with setup and background that does not answer the question. \
+         It keeps going with details that are mostly irrelevant to deployment causes. \
+         Root cause: deployment failed because migrations were executed out of order.",
+        "background details about deployment context",
+        65,
+        0.9,
+        10,
+        Some(canonical(&src)),
+        Some("conv-a"),
+    );
+    repo.upsert_nodes_and_edges(
+        &source_record("alpha", "k-long", Some(canonical(&src))),
+        &[node],
+        &[],
+    )
+    .expect("persist");
+
+    let recall = hybrid_recall(
+        &repo,
+        &HybridRecallRequest {
+            requesting_orchestrator_id: "alpha".to_string(),
+            conversation_id: Some("conv-a".to_string()),
+            query_text: "why did deployment fail".to_string(),
+            query_embedding: None,
+        },
+        &MemoryRecallOptions::default(),
+        None,
+        &paths.log_file,
+    )
+    .expect("hybrid recall");
+
+    let bulletin = build_memory_bulletin(
+        &recall,
+        &MemoryBulletinOptions {
+            max_chars: 4_000,
+            generated_at: 10,
+        },
+    );
+    assert!(
+        bulletin.rendered.contains("Root cause: deployment failed"),
+        "expected bulletin to include query-relevant sentence, got: {}",
+        bulletin.rendered
+    );
+}
+
+#[test]
 fn vector_adapter_reports_missing_embeddings_and_hybrid_recall_falls_back_to_text() {
     let (dir, repo, paths) = setup_repo();
     let src = dir.path().join("source.txt");
@@ -826,6 +881,8 @@ fn bulletin_truncation_prioritizes_goal_todo_decision_over_knowledge() {
                     workflow_run_id: None,
                     step_id: None,
                 },
+                snippet: None,
+                snippet_span_id: None,
                 final_score: 1.0,
                 unresolved_contradiction: false,
             },
@@ -858,6 +915,8 @@ fn bulletin_truncation_prioritizes_goal_todo_decision_over_knowledge() {
                     workflow_run_id: None,
                     step_id: None,
                 },
+                snippet: None,
+                snippet_span_id: None,
                 final_score: 1.0,
                 unresolved_contradiction: false,
             },
@@ -890,6 +949,8 @@ fn bulletin_truncation_prioritizes_goal_todo_decision_over_knowledge() {
                     workflow_run_id: None,
                     step_id: None,
                 },
+                snippet: None,
+                snippet_span_id: None,
                 final_score: 1.0,
                 unresolved_contradiction: false,
             },
@@ -922,6 +983,8 @@ fn bulletin_truncation_prioritizes_goal_todo_decision_over_knowledge() {
                     workflow_run_id: None,
                     step_id: None,
                 },
+                snippet: None,
+                snippet_span_id: None,
                 final_score: 1.0,
                 unresolved_contradiction: false,
             },
@@ -954,6 +1017,8 @@ fn bulletin_truncation_prioritizes_goal_todo_decision_over_knowledge() {
                     workflow_run_id: None,
                     step_id: None,
                 },
+                snippet: None,
+                snippet_span_id: None,
                 final_score: 1.0,
                 unresolved_contradiction: false,
             },
@@ -1444,6 +1509,8 @@ fn bulletin_hard_caps_tiny_max_chars_deterministically() {
                 workflow_run_id: None,
                 step_id: None,
             },
+            snippet: None,
+            snippet_span_id: None,
             final_score: 1.0,
             unresolved_contradiction: false,
         }],
