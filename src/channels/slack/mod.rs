@@ -318,6 +318,7 @@ pub fn run_socket_runtime_until_stop(
     validate_startup_credentials(settings)?;
     let channel_cfg = settings.channels.get("slack").cloned().unwrap_or_default();
     let reconnect_backoff_ms = channel_cfg.socket_reconnect_backoff_ms;
+    let idle_timeout_ms = channel_cfg.socket_idle_timeout_ms;
     let runtimes = build_profile_runtimes(
         settings,
         slack_include_im_conversations(settings),
@@ -352,6 +353,7 @@ pub fn run_socket_runtime_until_stop(
                 &profile,
                 &runtime,
                 reconnect_backoff_ms,
+                idle_timeout_ms,
                 stop_for_socket.as_ref(),
             )
             .map(|_| ());

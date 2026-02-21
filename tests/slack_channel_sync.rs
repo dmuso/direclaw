@@ -1,4 +1,6 @@
-use direclaw::channels::slack::{sync_once, sync_runtime_once, SlackError};
+use direclaw::channels::slack::{
+    run_socket_runtime_until_stop, sync_once, sync_runtime_once, SlackError,
+};
 use direclaw::config::{
     AuthSyncConfig, ChannelConfig, ChannelKind, ChannelProfile, Monitoring, Settings,
     SettingsOrchestrator, ThreadResponseMode,
@@ -32,6 +34,12 @@ struct RecordedRequest {
 }
 
 struct MockSlackServer {
+    base_url: String,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+struct TimedMockSlackServer {
     base_url: String,
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     handle: Option<thread::JoinHandle<()>>,
@@ -263,6 +271,113 @@ impl MockSlackServer {
     fn finish(mut self) -> Vec<RecordedRequest> {
         if let Some(handle) = self.handle.take() {
             handle.join().expect("join mock server");
+        }
+        self.requests.lock().expect("lock requests").clone()
+    }
+}
+
+impl TimedMockSlackServer {
+    fn start<F>(idle_timeout: std::time::Duration, responder: F) -> Self
+    where
+        F: Fn(&str) -> String + Send + Sync + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind timed mock server");
+        listener
+            .set_nonblocking(true)
+            .expect("set nonblocking listener");
+        let addr = listener.local_addr().expect("local addr");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_thread = Arc::clone(&requests);
+        let responder = Arc::new(responder);
+
+        let handle = thread::spawn(move || {
+            let mut last_request_at = std::time::Instant::now();
+            loop {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(conn) => conn,
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now().duration_since(last_request_at) >= idle_timeout
+                        {
+                            break;
+                        }
+                        thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                last_request_at = std::time::Instant::now();
+                stream.set_nonblocking(false).expect("set blocking stream");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
+
+                let mut request_line = String::new();
+                reader
+                    .read_line(&mut request_line)
+                    .expect("read request line");
+                let mut path = "/".to_string();
+                if let Some(raw_path) = request_line.split_whitespace().nth(1) {
+                    path = raw_path.to_string();
+                }
+
+                let mut auth_header = String::new();
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("read header");
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if lower.starts_with("authorization:") {
+                        auth_header = line
+                            .split_once(':')
+                            .map(|(_, v)| v.trim().to_string())
+                            .unwrap_or_default();
+                    }
+                    if lower.starts_with("content-length:") {
+                        content_length = line
+                            .split_once(':')
+                            .map(|(_, v)| v.trim().parse::<usize>().unwrap_or(0))
+                            .unwrap_or(0);
+                    }
+                }
+
+                let mut body = vec![0_u8; content_length];
+                if content_length > 0 {
+                    reader.read_exact(&mut body).expect("read body");
+                }
+                let body = String::from_utf8_lossy(&body).to_string();
+
+                requests_for_thread
+                    .lock()
+                    .expect("lock requests")
+                    .push(RecordedRequest {
+                        path: path.clone(),
+                        auth_header,
+                        body,
+                    });
+
+                let response_body = responder(&path);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+            }
+        });
+
+        Self {
+            base_url: format!("http://{}", addr),
+            requests,
+            handle: Some(handle),
+        }
+    }
+
+    fn finish(mut self) -> Vec<RecordedRequest> {
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("join timed mock server");
         }
         self.requests.lock().expect("lock requests").clone()
     }
@@ -1098,6 +1213,137 @@ fn socket_sync_ingests_dm_and_channel_events_without_history_backfill() {
             .iter()
             .all(|request| !request.path.starts_with("/api/conversations.history")),
         "socket mode should not call conversations.history"
+    );
+}
+
+#[test]
+fn socket_runtime_recovers_from_idle_stall_and_continues_ingesting() {
+    let _env_guard = env_lock_guard();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind reconnecting socket server");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("socket addr");
+    let socket_url = format!("ws://{addr}");
+    let socket_handle = thread::spawn(move || {
+        let first_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let (first_stream, _) = loop {
+            match listener.accept() {
+                Ok(conn) => break conn,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= first_deadline {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        };
+        first_stream
+            .set_nonblocking(false)
+            .expect("set blocking stream");
+        let mut first_socket = tungstenite::accept(first_stream).expect("accept first socket");
+        first_socket
+            .send(Message::Text(r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D111","channel_type":"im","user":"U111","text":"first","ts":"1700000300.1"}}}"#.to_string()))
+            .expect("send first payload");
+        first_socket
+            .get_mut()
+            .set_nonblocking(true)
+            .expect("set nonblocking first stream");
+        let first_disconnect_deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            match first_socket.read() {
+                Ok(Message::Close(_)) => break,
+                Err(tungstenite::Error::ConnectionClosed) => break,
+                Err(tungstenite::Error::Io(err))
+                    if err.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    if std::time::Instant::now() >= first_disconnect_deadline {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => break,
+                _ => {}
+            }
+        }
+
+        let second_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let (second_stream, _) = loop {
+            match listener.accept() {
+                Ok(conn) => break conn,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= second_deadline {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        };
+        second_stream
+            .set_nonblocking(false)
+            .expect("set blocking second stream");
+        let mut second_socket = tungstenite::accept(second_stream).expect("accept second socket");
+        second_socket
+            .send(Message::Text(r#"{"envelope_id":"env-2","type":"events_api","payload":{"event":{"type":"message","channel":"D111","channel_type":"im","user":"U111","text":"second","ts":"1700000301.1"}}}"#.to_string()))
+            .expect("send second payload");
+        let _ = second_socket.close(None);
+    });
+
+    let server = TimedMockSlackServer::start(std::time::Duration::from_millis(500), move |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return format!(r#"{{"ok":true,"url":"{socket_url}"}}"#);
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let mut settings = sample_socket_mode_settings(temp.path());
+    if let Some(config) = settings.channels.get_mut("slack") {
+        config.socket_idle_timeout_ms = 100;
+        config.socket_reconnect_backoff_ms = 10;
+    }
+    let queue = queue_for_profile(&settings, "slack_main");
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let run_state_root = state_root.clone();
+    let run_settings = settings.clone();
+    let runtime = thread::spawn(move || {
+        run_socket_runtime_until_stop(&run_state_root, &run_settings, stop_for_thread)
+            .expect("socket runtime succeeds");
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    runtime.join().expect("join runtime thread");
+    socket_handle.join().expect("join socket thread");
+
+    let incoming_count = fs::read_dir(&queue.incoming)
+        .expect("incoming list")
+        .count();
+    assert_eq!(
+        incoming_count, 2,
+        "runtime should reconnect and ingest both messages"
+    );
+
+    let requests = server.finish();
+    let open_calls = requests
+        .iter()
+        .filter(|request| request.path.starts_with("/api/apps.connections.open"))
+        .count();
+    assert!(
+        open_calls >= 2,
+        "expected runtime reconnect to call apps.connections.open multiple times"
     );
 }
 

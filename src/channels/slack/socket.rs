@@ -132,9 +132,12 @@ pub(super) fn process_socket_inbound_for_profile(
         queue_paths,
         profile_id,
         runtime,
-        reconnect_backoff_ms,
-        Some(deadline),
-        None,
+        SocketRunSettings {
+            reconnect_backoff_ms,
+            idle_timeout_ms,
+            deadline: Some(deadline),
+            stop: None,
+        },
     )
 }
 
@@ -144,6 +147,7 @@ pub(super) fn run_socket_inbound_for_profile_until_stop(
     profile_id: &str,
     runtime: &SlackProfileRuntime,
     reconnect_backoff_ms: u64,
+    idle_timeout_ms: u64,
     stop: &AtomicBool,
 ) -> Result<usize, SlackError> {
     run_socket_loop(
@@ -151,10 +155,21 @@ pub(super) fn run_socket_inbound_for_profile_until_stop(
         queue_paths,
         profile_id,
         runtime,
-        reconnect_backoff_ms,
-        None,
-        Some(stop),
+        SocketRunSettings {
+            reconnect_backoff_ms,
+            idle_timeout_ms,
+            deadline: None,
+            stop: Some(stop),
+        },
     )
+}
+
+#[derive(Clone, Copy)]
+struct SocketRunSettings<'a> {
+    reconnect_backoff_ms: u64,
+    idle_timeout_ms: u64,
+    deadline: Option<Instant>,
+    stop: Option<&'a AtomicBool>,
 }
 
 fn run_socket_loop(
@@ -162,12 +177,10 @@ fn run_socket_loop(
     queue_paths: &QueuePaths,
     profile_id: &str,
     runtime: &SlackProfileRuntime,
-    reconnect_backoff_ms: u64,
-    deadline: Option<Instant>,
-    stop: Option<&AtomicBool>,
+    settings: SocketRunSettings<'_>,
 ) -> Result<usize, SlackError> {
     let mut health = load_health(state_root, profile_id);
-    let reconnect_backoff = Duration::from_millis(reconnect_backoff_ms.max(1));
+    let reconnect_backoff = Duration::from_millis(settings.reconnect_backoff_ms.max(1));
     let mut enqueued_total = 0usize;
     let reconnect_request = reconnect_request_path(state_root);
     let mut force_reconnect_once = reconnect_request.exists();
@@ -176,7 +189,7 @@ fn run_socket_loop(
     }
 
     loop {
-        if should_stop(stop) || deadline_reached(deadline) {
+        if should_stop(settings.stop) || deadline_reached(settings.deadline) {
             break;
         }
 
@@ -199,7 +212,7 @@ fn run_socket_loop(
                 if class == RetryClass::NonRetryable {
                     return Err(SlackError::ApiRequest(message));
                 }
-                if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                if !sleep_reconnect(reconnect_backoff, settings.stop, settings.deadline) {
                     break;
                 }
                 continue;
@@ -219,7 +232,7 @@ fn run_socket_loop(
                         health.last_error.clone().unwrap_or_default(),
                     ));
                 }
-                if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                if !sleep_reconnect(reconnect_backoff, settings.stop, settings.deadline) {
                     break;
                 }
                 continue;
@@ -235,7 +248,11 @@ fn run_socket_loop(
             return Err(err);
         }
 
-        let control = LoopControl { deadline, stop };
+        let control = LoopControl {
+            deadline: settings.deadline,
+            stop: settings.stop,
+            idle_timeout: Duration::from_millis(settings.idle_timeout_ms.max(1)),
+        };
         let (enqueued, outcome) = process_single_connection(
             state_root,
             &mut socket,
@@ -251,7 +268,7 @@ fn run_socket_loop(
 
         if force_reconnect_once {
             force_reconnect_once = false;
-            if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+            if !sleep_reconnect(reconnect_backoff, settings.stop, settings.deadline) {
                 break;
             }
             continue;
@@ -260,7 +277,7 @@ fn run_socket_loop(
         match outcome {
             SocketLoopOutcome::StopRequested | SocketLoopOutcome::DeadlineReached => break,
             SocketLoopOutcome::ReconnectRequested | SocketLoopOutcome::Disconnected => {
-                if !sleep_reconnect(reconnect_backoff, stop, deadline) {
+                if !sleep_reconnect(reconnect_backoff, settings.stop, settings.deadline) {
                     break;
                 }
             }
@@ -356,6 +373,7 @@ enum SocketLoopOutcome {
 struct LoopControl<'a> {
     deadline: Option<Instant>,
     stop: Option<&'a AtomicBool>,
+    idle_timeout: Duration,
 }
 
 fn process_single_connection(
@@ -393,6 +411,7 @@ fn process_single_connection(
     });
 
     let mut outcome = SocketLoopOutcome::Disconnected;
+    let mut last_frame_at = Instant::now();
     loop {
         if should_stop(control.stop) {
             outcome = SocketLoopOutcome::StopRequested;
@@ -407,17 +426,36 @@ fn process_single_connection(
             outcome = SocketLoopOutcome::ReconnectRequested;
             break;
         }
+        if last_frame_at.elapsed() >= control.idle_timeout {
+            health.last_error = Some(format_socket_error(
+                "socket idle timeout",
+                &format!(
+                    "no websocket frames received for {}ms",
+                    control.idle_timeout.as_millis()
+                ),
+                RetryClass::Retryable,
+            ));
+            break;
+        }
 
         match socket.read() {
             Ok(Message::Text(text)) => {
+                last_frame_at = Instant::now();
                 handle_socket_text(socket, runtime, text.as_str(), &sender, health);
             }
-            Ok(Message::Binary(_)) => {}
+            Ok(Message::Binary(_)) => {
+                last_frame_at = Instant::now();
+            }
             Ok(Message::Ping(payload)) => {
+                last_frame_at = Instant::now();
                 let _ = socket.send(Message::Pong(payload));
             }
-            Ok(Message::Pong(_)) => {}
-            Ok(Message::Frame(_)) => {}
+            Ok(Message::Pong(_)) => {
+                last_frame_at = Instant::now();
+            }
+            Ok(Message::Frame(_)) => {
+                last_frame_at = Instant::now();
+            }
             Ok(Message::Close(_)) => break,
             Err(tungstenite::Error::Io(err))
                 if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>

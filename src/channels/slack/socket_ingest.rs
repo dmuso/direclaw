@@ -26,6 +26,7 @@ pub(super) fn run_socket_inbound_for_profile_until_stop(
     profile_id: &str,
     runtime: &SlackProfileRuntime,
     reconnect_backoff_ms: u64,
+    idle_timeout_ms: u64,
     stop: &std::sync::atomic::AtomicBool,
 ) -> Result<usize, SlackError> {
     socket::run_socket_inbound_for_profile_until_stop(
@@ -34,6 +35,7 @@ pub(super) fn run_socket_inbound_for_profile_until_stop(
         profile_id,
         runtime,
         reconnect_backoff_ms,
+        idle_timeout_ms,
         stop,
     )
 }
