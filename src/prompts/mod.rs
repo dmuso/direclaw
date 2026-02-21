@@ -249,6 +249,212 @@ where
     Ok(rendered)
 }
 
+fn has_non_empty_path_segments(raw: &str) -> bool {
+    let segments = raw
+        .split('.')
+        .filter(|segment| !segment.trim().is_empty())
+        .collect::<Vec<_>>();
+    !segments.is_empty()
+}
+
+fn is_supported_step_placeholder(token: &str) -> bool {
+    if let Some(path) = token.strip_prefix("inputs.") {
+        return has_non_empty_path_segments(path);
+    }
+    if let Some(path) = token.strip_prefix("state.") {
+        return has_non_empty_path_segments(path);
+    }
+    if let Some(path) = token.strip_prefix("steps.") {
+        let segments = path.split('.').collect::<Vec<_>>();
+        if segments.len() < 3 || segments[1] != "outputs" || segments[0].trim().is_empty() {
+            return false;
+        }
+        return segments[2..]
+            .iter()
+            .all(|segment| !segment.trim().is_empty());
+    }
+    if token == "workflow.run_id"
+        || token == "workflow.step_id"
+        || token == "workflow.attempt"
+        || token == "workflow.run_workspace"
+        || token == "workflow.output_schema_json"
+        || token == "workflow.output_paths_json"
+        || token == "workflow.runtime_context_json"
+        || token == "workflow.memory_context_bulletin"
+        || token == "workflow.memory_context_citations"
+        || token == "workflow.memory_context_json"
+        || token == "workflow.channel"
+        || token == "workflow.channel_profile_id"
+        || token == "workflow.conversation_id"
+        || token == "workflow.sender_id"
+        || token == "workflow.selector_id"
+        || token == "workflow.memory_bulletin"
+        || token == "workflow.memory_bulletin_citations"
+    {
+        return true;
+    }
+    if let Some(path_key) = token.strip_prefix("workflow.output_paths.") {
+        return !path_key.trim().is_empty();
+    }
+    false
+}
+
+fn is_supported_selector_placeholder(token: &str) -> bool {
+    token == "selector.request_json"
+        || token == "selector.result_path"
+        || token == "selector.orchestrator_id"
+        || token == "selector.agent_id"
+        || token == "selector.attempt"
+}
+
+fn validate_template_placeholders(template: &str, kind: &str) -> Result<(), String> {
+    render_template_with_placeholders(template, |token| {
+        let supported = if kind == "selector" {
+            is_supported_selector_placeholder(token)
+        } else {
+            is_supported_step_placeholder(token)
+        };
+        if supported {
+            Ok(String::new())
+        } else {
+            Err(format!("unsupported {kind} placeholder `{{{{{token}}}}}`"))
+        }
+    })?;
+    Ok(())
+}
+
+pub fn validate_orchestrator_prompt_templates(
+    private_workspace: &Path,
+    orchestrator: &OrchestratorConfig,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    let prompt_root = private_workspace.join(PROMPTS_DIR);
+
+    let selector_prompt_path = prompt_root.join(SELECTOR_PROMPT_REL_PATH);
+    if !selector_prompt_path.is_file() {
+        issues.push(format!(
+            "selector prompt template missing at {}",
+            selector_prompt_path.display()
+        ));
+    } else if let Ok(body) = fs::read_to_string(&selector_prompt_path) {
+        if let Err(err) = validate_template_placeholders(&body, "selector") {
+            issues.push(format!(
+                "selector prompt template invalid at {}: {err}",
+                selector_prompt_path.display()
+            ));
+        }
+    } else {
+        issues.push(format!(
+            "selector prompt template unreadable at {}",
+            selector_prompt_path.display()
+        ));
+    }
+
+    let selector_context_path = prompt_root.join(SELECTOR_CONTEXT_REL_PATH);
+    if !selector_context_path.is_file() {
+        issues.push(format!(
+            "selector context template missing at {}",
+            selector_context_path.display()
+        ));
+    } else if let Ok(body) = fs::read_to_string(&selector_context_path) {
+        if let Err(err) = validate_template_placeholders(&body, "selector") {
+            issues.push(format!(
+                "selector context template invalid at {}: {err}",
+                selector_context_path.display()
+            ));
+        }
+    } else {
+        issues.push(format!(
+            "selector context template unreadable at {}",
+            selector_context_path.display()
+        ));
+    }
+
+    for workflow in &orchestrator.workflows {
+        for step in &workflow.steps {
+            if !is_prompt_template_reference(&step.prompt) {
+                issues.push(format!(
+                    "workflow `{}` step `{}` prompt is inline; expected relative markdown path under prompts/",
+                    workflow.id, step.id
+                ));
+                continue;
+            }
+            let prompt_path = match resolve_prompt_template_path(&prompt_root, step.prompt.trim()) {
+                Ok(path) => path,
+                Err(err) => {
+                    issues.push(format!(
+                        "workflow `{}` step `{}` prompt path `{}` invalid: {err}",
+                        workflow.id, step.id, step.prompt
+                    ));
+                    continue;
+                }
+            };
+            if !prompt_path.is_file() {
+                issues.push(format!(
+                    "workflow `{}` step `{}` prompt template missing at {}",
+                    workflow.id,
+                    step.id,
+                    prompt_path.display()
+                ));
+            } else if let Ok(body) = fs::read_to_string(&prompt_path) {
+                if let Err(err) = validate_template_placeholders(&body, "step") {
+                    issues.push(format!(
+                        "workflow `{}` step `{}` prompt template invalid at {}: {err}",
+                        workflow.id,
+                        step.id,
+                        prompt_path.display()
+                    ));
+                }
+            } else {
+                issues.push(format!(
+                    "workflow `{}` step `{}` prompt template unreadable at {}",
+                    workflow.id,
+                    step.id,
+                    prompt_path.display()
+                ));
+            }
+
+            let context_rel = context_path_for_prompt_reference(step.prompt.trim());
+            let context_path = match resolve_prompt_template_path(&prompt_root, &context_rel) {
+                Ok(path) => path,
+                Err(err) => {
+                    issues.push(format!(
+                        "workflow `{}` step `{}` context path `{}` invalid: {err}",
+                        workflow.id, step.id, context_rel
+                    ));
+                    continue;
+                }
+            };
+            if !context_path.is_file() {
+                issues.push(format!(
+                    "workflow `{}` step `{}` context template missing at {}",
+                    workflow.id,
+                    step.id,
+                    context_path.display()
+                ));
+            } else if let Ok(body) = fs::read_to_string(&context_path) {
+                if let Err(err) = validate_template_placeholders(&body, "step") {
+                    issues.push(format!(
+                        "workflow `{}` step `{}` context template invalid at {}: {err}",
+                        workflow.id,
+                        step.id,
+                        context_path.display()
+                    ));
+                }
+            } else {
+                issues.push(format!(
+                    "workflow `{}` step `{}` context template unreadable at {}",
+                    workflow.id,
+                    step.id,
+                    context_path.display()
+                ));
+            }
+        }
+    }
+
+    issues
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +473,12 @@ mod tests {
             context_path_for_prompt_reference("workflows/default/step_1.prompt.md"),
             "workflows/default/step_1.context.md"
         );
+    }
+
+    #[test]
+    fn step_placeholder_validation_rejects_unknown_tokens() {
+        let err = validate_template_placeholders("hello {{workflow.not_supported}}", "step")
+            .expect_err("unknown step placeholder should fail");
+        assert!(err.contains("unsupported step placeholder"));
     }
 }

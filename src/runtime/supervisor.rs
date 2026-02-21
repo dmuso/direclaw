@@ -3,6 +3,8 @@ use super::{
     ownership_lock, queue_worker, RuntimeError, StatePaths, WorkerEvent, WorkerState,
 };
 use crate::channels::slack;
+use crate::config::load_orchestrator_config;
+use crate::prompts::validate_orchestrator_prompt_templates;
 use crate::runtime::worker_registry::apply_worker_event;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,6 +71,7 @@ pub fn run_supervisor(
         "supervisor.started",
         &format!("pid={} workers={}", std::process::id(), specs.len()),
     );
+    log_prompt_template_validation_warnings(&paths, &settings);
 
     let fail_worker = std::env::var("DIRECLAW_FAIL_WORKER").ok();
     let slow_shutdown_worker = std::env::var("DIRECLAW_SLOW_SHUTDOWN_WORKER").ok();
@@ -170,6 +173,49 @@ pub fn run_supervisor(
         "runtime stopped cleanly",
     );
     Ok(())
+}
+
+fn log_prompt_template_validation_warnings(paths: &StatePaths, settings: &crate::config::Settings) {
+    for orchestrator_id in settings.orchestrators.keys() {
+        let private_workspace = match settings.resolve_private_workspace(orchestrator_id) {
+            Ok(path) => path,
+            Err(err) => {
+                append_runtime_log(
+                    paths,
+                    "warn",
+                    "prompts.validation.issue",
+                    &format!(
+                        "orchestrator={} failed to resolve private workspace: {}",
+                        orchestrator_id, err
+                    ),
+                );
+                continue;
+            }
+        };
+        let orchestrator = match load_orchestrator_config(settings, orchestrator_id) {
+            Ok(cfg) => cfg,
+            Err(err) => {
+                append_runtime_log(
+                    paths,
+                    "warn",
+                    "prompts.validation.issue",
+                    &format!(
+                        "orchestrator={} failed to load orchestrator config for prompt validation: {}",
+                        orchestrator_id, err
+                    ),
+                );
+                continue;
+            }
+        };
+        for issue in validate_orchestrator_prompt_templates(&private_workspace, &orchestrator) {
+            append_runtime_log(
+                paths,
+                "warn",
+                "prompts.validation.issue",
+                &format!("orchestrator={} {}", orchestrator_id, issue),
+            );
+        }
+    }
 }
 
 fn shutdown_wait_timeout() -> Duration {
