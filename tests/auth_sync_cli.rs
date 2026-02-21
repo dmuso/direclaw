@@ -194,7 +194,12 @@ fn start_runs_auth_sync_before_marking_running() {
     fs::create_dir_all(&bin_dir).expect("bin dir");
     write_op_mock(&bin_dir.join("op"));
 
-    let output = run(&home, &["start"], Some(&bin_dir), Some("svc-token"));
+    let output = run(
+        &home,
+        &["start", "--detach"],
+        Some(&bin_dir),
+        Some("svc-token"),
+    );
     assert_ok(&output);
     assert!(stdout(&output).contains("started"));
     assert!(stdout(&output).contains("auth_sync=synced(codex)"));

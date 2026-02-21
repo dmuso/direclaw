@@ -7,15 +7,48 @@ use crate::runtime::{
     supervisor_ownership_state, OwnershipState, SupervisorState, WorkerHealth, WorkerState,
 };
 use std::fs;
+use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartMode {
+    Foreground,
+    Detach,
+}
+
 pub fn cmd_start() -> Result<String, String> {
+    cmd_start_with_args(&[])
+}
+
+pub fn cmd_start_with_args(args: &[String]) -> Result<String, String> {
+    match parse_start_mode(args)? {
+        StartMode::Foreground => cmd_start_foreground(),
+        StartMode::Detach => cmd_start_detached(),
+    }
+}
+
+fn parse_start_mode(args: &[String]) -> Result<StartMode, String> {
+    if args.is_empty() {
+        return Ok(StartMode::Foreground);
+    }
+    if args.len() == 1 && args[0] == "--detach" {
+        return Ok(StartMode::Detach);
+    }
+    Err("usage: start [--detach]".to_string())
+}
+
+fn prepare_start() -> Result<(crate::runtime::StatePaths, crate::config::Settings, String), String>
+{
     let paths = ensure_runtime_root()?;
     let settings = load_settings()?;
     validate_all_orchestrators(&settings)?;
     let auth_sync = sync_auth_sources(&settings)?;
+    let auth_sync_summary = render_auth_sync_result(&auth_sync, false);
     match supervisor_ownership_state(&paths).map_err(|e| e.to_string())? {
         OwnershipState::Running { pid } => {
             return Err(format!("supervisor already running (pid={pid})"))
@@ -23,6 +56,11 @@ pub fn cmd_start() -> Result<String, String> {
         OwnershipState::Stale => cleanup_stale_supervisor(&paths).map_err(|e| e.to_string())?,
         OwnershipState::NotRunning => {}
     }
+    Ok((paths, settings, auth_sync_summary))
+}
+
+fn cmd_start_detached() -> Result<String, String> {
+    let (paths, _settings, auth_sync_summary) = prepare_start()?;
 
     reserve_start_lock(&paths).map_err(|e| e.to_string())?;
     let pid = match spawn_supervisor_process(&paths.root).and_then(|pid| {
@@ -47,8 +85,84 @@ pub fn cmd_start() -> Result<String, String> {
         "started\nstate_root={}\npid={}\n{}",
         paths.root.display(),
         pid,
-        render_auth_sync_result(&auth_sync, false)
+        auth_sync_summary
     ))
+}
+
+fn cmd_start_foreground() -> Result<String, String> {
+    let (paths, settings, auth_sync_summary) = prepare_start()?;
+    let pid = std::process::id();
+    reserve_start_lock(&paths).map_err(|e| e.to_string())?;
+    if let Err(err) = crate::runtime::write_supervisor_lock_pid(&paths, pid) {
+        crate::runtime::clear_start_lock(&paths);
+        return Err(err.to_string());
+    }
+
+    append_runtime_log(
+        &paths,
+        "info",
+        "supervisor.start.requested",
+        &format!("pid={pid}"),
+    );
+
+    println!(
+        "started\nstate_root={}\npid={}\n{}",
+        paths.root.display(),
+        pid,
+        auth_sync_summary
+    );
+
+    let stop_follow = Arc::new(AtomicBool::new(false));
+    let follow_handle = spawn_runtime_log_follower(paths.runtime_log_path(), stop_follow.clone());
+    let run_result = run_supervisor(&paths.root, settings);
+    stop_follow.store(true, Ordering::Relaxed);
+    let _ = follow_handle.join();
+
+    match run_result {
+        Ok(()) => Ok(format!(
+            "stopped\nstate_root={}\npid={}",
+            paths.root.display(),
+            pid
+        )),
+        Err(err) => {
+            crate::runtime::clear_start_lock(&paths);
+            Err(err.to_string())
+        }
+    }
+}
+
+fn spawn_runtime_log_follower(
+    runtime_log_path: PathBuf,
+    stop_follow: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut offset = fs::metadata(&runtime_log_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let mut stdout = std::io::stdout();
+        while !stop_follow.load(Ordering::Relaxed) {
+            if let Ok(metadata) = fs::metadata(&runtime_log_path) {
+                if metadata.len() < offset {
+                    offset = 0;
+                }
+                if metadata.len() > offset {
+                    if let Ok(mut file) = fs::File::open(&runtime_log_path) {
+                        if file.seek(std::io::SeekFrom::Start(offset)).is_ok() {
+                            let mut chunk = String::new();
+                            if let Ok(bytes) = file.read_to_string(&mut chunk) {
+                                offset += bytes as u64;
+                                if !chunk.is_empty() {
+                                    let _ = write!(stdout, "{chunk}");
+                                    let _ = stdout.flush();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    })
 }
 
 pub fn cmd_stop() -> Result<String, String> {
@@ -67,8 +181,12 @@ pub fn cmd_stop() -> Result<String, String> {
 }
 
 pub fn cmd_restart() -> Result<String, String> {
+    cmd_restart_with_args(&[])
+}
+
+pub fn cmd_restart_with_args(args: &[String]) -> Result<String, String> {
     let stop = cmd_stop()?;
-    let start = cmd_start()?;
+    let start = cmd_start_with_args(args)?;
     Ok(format!("restart complete\n{stop}\n{start}"))
 }
 
@@ -337,6 +455,24 @@ mod tests {
     use super::*;
     use crate::runtime::SupervisorState;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn parse_start_mode_defaults_to_foreground() {
+        let mode = parse_start_mode(&[]).expect("parse mode");
+        assert_eq!(mode, StartMode::Foreground);
+    }
+
+    #[test]
+    fn parse_start_mode_supports_detach_flag() {
+        let mode = parse_start_mode(&["--detach".to_string()]).expect("parse mode");
+        assert_eq!(mode, StartMode::Detach);
+    }
+
+    #[test]
+    fn parse_start_mode_rejects_unknown_flag() {
+        let error = parse_start_mode(&["--unknown".to_string()]).expect_err("invalid flag");
+        assert!(error.contains("usage: start [--detach]"));
+    }
 
     #[test]
     fn slack_profile_status_uses_runtime_credential_health() {

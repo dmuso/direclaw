@@ -438,7 +438,7 @@ fn start_stop_idempotency_and_duplicate_start_protection() {
     let home = temp.path();
     write_settings(home);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -447,7 +447,7 @@ fn start_stop_idempotency_and_duplicate_start_protection() {
         "running=true",
     );
 
-    let duplicate = run(home, &["start"], &[]);
+    let duplicate = run(home, &["start", "--detach"], &[]);
     assert_err_contains(&duplicate, "already running");
 
     wait_for_runtime_state(
@@ -481,7 +481,7 @@ fn start_fails_fast_when_orchestrator_config_is_invalid() {
     let home = temp.path();
     write_invalid_workflow_settings(home);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_err_contains(
         &started,
         "orchestrator validation failed: workflow `default` requires non-empty `description`",
@@ -494,7 +494,7 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
     let home = temp.path();
     write_settings(home);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -517,7 +517,7 @@ fn restart_performs_full_stop_start_and_refreshes_runtime_start() {
         .expect("pid line")
         .to_string();
 
-    let restarted = run(home, &["restart"], &[]);
+    let restarted = run(home, &["restart", "--detach"], &[]);
     assert_ok(&restarted);
     wait_for_runtime_state(
         home,
@@ -599,7 +599,7 @@ fn start_recovers_processing_entry_and_processes_recovered_message() {
 
     let started = run(
         home,
-        &["start"],
+        &["start", "--detach"],
         &[
             (
                 "DIRECLAW_PROVIDER_BIN_ANTHROPIC",
@@ -667,7 +667,7 @@ fn worker_failure_reports_degraded_health_and_logs() {
 
     let started = run(
         home,
-        &["start"],
+        &["start", "--detach"],
         &[("DIRECLAW_FAIL_WORKER", "queue_processor")],
     );
     assert_ok(&started);
@@ -699,7 +699,7 @@ fn repeated_start_status_restart_never_corrupts_runtime_state() {
     let home = temp.path();
     write_settings(home);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -711,7 +711,7 @@ fn repeated_start_status_restart_never_corrupts_runtime_state() {
     let status = run(home, &["status"], &[]);
     assert_ok(&status);
 
-    let restarted = run(home, &["restart"], &[]);
+    let restarted = run(home, &["restart", "--detach"], &[]);
     assert_ok(&restarted);
     wait_for_runtime_state(
         home,
@@ -738,7 +738,7 @@ fn slow_shutdown_fault_injection_reports_timeout_state_and_log() {
 
     let started = run(
         home,
-        &["start"],
+        &["start", "--detach"],
         &[
             ("DIRECLAW_SLOW_SHUTDOWN_WORKER", "queue_processor"),
             ("DIRECLAW_SHUTDOWN_TIMEOUT_MILLISECONDS", "100"),
@@ -777,7 +777,7 @@ fn status_and_logs_expose_stable_operational_fields() {
     let home = temp.path();
     write_settings_with_heartbeat_interval(home, 1);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -830,7 +830,7 @@ fn heartbeat_worker_respects_disabled_interval() {
     let home = temp.path();
     write_settings_with_heartbeat_interval(home, 0);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -856,7 +856,11 @@ fn heartbeat_tick_failure_is_non_fatal_to_supervisor() {
     let home = temp.path();
     write_settings_with_heartbeat_interval(home, 1);
 
-    let started = run(home, &["start"], &[("DIRECLAW_FAIL_HEARTBEAT_TICK", "1")]);
+    let started = run(
+        home,
+        &["start", "--detach"],
+        &[("DIRECLAW_FAIL_HEARTBEAT_TICK", "1")],
+    );
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -909,7 +913,7 @@ fn slack_worker_start_reports_profile_scoped_missing_credentials() {
     let home = temp.path();
     write_slack_settings(home, true);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -950,7 +954,7 @@ fn slack_worker_running_is_exposed_in_status() {
     std::env::set_var("SLACK_APP_TOKEN", "xapp-test");
     std::env::set_var("DIRECLAW_SLACK_API_BASE", &slack_api_base);
 
-    let started = run(home, &["start"], &[]);
+    let started = run(home, &["start", "--detach"], &[]);
     assert_ok(&started);
     wait_for_runtime_state(
         home,
@@ -981,7 +985,7 @@ fn slack_worker_api_failure_is_exposed_in_status() {
     std::env::set_var("SLACK_BOT_TOKEN", "xoxb-test");
     std::env::set_var("SLACK_APP_TOKEN", "xapp-test");
     std::env::set_var("DIRECLAW_SLACK_API_BASE", "http://127.0.0.1:9/api");
-    let started_api_fail = run(home, &["start"], &[]);
+    let started_api_fail = run(home, &["start", "--detach"], &[]);
     assert_ok(&started_api_fail);
     wait_for_runtime_state(
         home,

@@ -46,6 +46,8 @@ sudo systemctl status direclaw
 sudo journalctl -u direclaw -f
 ```
 
+`direclaw start` is foreground by default and suitable for `Type=simple` services. Use `direclaw start --detach` only for ad-hoc background startup when no external supervisor is used.
+
 ### macOS (`launchd`)
 
 Example plist at `/Library/LaunchDaemons/com.direclaw.runtime.plist`:

@@ -196,6 +196,8 @@ docker run --rm -it \
 
 If `auth_sync.enabled=true`, startup runs sync first.
 
+`direclaw start` is foreground by default, so this container process stays attached and emits runtime logs to stdout/stderr. For manual background startup outside Compose/service managers, use `direclaw start --detach`.
+
 ## Related guides
 
 - [User Guide Index](README.md)

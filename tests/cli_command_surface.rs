@@ -187,7 +187,7 @@ fn daemon_start_status_stop_command_surface_works() {
     write_settings(temp.path(), true);
 
     assert_ok(&run(temp.path(), &["setup"]));
-    assert_ok(&run(temp.path(), &["start"]));
+    assert_ok(&run(temp.path(), &["start", "--detach"]));
 
     let status = run(temp.path(), &["status"]);
     assert_ok(&status);
@@ -217,7 +217,7 @@ fn daemon_restart_command_surface_works() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
     assert_ok(&run(temp.path(), &["setup"]));
-    assert_ok(&run(temp.path(), &["restart"]));
+    assert_ok(&run(temp.path(), &["restart", "--detach"]));
     assert_ok(&run(temp.path(), &["stop"]));
 }
 
@@ -252,7 +252,7 @@ fn daemon_auxiliary_command_surface_works() {
 fn start_missing_global_config_suggests_setup() {
     let temp = tempdir().expect("tempdir");
 
-    let started = run(temp.path(), &["start"]);
+    let started = run(temp.path(), &["start", "--detach"]);
     assert_err_contains(&started, "failed to read file");
     assert_err_contains(&started, "direclaw setup");
 }

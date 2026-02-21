@@ -33,6 +33,9 @@ Natural-language chat parity:
 - Initialize runtime environment.
 - Launch enabled workers (channels, queue processor, orchestrator, optional heartbeat).
 - For Slack, initialize all configured channel profiles and expose per-profile readiness state.
+- Default mode runs foreground and keeps process attached while workers are active.
+- Foreground mode streams structured runtime log output to standard output.
+- `--detach` launches runtime in background and returns immediately with supervisor metadata.
 
 `stop`:
 

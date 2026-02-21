@@ -154,6 +154,8 @@ direclaw logs
 direclaw stop
 ```
 
+`direclaw start` runs in the foreground by default and streams runtime logs to stdout. Use `direclaw start --detach` to launch in the background.
+
 ### Common configuration flow
 1. In non-interactive setup environments, create an orchestrator:
 

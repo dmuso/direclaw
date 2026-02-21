@@ -623,11 +623,15 @@ pub fn plan_function_invocation(
     args: &Map<String, Value>,
 ) -> Result<FunctionExecutionPlan, String> {
     match function_id {
-        function_ids::DAEMON_START => Ok(FunctionExecutionPlan::CliArgs(vec!["start".to_string()])),
+        function_ids::DAEMON_START => Ok(FunctionExecutionPlan::CliArgs(vec![
+            "start".to_string(),
+            "--detach".to_string(),
+        ])),
         function_ids::DAEMON_STOP => Ok(FunctionExecutionPlan::CliArgs(vec!["stop".to_string()])),
-        function_ids::DAEMON_RESTART => {
-            Ok(FunctionExecutionPlan::CliArgs(vec!["restart".to_string()]))
-        }
+        function_ids::DAEMON_RESTART => Ok(FunctionExecutionPlan::CliArgs(vec![
+            "restart".to_string(),
+            "--detach".to_string(),
+        ])),
         function_ids::DAEMON_STATUS => {
             Ok(FunctionExecutionPlan::CliArgs(vec!["status".to_string()]))
         }

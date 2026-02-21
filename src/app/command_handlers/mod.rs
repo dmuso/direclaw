@@ -47,9 +47,9 @@ pub fn run_cli(args: Vec<String>) -> Result<String, String> {
 fn run_cli_native(args: Vec<String>) -> Result<String, String> {
     match args[0].as_str() {
         "setup" => crate::setup::actions::cmd_setup(),
-        "start" => daemon::cmd_start(),
+        "start" => daemon::cmd_start_with_args(&args[1..]),
         "stop" => daemon::cmd_stop(),
-        "restart" => daemon::cmd_restart(),
+        "restart" => daemon::cmd_restart_with_args(&args[1..]),
         "status" => daemon::cmd_status(),
         "logs" => daemon::cmd_logs(),
         "send" => channels::cmd_send(&args[1..]),
