@@ -1,6 +1,7 @@
 use crate::config::{WorkflowConfig, WorkflowStepConfig};
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::run_store::WorkflowRunRecord;
+use crate::prompts::render_template_with_placeholders;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -113,38 +114,6 @@ fn value_to_rendered_text(value: &Value) -> Result<String, OrchestratorError> {
     })
 }
 
-fn render_template_with_placeholders<F>(
-    template: &str,
-    mut resolve: F,
-) -> Result<String, OrchestratorError>
-where
-    F: FnMut(&str) -> Result<String, OrchestratorError>,
-{
-    let mut rendered = String::new();
-    let mut cursor = template;
-
-    while let Some(start) = cursor.find("{{") {
-        rendered.push_str(&cursor[..start]);
-        let after_open = &cursor[start + 2..];
-        let Some(close_offset) = after_open.find("}}") else {
-            return Err(OrchestratorError::SelectorValidation(
-                "unclosed placeholder in template".to_string(),
-            ));
-        };
-        let token = after_open[..close_offset].trim();
-        if token.is_empty() {
-            return Err(OrchestratorError::SelectorValidation(
-                "empty placeholder in template".to_string(),
-            ));
-        }
-        rendered.push_str(&resolve(token)?);
-        cursor = &after_open[close_offset + 2..];
-    }
-
-    rendered.push_str(cursor);
-    Ok(rendered)
-}
-
 fn shared_output_root_and_paths(
     output_paths: &BTreeMap<String, PathBuf>,
 ) -> (Option<PathBuf>, BTreeMap<String, String>) {
@@ -185,6 +154,7 @@ fn shared_output_root_and_paths(
     (shared_root, rendered_paths)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_step_prompt(
     run: &WorkflowRunRecord,
     workflow: &WorkflowConfig,
@@ -193,6 +163,8 @@ pub fn render_step_prompt(
     run_workspace: &Path,
     output_paths: &BTreeMap<String, PathBuf>,
     step_outputs: &BTreeMap<String, Map<String, Value>>,
+    prompt_template: &str,
+    context_template: &str,
 ) -> Result<StepPromptRender, OrchestratorError> {
     let memory_context = build_memory_context_bundle(&run.inputs);
     let input_value = Value::Object(run.inputs.clone());
@@ -241,7 +213,75 @@ pub fn render_step_prompt(
         reason: format!("failed to render output paths json: {err}"),
     })?;
 
-    let rendered_prompt = render_template_with_placeholders(&step.prompt, |token| {
+    let runtime_context_value = Value::Object(Map::from_iter([
+        ("runId".to_string(), Value::String(run.run_id.clone())),
+        ("workflowId".to_string(), Value::String(workflow.id.clone())),
+        ("stepId".to_string(), Value::String(step.id.clone())),
+        ("attempt".to_string(), Value::from(attempt)),
+        (
+            "runWorkspace".to_string(),
+            Value::String(run_workspace.display().to_string()),
+        ),
+        ("inputs".to_string(), Value::Object(run.inputs.clone())),
+        ("state".to_string(), Value::Object(state_map.clone())),
+        (
+            "availableStepOutputs".to_string(),
+            Value::Object(Map::from_iter(step_outputs.iter().map(
+                |(step_id, outputs)| (step_id.clone(), Value::Object(outputs.clone())),
+            ))),
+        ),
+        (
+            "outputPaths".to_string(),
+            Value::Object(Map::from_iter(
+                context_output_paths
+                    .iter()
+                    .map(|(k, path)| (k.clone(), Value::String(path.clone()))),
+            )),
+        ),
+        (
+            "outputPathRoot".to_string(),
+            output_path_root
+                .as_ref()
+                .map(|root| Value::String(root.display().to_string()))
+                .unwrap_or(Value::Null),
+        ),
+        (
+            "memoryContext".to_string(),
+            Value::Object(Map::from_iter([
+                (
+                    "bulletin".to_string(),
+                    Value::String(memory_context.bulletin.clone()),
+                ),
+                (
+                    "citations".to_string(),
+                    Value::Array(
+                        memory_context
+                            .citations
+                            .iter()
+                            .map(|value| Value::String(value.clone()))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "truncated".to_string(),
+                    Value::Bool(memory_context.truncated),
+                ),
+                (
+                    "maxBulletinChars".to_string(),
+                    Value::from(MEMORY_CONTEXT_MAX_BULLETIN_CHARS as u64),
+                ),
+            ])),
+        ),
+    ]));
+    let runtime_context_json =
+        serde_json::to_string_pretty(&runtime_context_value).map_err(|err| {
+            OrchestratorError::StepPromptRender {
+                step_id: step.id.clone(),
+                reason: format!("failed to render runtime context json: {err}"),
+            }
+        })?;
+
+    let resolve_token = |token: &str| -> Result<String, OrchestratorError> {
         if let Some(path) = token.strip_prefix("inputs.") {
             let path_segments = path
                 .split('.')
@@ -310,6 +350,9 @@ pub fn render_step_prompt(
         }
         if token == "workflow.output_paths_json" {
             return Ok(output_paths_json.clone());
+        }
+        if token == "workflow.runtime_context_json" {
+            return Ok(runtime_context_json.clone());
         }
         if token == "workflow.memory_context_bulletin" {
             return Ok(memory_context.bulletin.clone());
@@ -382,70 +425,20 @@ pub fn render_step_prompt(
             step_id: step.id.clone(),
             reason: format!("unsupported placeholder `{{{{{token}}}}}`"),
         })
-    })?;
-
-    let context = serde_json::to_string_pretty(&Value::Object(Map::from_iter([
-        ("runId".to_string(), Value::String(run.run_id.clone())),
-        ("workflowId".to_string(), Value::String(workflow.id.clone())),
-        ("stepId".to_string(), Value::String(step.id.clone())),
-        ("attempt".to_string(), Value::from(attempt)),
-        (
-            "runWorkspace".to_string(),
-            Value::String(run_workspace.display().to_string()),
-        ),
-        ("inputs".to_string(), Value::Object(run.inputs.clone())),
-        ("state".to_string(), Value::Object(state_map)),
-        (
-            "availableStepOutputs".to_string(),
-            Value::Object(Map::from_iter(step_outputs.iter().map(
-                |(step_id, outputs)| (step_id.clone(), Value::Object(outputs.clone())),
-            ))),
-        ),
-        (
-            "outputPaths".to_string(),
-            Value::Object(Map::from_iter(
-                context_output_paths
-                    .iter()
-                    .map(|(k, path)| (k.clone(), Value::String(path.clone()))),
-            )),
-        ),
-        (
-            "outputPathRoot".to_string(),
-            output_path_root
-                .map(|root| Value::String(root.display().to_string()))
-                .unwrap_or(Value::Null),
-        ),
-        (
-            "memoryContext".to_string(),
-            Value::Object(Map::from_iter([
-                (
-                    "bulletin".to_string(),
-                    Value::String(memory_context.bulletin.clone()),
-                ),
-                (
-                    "citations".to_string(),
-                    Value::Array(
-                        memory_context
-                            .citations
-                            .iter()
-                            .map(|value| Value::String(value.clone()))
-                            .collect(),
-                    ),
-                ),
-                (
-                    "truncated".to_string(),
-                    Value::Bool(memory_context.truncated),
-                ),
-                (
-                    "maxBulletinChars".to_string(),
-                    Value::from(MEMORY_CONTEXT_MAX_BULLETIN_CHARS as u64),
-                ),
-            ])),
-        ),
-    ])))
-    .map_err(|err| OrchestratorError::StepPromptRender {
+    };
+    let rendered_prompt = render_template_with_placeholders(prompt_template, |token| {
+        resolve_token(token).map_err(|e| e.to_string())
+    })
+    .map_err(|reason| OrchestratorError::StepPromptRender {
         step_id: step.id.clone(),
-        reason: format!("failed to render context artifact: {err}"),
+        reason,
+    })?;
+    let context = render_template_with_placeholders(context_template, |token| {
+        resolve_token(token).map_err(|e| e.to_string())
+    })
+    .map_err(|reason| OrchestratorError::StepPromptRender {
+        step_id: step.id.clone(),
+        reason,
     })?;
 
     Ok(StepPromptRender {

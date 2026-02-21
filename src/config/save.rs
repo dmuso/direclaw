@@ -3,6 +3,7 @@ use super::{
     default_global_config_path, ConfigError, OrchestratorConfig, Settings, ValidationOptions,
 };
 use crate::memory::{bootstrap_memory_paths_for_runtime_root, MemoryPathError};
+use crate::prompts::ensure_orchestrator_prompt_templates;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -49,6 +50,7 @@ pub fn save_orchestrator_config(
         MemoryPathError::Canonicalize { path, source }
         | MemoryPathError::CreateDir { path, source } => ConfigError::CreateDir { path, source },
     })?;
+    ensure_orchestrator_prompt_templates(&private_workspace, orchestrator)?;
     let path = private_workspace.join("orchestrator.yaml");
     let body = serde_yaml::to_string(orchestrator).map_err(|source| ConfigError::Encode {
         path: path.display().to_string(),

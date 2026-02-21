@@ -3,6 +3,7 @@ pub mod channels;
 pub mod config;
 pub mod memory;
 pub mod orchestration;
+pub mod prompts;
 pub mod provider;
 pub mod queue;
 pub mod runtime;

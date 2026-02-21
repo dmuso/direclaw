@@ -1763,6 +1763,8 @@ fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
                 Value::String("Plan body".to_string()),
             )]),
         )]),
+        &plan_review_step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect("render engineering");
     assert!(rendered.prompt.contains("Plan body"));
@@ -1804,6 +1806,8 @@ fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
         Path::new("/tmp/workspace/run-2"),
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &product_step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect("render product");
     assert!(rendered.prompt.contains("Summarize roadmap tradeoffs"));
@@ -1846,6 +1850,8 @@ fn step_prompt_renderer_fails_fast_on_missing_required_placeholder() {
         Path::new("/tmp/workspace/run"),
         &BTreeMap::new(),
         &BTreeMap::new(),
+        &step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect_err("missing placeholder must fail");
     assert!(err.to_string().contains("missing required placeholder"));

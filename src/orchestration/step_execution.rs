@@ -16,6 +16,10 @@ use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunRecord, Work
 use crate::orchestration::workspace_access::{
     enforce_workspace_access, resolve_agent_workspace_root, WorkspaceAccessContext,
 };
+use crate::prompts::{
+    context_path_for_prompt_reference, default_step_context, is_prompt_template_reference,
+    resolve_prompt_template_path, PROMPTS_DIR,
+};
 use crate::provider::{
     consume_reset_flag, run_provider, write_file_backed_prompt, PromptArtifacts, ProviderError,
     ProviderKind, ProviderRequest, RunnerBinaries,
@@ -61,6 +65,11 @@ pub(crate) fn execute_step_attempt(
             .join("workflows/runs")
             .join(&run.run_id)
             .join("workspace")
+    };
+    let prompt_root = if let Some(workspace) = context.workspace_access_context {
+        workspace.private_workspace_root.join(PROMPTS_DIR)
+    } else {
+        context.run_store.state_root().join(PROMPTS_DIR)
     };
 
     let agent = context
@@ -133,6 +142,11 @@ pub(crate) fn execute_step_attempt(
             }
             Err(err) => return Err(err),
         };
+    let (prompt_template, context_template) = load_step_templates(&prompt_root, workflow, step)
+        .map_err(|reason| OrchestratorError::StepExecution {
+            step_id: step.id.clone(),
+            reason,
+        })?;
     let rendered = render_step_prompt(
         run,
         workflow,
@@ -141,6 +155,8 @@ pub(crate) fn execute_step_attempt(
         &run_workspace,
         &output_paths,
         &step_outputs,
+        &prompt_template,
+        &context_template,
     )?;
 
     let attempt_dir = context
@@ -264,6 +280,37 @@ pub(crate) fn execute_step_attempt(
         ),
     )?;
     Ok(evaluation)
+}
+
+fn load_step_templates(
+    prompt_root: &Path,
+    workflow: &WorkflowConfig,
+    step: &WorkflowStepConfig,
+) -> Result<(String, String), String> {
+    if !is_prompt_template_reference(&step.prompt) {
+        return Ok((step.prompt.clone(), default_step_context().to_string()));
+    }
+    let prompt_path = resolve_prompt_template_path(prompt_root, step.prompt.trim())?;
+    let context_rel = context_path_for_prompt_reference(step.prompt.trim());
+    let context_path = resolve_prompt_template_path(prompt_root, &context_rel)?;
+
+    let prompt_template = fs::read_to_string(&prompt_path).map_err(|err| {
+        format!(
+            "failed to read prompt template for workflow `{}` step `{}` at {}: {err}",
+            workflow.id,
+            step.id,
+            prompt_path.display()
+        )
+    })?;
+    let context_template = fs::read_to_string(&context_path).map_err(|err| {
+        format!(
+            "failed to read context template for workflow `{}` step `{}` at {}: {err}",
+            workflow.id,
+            step.id,
+            context_path.display()
+        )
+    })?;
+    Ok((prompt_template, context_template))
 }
 
 pub fn resolve_runner_binaries() -> RunnerBinaries {

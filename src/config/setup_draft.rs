@@ -6,12 +6,12 @@ use crate::config::{
     WorkflowStepWorkspaceMode, WorkflowTag,
 };
 use crate::memory::MemoryConfig;
+use crate::prompts::default_prompt_rel_path;
 use crate::templates::orchestrator_templates::{
     initial_orchestrator_config, WorkflowTemplate as SetupWorkflowTemplate,
 };
 use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_output_priority,
-    default_step_scaffold,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -341,7 +341,7 @@ impl SetupDraft {
                 id: "step_1".to_string(),
                 step_type: WorkflowStepType::AgentTask,
                 agent: selector_agent,
-                prompt: default_step_scaffold("agent_task"),
+                prompt: default_prompt_rel_path(workflow_id, "step_1"),
                 prompt_type: WorkflowStepPromptType::FileOutput,
                 workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                 next: None,
@@ -522,7 +522,7 @@ impl SetupDraft {
             id: step_id.to_string(),
             step_type: WorkflowStepType::AgentTask,
             agent: selector_agent,
-            prompt: default_step_scaffold("agent_task"),
+            prompt: default_prompt_rel_path(workflow_id, step_id),
             prompt_type: WorkflowStepPromptType::FileOutput,
             workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
             next: None,
@@ -602,7 +602,7 @@ impl SetupDraft {
         } else {
             WorkflowStepType::AgentTask
         };
-        step.prompt = default_step_scaffold(step.step_type.as_str());
+        step.prompt = default_prompt_rel_path(workflow_id, step_id);
         step.outputs = default_step_output_contract(step.step_type.as_str());
         step.output_files = default_step_output_files(step.step_type.as_str());
         Ok(())

@@ -512,7 +512,7 @@ fn workflow_commands_work() {
     let show = run(temp.path(), &["workflow", "show", "alpha", "triage"]);
     assert_ok(&show);
     let show_text = stdout(&show);
-    assert!(show_text.contains("When complete, write structured output"));
+    assert!(show_text.contains(".prompt.md"));
     assert!(show_text.contains("prompt_type: workflow_result_envelope"));
     assert!(show_text.contains("outputs:"));
     assert!(show_text.contains("output_files:"));

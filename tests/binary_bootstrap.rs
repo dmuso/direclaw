@@ -80,26 +80,21 @@ fn setup_defaults_workspace_under_state_root_when_config_is_missing() {
         .find(|workflow| workflow.id == "default")
         .expect("default workflow");
     let first_step = default_workflow.steps.first().expect("default step");
-    assert!(first_step
-        .prompt
-        .contains("When complete, write structured output"));
+    assert!(first_step.prompt.ends_with(".prompt.md"));
     assert_eq!(
         first_step.prompt_type,
         direclaw::config::WorkflowStepPromptType::FileOutput
     );
-    assert!(first_step.prompt.contains("Required outputs schema:"));
-    assert!(first_step
-        .prompt
-        .contains("{{workflow.output_schema_json}}"));
-    assert!(first_step
-        .prompt
-        .contains("{{workflow.output_paths.summary}}"));
-    assert!(first_step
-        .prompt
-        .contains("{{workflow.output_paths.artifact}}"));
-    assert!(!first_step
-        .prompt
-        .contains("You are the default workflow step."));
+    let prompt_path = home
+        .join(".direclaw/workspaces/main/prompts")
+        .join(&first_step.prompt);
+    let prompt_body = fs::read_to_string(prompt_path).expect("read prompt template");
+    assert!(prompt_body.contains("When complete, write structured output"));
+    assert!(prompt_body.contains("Required outputs schema:"));
+    assert!(prompt_body.contains("{{workflow.output_schema_json}}"));
+    assert!(prompt_body.contains("{{workflow.output_paths.summary}}"));
+    assert!(prompt_body.contains("{{workflow.output_paths.artifact}}"));
+    assert!(!prompt_body.contains("You are the default workflow step."));
     assert!(!first_step.outputs.is_empty());
     assert!(!first_step.output_files.is_empty());
 

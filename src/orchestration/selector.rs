@@ -2,6 +2,10 @@ use crate::config::{OrchestratorConfig, Settings};
 use crate::orchestration::diagnostics::{persist_selector_invocation_log, provider_error_log};
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::workspace_access::resolve_agent_workspace_root;
+use crate::prompts::{
+    default_selector_context, default_selector_prompt, render_template_with_placeholders,
+    resolve_prompt_template_path, PROMPTS_DIR, SELECTOR_CONTEXT_REL_PATH, SELECTOR_PROMPT_REL_PATH,
+};
 use crate::provider::{
     run_provider, write_file_backed_prompt, ProviderKind, ProviderRequest, RunnerBinaries,
 };
@@ -100,16 +104,41 @@ pub fn run_selector_attempt_with_provider(
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
 
-    let prompt = format!(
-        "You are the workflow selector.\nRead this selector request JSON and select the next action.\n{request_json}\n\nDecision policy:\n- Prioritize the user's explicit requested action over surrounding background context.\n- Distinguish contextual setup/background from the actual ask before choosing an action.\n- Use background details only to inform the action, not to override the direct request.\n- Choose from availableWorkflows/defaultWorkflow/availableFunctions exactly as provided.\n- Action `no_response` is allowed only for low-value opportunistic context messages.\n- Never use `no_response` when the inbound context indicates an explicit profile mention.\n\nInstructions:\n1. Read the selector request from the provided files.\n2. Identify the user's requested action separately from contextual setup/background.\n3. Select exactly one supported action and validate any selected workflow/function against the request fields.\n4. Output exactly one structured JSON selector result to this path:\n{}\n5. Do not output structured JSON anywhere else and do not rely on stdout.\nDo not use markdown fences.",
-        selector_result_path.display()
-    );
-    let context = format!(
-        "orchestratorId={}\nselectorAgent={}\nattempt={attempt}\nselectorResultPath={}",
-        orchestrator.id,
-        orchestrator.selector_agent,
-        selector_result_path.display()
-    );
+    let prompt_root = private_workspace.join(PROMPTS_DIR);
+    let prompt_template_path = resolve_prompt_template_path(&prompt_root, SELECTOR_PROMPT_REL_PATH)
+        .map_err(|e| format!("invalid selector prompt path `{SELECTOR_PROMPT_REL_PATH}`: {e}"))?;
+    let context_template_path =
+        resolve_prompt_template_path(&prompt_root, SELECTOR_CONTEXT_REL_PATH).map_err(|e| {
+            format!("invalid selector context path `{SELECTOR_CONTEXT_REL_PATH}`: {e}")
+        })?;
+    let prompt_template = fs::read_to_string(&prompt_template_path)
+        .unwrap_or_else(|_| default_selector_prompt().to_string());
+    let context_template = fs::read_to_string(&context_template_path)
+        .unwrap_or_else(|_| default_selector_context().to_string());
+    let selector_result_path_text = selector_result_path.display().to_string();
+    let render_token = |token: &str| -> Result<String, String> {
+        match token {
+            "selector.request_json" => Ok(request_json.clone()),
+            "selector.result_path" => Ok(selector_result_path_text.clone()),
+            "selector.orchestrator_id" => Ok(orchestrator.id.clone()),
+            "selector.agent_id" => Ok(orchestrator.selector_agent.clone()),
+            "selector.attempt" => Ok(attempt.to_string()),
+            _ => Err(format!(
+                "unsupported selector placeholder `{{{{{token}}}}}`"
+            )),
+        }
+    };
+    let prompt = render_template_with_placeholders(&prompt_template, render_token)?;
+    let context = render_template_with_placeholders(&context_template, |token| match token {
+        "selector.request_json" => Ok(request_json.clone()),
+        "selector.result_path" => Ok(selector_result_path_text.clone()),
+        "selector.orchestrator_id" => Ok(orchestrator.id.clone()),
+        "selector.agent_id" => Ok(orchestrator.selector_agent.clone()),
+        "selector.attempt" => Ok(attempt.to_string()),
+        _ => Err(format!(
+            "unsupported selector placeholder `{{{{{token}}}}}`"
+        )),
+    })?;
     let request_id = format!("{}_attempt_{attempt}", request.selector_id);
     let artifacts = write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
         .map_err(|err| err.to_string())?;

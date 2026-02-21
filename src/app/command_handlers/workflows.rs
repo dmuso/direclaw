@@ -8,9 +8,9 @@ use crate::config::{
 use crate::orchestration::run_store::{RunState, WorkflowRunStore};
 use crate::orchestration::workflow_engine::WorkflowEngine;
 use crate::orchestration::workspace_access::verify_orchestrator_workspace_access;
+use crate::prompts::default_prompt_rel_path;
 use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_output_priority,
-    default_step_scaffold,
 };
 use getrandom::getrandom;
 use serde_json::{Map, Value};
@@ -79,7 +79,7 @@ pub fn cmd_workflow(args: &[String]) -> Result<String, String> {
                     id: "step_1".to_string(),
                     step_type: WorkflowStepType::AgentTask,
                     agent: selector,
-                    prompt: default_step_scaffold("agent_task"),
+                    prompt: default_prompt_rel_path(&workflow_id, "step_1"),
                     prompt_type: WorkflowStepPromptType::FileOutput,
                     workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
                     next: None,

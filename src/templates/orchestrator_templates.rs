@@ -3,9 +3,9 @@ use crate::config::{
     WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
     WorkflowTag,
 };
+use crate::prompts::default_prompt_rel_path;
 use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_output_priority,
-    default_step_prompt,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,12 +27,22 @@ impl WorkflowTemplate {
     }
 }
 
-fn workflow_step(id: &str, step_type: &str, agent: &str, prompt: &str) -> WorkflowStepConfig {
+fn workflow_step(
+    workflow_id: &str,
+    id: &str,
+    step_type: &str,
+    agent: &str,
+    prompt_rel_path: &str,
+) -> WorkflowStepConfig {
     WorkflowStepConfig {
         id: id.to_string(),
         step_type: WorkflowStepType::parse(step_type).expect("default step type is valid"),
         agent: agent.to_string(),
-        prompt: format!("{prompt}\n\n{}", default_step_prompt(step_type)),
+        prompt: if prompt_rel_path.trim().is_empty() {
+            default_prompt_rel_path(workflow_id, id)
+        } else {
+            prompt_rel_path.to_string()
+        },
         prompt_type: WorkflowStepPromptType::FileOutput,
         workspace_mode: WorkflowStepWorkspaceMode::OrchestratorWorkspace,
         next: None,
@@ -79,16 +89,11 @@ pub fn initial_orchestrator_config(
         WorkflowTemplate::Minimal => {
             let workflow_id = "default".to_string();
             let steps = vec![workflow_step(
+                &workflow_id,
                 "step_1",
                 "agent_task",
                 &selector,
-                "Execute the user request end-to-end with clear, actionable output.
-If requirements are ambiguous, choose reasonable assumptions and state them in summary.
-Required outputs schema:
-{{workflow.output_schema_json}}
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                &default_prompt_rel_path("default", "step_1"),
             )];
             (
                 workflow_id.clone(),
@@ -118,28 +123,21 @@ artifact -> {{workflow.output_paths.artifact}}",
             );
 
             let mut review = workflow_step(
+                "feature_delivery",
                 "review",
                 "agent_review",
                 "reviewer",
-                "Review implementation quality, correctness, and test impact.
-Approve only when the work is production-ready.
-Write outputs exactly to:
-decision -> {{workflow.output_paths.decision}}
-summary -> {{workflow.output_paths.summary}}
-feedback -> {{workflow.output_paths.feedback}}",
+                &default_prompt_rel_path("feature_delivery", "review"),
             );
             review.on_approve = Some("done".to_string());
             review.on_reject = Some("implement".to_string());
 
             let mut implement = workflow_step(
+                "feature_delivery",
                 "implement",
                 "agent_task",
                 "builder",
-                "Implement the approved plan with production-safe changes.
-Include changed files and validation results in artifact.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                &default_prompt_rel_path("feature_delivery", "implement"),
             );
             implement.next = Some("review".to_string());
 
@@ -162,13 +160,11 @@ artifact -> {{workflow.output_paths.artifact}}",
                         steps: vec![
                             {
                                 let mut plan = workflow_step(
+                                    "feature_delivery",
                                     "plan",
                                     "agent_task",
                                     "planner",
-                                    "Draft an implementation plan with risks, sequencing, and test strategy.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                                    &default_prompt_rel_path("feature_delivery", "plan"),
                                 );
                                 plan.next = Some("implement".to_string());
                                 plan
@@ -176,13 +172,11 @@ artifact -> {{workflow.output_paths.artifact}}",
                             implement,
                             review,
                             workflow_step(
+                                "feature_delivery",
                                 "done",
                                 "agent_task",
                                 "planner",
-                                "Summarize final outcome, residual risks, and concrete follow-up actions.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                                &default_prompt_rel_path("feature_delivery", "done"),
                             ),
                         ],
                     },
@@ -199,13 +193,11 @@ artifact -> {{workflow.output_paths.artifact}}",
                         inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![workflow_step(
+                            "quick_answer",
                             "answer",
                             "agent_task",
                             "planner",
-                            "Answer the user request directly with correct, concise guidance.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                            &default_prompt_rel_path("quick_answer", "answer"),
                         )],
                     },
                 ],
@@ -227,7 +219,8 @@ artifact -> {{workflow.output_paths.artifact}}",
                     WorkflowConfig {
                         id: "prd_draft".to_string(),
                         version: 1,
-                        description: "Research and draft a product requirements document".to_string(),
+                        description: "Research and draft a product requirements document"
+                            .to_string(),
                         tags: vec![
                             workflow_tag("product"),
                             workflow_tag("prd"),
@@ -238,33 +231,29 @@ artifact -> {{workflow.output_paths.artifact}}",
                         steps: vec![
                             {
                                 let mut research = workflow_step(
+                                    "prd_draft",
                                     "research",
                                     "agent_task",
                                     "researcher",
-                                    "Extract product constraints, user goals, assumptions, and open questions.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                                    &default_prompt_rel_path("prd_draft", "research"),
                                 );
                                 research.next = Some("draft".to_string());
                                 research
                             },
                             workflow_step(
+                                "prd_draft",
                                 "draft",
                                 "agent_task",
                                 "writer",
-                                "Write a concise PRD with problem, goals, scope, milestones, and risks.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                                &default_prompt_rel_path("prd_draft", "draft"),
                             ),
                         ],
                     },
                     WorkflowConfig {
                         id: "release_notes".to_string(),
                         version: 1,
-                        description:
-                            "Compose customer-facing release notes grouped by impact".to_string(),
+                        description: "Compose customer-facing release notes grouped by impact"
+                            .to_string(),
                         tags: vec![
                             workflow_tag("product"),
                             workflow_tag("release"),
@@ -273,13 +262,11 @@ artifact -> {{workflow.output_paths.artifact}}",
                         inputs: WorkflowInputs::default(),
                         limits: None,
                         steps: vec![workflow_step(
+                            "release_notes",
                             "compose",
                             "agent_task",
                             "writer",
-                            "Write release notes grouped by user impact, fixes, and breaking changes.
-Write outputs exactly to:
-summary -> {{workflow.output_paths.summary}}
-artifact -> {{workflow.output_paths.artifact}}",
+                            &default_prompt_rel_path("release_notes", "compose"),
                         )],
                     },
                 ],

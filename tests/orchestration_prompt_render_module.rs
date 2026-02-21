@@ -79,6 +79,8 @@ fn prompt_render_module_renders_inputs_state_and_output_paths() {
         Path::new("/tmp/run-123/workspace"),
         &output_paths,
         &step_outputs,
+        &step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect("render prompt");
 
@@ -165,6 +167,8 @@ fn prompt_render_module_injects_memory_context_bundle_with_bounded_citations() {
         Path::new("/tmp/run-mem/workspace"),
         &output_paths,
         &BTreeMap::new(),
+        &step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect("render prompt");
 
@@ -248,6 +252,8 @@ fn prompt_render_module_memory_context_truncation_keeps_complete_ranked_lines() 
         Path::new("/tmp/run-mem-lines/workspace"),
         &output_paths,
         &BTreeMap::new(),
+        &step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect("render prompt");
 
@@ -343,6 +349,8 @@ fn prompt_render_module_context_uses_relative_output_paths_with_shared_root() {
         Path::new("/tmp/.direclaw/workflows/runs/run-ctx/workspace"),
         &output_paths,
         &BTreeMap::new(),
+        &step.prompt,
+        "{{workflow.runtime_context_json}}",
     )
     .expect("render prompt");
 
