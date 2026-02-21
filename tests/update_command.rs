@@ -89,7 +89,7 @@ fn update_check_reports_release_metadata_and_update_available() {
     let temp = tempdir().expect("tempdir");
     let api_url = spawn_release_server(
         "200 OK",
-        r#"{"tag_name":"v999.1.0","html_url":"https://example.com/release","published_at":"2026-02-14T01:02:03Z","prerelease":false,"draft":false,"assets":[{"name":"direclaw-v999.1.0-x86_64-unknown-linux-gnu.tar.gz"},{"name":"checksums.txt"}]}"#
+        r#"{"tag_name":"v999.1.0","html_url":"https://example.com/release","published_at":"2026-02-14T01:02:03Z","prerelease":false,"draft":false,"assets":[{"name":"direclaw-v999.1.0-x86_64-unknown-linux-musl.tar.gz"},{"name":"checksums.txt"}]}"#
             .to_string(),
     );
 
@@ -122,7 +122,7 @@ fn update_check_reports_release_metadata_and_update_available() {
         "unexpected output:\n{out}"
     );
     assert!(
-        out.contains("assets=checksums.txt,direclaw-v999.1.0-x86_64-unknown-linux-gnu.tar.gz"),
+        out.contains("assets=checksums.txt,direclaw-v999.1.0-x86_64-unknown-linux-musl.tar.gz"),
         "unexpected output:\n{out}"
     );
 }

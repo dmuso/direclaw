@@ -70,8 +70,8 @@ fn seed_success_inputs(root: &Path, tag: &str) -> (PathBuf, PathBuf, PathBuf, Pa
 
     for target in [
         "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
     ] {
         write(
             &artifacts.join(format!("direclaw-{tag}-{target}.tar.gz")),

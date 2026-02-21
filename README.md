@@ -161,15 +161,19 @@ direclaw stop
 direclaw orchestrator add main
 ```
 
-2. For Slack setup (app creation, required tokens, channel profile wiring), use the user guide:
+2. For Docker-based install/setup on Debian bookworm-slim (including latest release download by architecture and Codex auth sync flow), use:
+
+- [`docs/user-guide/installation-and-setup.md`](docs/user-guide/installation-and-setup.md)
+
+3. For Slack setup (app creation, required tokens, channel profile wiring), use the user guide:
 
 - [`docs/user-guide/slack-setup.md`](docs/user-guide/slack-setup.md)
 
-3. For headless provider auth artifact sync from 1Password, use:
+4. For headless provider auth artifact sync from 1Password, use:
 
 - [`docs/user-guide/provider-auth-sync-1password.md`](docs/user-guide/provider-auth-sync-1password.md)
 
-4. For production operations (service management, backups, incidents, upgrade/rollback), use:
+5. For production operations (service management, backups, incidents, upgrade/rollback), use:
 
 - [`docs/user-guide/operator-runbook.md`](docs/user-guide/operator-runbook.md)
 

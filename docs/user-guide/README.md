@@ -15,6 +15,7 @@ DireClaw v1 supports Slack only.
 ## Navigation
 
 - [Install and First Run](#install-and-first-run)
+- [Installation and Setup (Docker on Debian Bookworm Slim)](installation-and-setup.md)
 - [Slack Setup](slack-setup.md)
 - [Provider Auth Sync (1Password)](provider-auth-sync-1password.md)
 - [Operator Runbook](operator-runbook.md)
@@ -28,8 +29,8 @@ Follow this in order from a clean host.
 
 1. Open GitHub Releases and download the archive for your platform:
 - macOS arm64: `direclaw-<tag>-aarch64-apple-darwin.tar.gz`
-- Linux x86_64: `direclaw-<tag>-x86_64-unknown-linux-gnu.tar.gz`
-- Linux arm64: `direclaw-<tag>-aarch64-unknown-linux-gnu.tar.gz`
+- Linux x86_64: `direclaw-<tag>-x86_64-unknown-linux-musl.tar.gz`
+- Linux arm64: `direclaw-<tag>-aarch64-unknown-linux-musl.tar.gz`
 2. Download `checksums.txt` from the same release.
 3. Verify integrity:
 

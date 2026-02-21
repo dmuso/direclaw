@@ -18,6 +18,12 @@ use tungstenite::Message;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+fn env_lock_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Clone)]
 struct RecordedRequest {
     path: String,
@@ -42,6 +48,9 @@ impl MockSocketServer {
         let addr = listener.local_addr().expect("socket addr");
         let handle = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept socket");
+            stream
+                .set_nonblocking(false)
+                .expect("set blocking websocket stream");
             let mut websocket = tungstenite::accept(stream).expect("accept websocket");
             for payload in payloads {
                 websocket
@@ -94,6 +103,7 @@ impl ReconnectingSocketServer {
                         Err(_) => return,
                     }
                 };
+                let _ = stream.set_nonblocking(false);
                 let mut websocket = tungstenite::accept(stream).expect("accept websocket");
                 for payload in payloads {
                     websocket
@@ -348,7 +358,7 @@ channels:
 
 #[test]
 fn sync_can_disable_im_listing_when_scope_is_missing() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -403,7 +413,7 @@ fn sync_can_disable_im_listing_when_scope_is_missing() {
 
 #[test]
 fn sync_ingests_dm_from_socket_mode_event_without_im_read() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let socket = MockSocketServer::start(vec![
         r#"{"type":"hello"}"#.to_string(),
         r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello via socket","ts":"1700000100.1"}}}"#.to_string(),
@@ -450,7 +460,7 @@ fn sync_ingests_dm_from_socket_mode_event_without_im_read() {
 
 #[test]
 fn sync_accepts_channels_key_from_conversations_list_response() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -490,7 +500,7 @@ fn sync_accepts_channels_key_from_conversations_list_response() {
 
 #[test]
 fn sync_falls_back_to_non_dm_polling_when_im_scope_is_missing() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(5, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -540,7 +550,7 @@ fn sync_falls_back_to_non_dm_polling_when_im_scope_is_missing() {
 
 #[test]
 fn sync_skips_conversations_history_not_in_channel_errors() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -610,7 +620,7 @@ fn extract_query_param(path: &str, key: &str) -> Option<String> {
 
 #[test]
 fn sync_limits_first_history_backfill_to_last_24_hours_when_cursor_missing() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -663,7 +673,7 @@ fn sync_limits_first_history_backfill_to_last_24_hours_when_cursor_missing() {
 
 #[test]
 fn sync_uses_saved_cursor_timestamp_instead_of_default_backfill_window() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -710,7 +720,7 @@ fn sync_uses_saved_cursor_timestamp_instead_of_default_backfill_window() {
 
 #[test]
 fn sync_requires_slack_env_tokens() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     std::env::remove_var("SLACK_BOT_TOKEN");
     std::env::remove_var("SLACK_APP_TOKEN");
     std::env::remove_var("DIRECLAW_SLACK_API_BASE");
@@ -731,7 +741,7 @@ fn sync_requires_slack_env_tokens() {
 
 #[test]
 fn sync_queues_inbound_and_sends_outbound() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(5, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -809,7 +819,7 @@ fn sync_queues_inbound_and_sends_outbound() {
 
 #[test]
 fn sync_ingests_channel_messages_for_opportunistic_policy_even_when_not_mentioned() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -846,7 +856,7 @@ fn sync_ingests_channel_messages_for_opportunistic_policy_even_when_not_mentione
 
 #[test]
 fn sync_ingests_channel_messages_without_allowlist_even_when_mentions_not_required() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -884,7 +894,7 @@ fn sync_ingests_channel_messages_without_allowlist_even_when_mentions_not_requir
 
 #[test]
 fn sync_uses_configured_allowlisted_channels() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -922,7 +932,7 @@ fn sync_uses_configured_allowlisted_channels() {
 
 #[test]
 fn sync_pages_conversation_history_before_advancing_cursor() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(5, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -962,7 +972,7 @@ fn sync_pages_conversation_history_before_advancing_cursor() {
 
 #[test]
 fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     std::env::set_var("SLACK_BOT_TOKEN", "xoxb-global");
     std::env::set_var("SLACK_APP_TOKEN", "xapp-global");
     std::env::remove_var("SLACK_BOT_TOKEN_SLACK_MAIN");
@@ -994,7 +1004,7 @@ fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
 
 #[test]
 fn socket_sync_reconnects_acks_envelopes_and_suppresses_replay_duplicates() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let socket = ReconnectingSocketServer::start(vec![
         vec![r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello once","ts":"1700000100.1"}}}"#.to_string()],
         vec![r#"{"envelope_id":"env-2","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello once","ts":"1700000100.1"}}}"#.to_string()],
@@ -1047,7 +1057,7 @@ fn socket_sync_reconnects_acks_envelopes_and_suppresses_replay_duplicates() {
 
 #[test]
 fn socket_sync_ingests_dm_and_channel_events_without_history_backfill() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let socket = ReconnectingSocketServer::start(vec![vec![
         r#"{"envelope_id":"env-dm","type":"events_api","payload":{"event":{"type":"message","channel":"D111","channel_type":"im","user":"U777","text":"dm event","ts":"1700000200.1"}}}"#.to_string(),
         r#"{"envelope_id":"env-channel","type":"events_api","payload":{"event":{"type":"message","channel":"C222","channel_type":"channel","user":"U888","text":"channel event","ts":"1700000201.1","thread_ts":"1700000000.1"}}}"#.to_string(),
@@ -1093,7 +1103,7 @@ fn socket_sync_ingests_dm_and_channel_events_without_history_backfill() {
 
 #[test]
 fn sync_avoids_duplicate_ingestion_on_repeated_polling() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(8, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -1137,7 +1147,7 @@ fn sync_avoids_duplicate_ingestion_on_repeated_polling() {
 
 #[test]
 fn sync_chunks_outbound_and_removes_queue_file_on_success() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(6, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -1205,7 +1215,7 @@ fn sync_chunks_outbound_and_removes_queue_file_on_success() {
 
 #[test]
 fn sync_preserves_outbound_file_and_returns_context_on_api_failure() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(5, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -1272,7 +1282,7 @@ fn sync_preserves_outbound_file_and_returns_context_on_api_failure() {
 
 #[test]
 fn sync_continues_after_outbound_failure_and_delivers_later_files() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let post_attempts = Arc::new(AtomicUsize::new(0));
     let post_attempts_for_server = Arc::clone(&post_attempts);
     let server = MockSlackServer::start(6, move |path| {
@@ -1370,7 +1380,7 @@ fn sync_continues_after_outbound_failure_and_delivers_later_files() {
 
 #[test]
 fn sync_supports_channel_post_delivery_from_slack_target_ref() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(5, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -1440,7 +1450,7 @@ fn sync_supports_channel_post_delivery_from_slack_target_ref() {
 
 #[test]
 fn sync_rejects_unauthorized_channel_target_from_slack_target_ref() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -1507,7 +1517,7 @@ fn sync_rejects_unauthorized_channel_target_from_slack_target_ref() {
 
 #[test]
 fn sync_allows_thread_reply_outbound_for_non_allowlisted_channel() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(5, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
@@ -1576,7 +1586,7 @@ fn sync_allows_thread_reply_outbound_for_non_allowlisted_channel() {
 
 #[test]
 fn sync_rejects_mismatched_channel_profile_and_target_ref_profile() {
-    let _env_guard = ENV_LOCK.lock().expect("env lock");
+    let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(4, |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
