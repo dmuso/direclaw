@@ -32,7 +32,7 @@ if ! direclaw channel-profile list | grep -qx "slack_main"; then
     --require-mention-in-channels true >/dev/null
 fi
 
-direclaw start >/dev/null
+direclaw start --detach >/dev/null
 direclaw status >/dev/null
 
 # Queue a message through a configured profile as a first-message smoke check.
