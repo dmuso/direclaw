@@ -1,6 +1,6 @@
 use crate::config::{WorkflowConfig, WorkflowStepConfig};
 use crate::orchestration::error::OrchestratorError;
-use crate::orchestration::run_store::WorkflowRunRecord;
+use crate::orchestration::run_store::{RunMemoryContext, WorkflowRunRecord};
 use crate::prompts::render_template_with_placeholders;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -22,13 +22,9 @@ struct MemoryContextBundle {
     truncated: bool,
 }
 
-fn build_memory_context_bundle(inputs: &Map<String, Value>) -> MemoryContextBundle {
+fn build_memory_context_bundle(memory_context: &RunMemoryContext) -> MemoryContextBundle {
     let mut truncated = false;
-    let mut bulletin = inputs
-        .get("memory_bulletin")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
+    let mut bulletin = memory_context.bulletin.clone();
     if bulletin.chars().count() > MEMORY_CONTEXT_MAX_BULLETIN_CHARS {
         let (value, was_truncated) =
             truncate_memory_bulletin_by_lines(&bulletin, MEMORY_CONTEXT_MAX_BULLETIN_CHARS);
@@ -43,17 +39,7 @@ fn build_memory_context_bundle(inputs: &Map<String, Value>) -> MemoryContextBund
         truncated = true;
     }
 
-    let mut citations = inputs
-        .get("memory_bulletin_citations")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut citations = memory_context.citations.clone();
     if citations.len() > MEMORY_CONTEXT_MAX_CITATIONS {
         citations.truncate(MEMORY_CONTEXT_MAX_CITATIONS);
         truncated = true;
@@ -166,7 +152,7 @@ pub fn render_step_prompt(
     prompt_template: &str,
     context_template: &str,
 ) -> Result<StepPromptRender, OrchestratorError> {
-    let memory_context = build_memory_context_bundle(&run.inputs);
+    let memory_context = build_memory_context_bundle(&run.memory_context);
     let input_value = Value::Object(run.inputs.clone());
     let mut state_map = Map::from_iter([
         (
@@ -407,8 +393,6 @@ pub fn render_step_prompt(
             "workflow.conversation_id" => Some("conversation_id"),
             "workflow.sender_id" => Some("sender_id"),
             "workflow.selector_id" => Some("selector_id"),
-            "workflow.memory_bulletin" => Some("memory_bulletin"),
-            "workflow.memory_bulletin_citations" => Some("memory_bulletin_citations"),
             _ => None,
         };
         if let Some(field) = input_field {

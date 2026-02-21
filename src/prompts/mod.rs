@@ -259,6 +259,9 @@ fn has_non_empty_path_segments(raw: &str) -> bool {
 
 fn is_supported_step_placeholder(token: &str) -> bool {
     if let Some(path) = token.strip_prefix("inputs.") {
+        if path == "memory_bulletin" || path == "memory_bulletin_citations" {
+            return false;
+        }
         return has_non_empty_path_segments(path);
     }
     if let Some(path) = token.strip_prefix("state.") {
@@ -288,8 +291,6 @@ fn is_supported_step_placeholder(token: &str) -> bool {
         || token == "workflow.conversation_id"
         || token == "workflow.sender_id"
         || token == "workflow.selector_id"
-        || token == "workflow.memory_bulletin"
-        || token == "workflow.memory_bulletin_citations"
     {
         return true;
     }
@@ -479,6 +480,20 @@ mod tests {
     fn step_placeholder_validation_rejects_unknown_tokens() {
         let err = validate_template_placeholders("hello {{workflow.not_supported}}", "step")
             .expect_err("unknown step placeholder should fail");
+        assert!(err.contains("unsupported step placeholder"));
+    }
+
+    #[test]
+    fn step_placeholder_validation_rejects_legacy_memory_placeholders() {
+        let err = validate_template_placeholders("{{workflow.memory_bulletin}}", "step")
+            .expect_err("legacy memory placeholder should fail");
+        assert!(err.contains("unsupported step placeholder"));
+    }
+
+    #[test]
+    fn step_placeholder_validation_rejects_legacy_inputs_memory_placeholders() {
+        let err = validate_template_placeholders("{{inputs.memory_bulletin}}", "step")
+            .expect_err("legacy inputs memory placeholder should fail");
         assert!(err.contains("unsupported step placeholder"));
     }
 }

@@ -1,6 +1,8 @@
 use direclaw::config::{OrchestratorConfig, WorkflowConfig};
 use direclaw::orchestration::error::OrchestratorError;
-use direclaw::orchestration::run_store::{RunState, WorkflowRunRecord, WorkflowRunStore};
+use direclaw::orchestration::run_store::{
+    RunMemoryContext, RunState, WorkflowRunRecord, WorkflowRunStore,
+};
 use direclaw::orchestration::workflow_engine::{
     is_retryable_step_error, resolve_next_step_pointer, ExecutionSafetyLimits, WorkflowEngine,
 };
@@ -41,6 +43,7 @@ fn sample_run(run_id: &str) -> WorkflowRunRecord {
         workflow_id: "fix_issue".to_string(),
         state: RunState::Running,
         inputs: Map::new(),
+        memory_context: RunMemoryContext::default(),
         current_step_id: None,
         current_attempt: None,
         started_at: 1,

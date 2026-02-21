@@ -3,7 +3,7 @@ use direclaw::config::{
     WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
 };
 use direclaw::orchestration::prompt_render::render_step_prompt;
-use direclaw::orchestration::run_store::{RunState, WorkflowRunRecord};
+use direclaw::orchestration::run_store::{RunMemoryContext, RunState, WorkflowRunRecord};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,6 +24,7 @@ fn prompt_render_module_renders_inputs_state_and_output_paths() {
                 Value::String("summarize queue status".to_string()),
             ),
         ]),
+        memory_context: RunMemoryContext::default(),
         current_step_id: Some("plan".to_string()),
         current_attempt: Some(2),
         started_at: 100,
@@ -100,21 +101,14 @@ fn prompt_render_module_injects_memory_context_bundle_with_bounded_citations() {
         run_id: "run-mem".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
-        inputs: Map::from_iter([
-            (
-                "user_message".to_string(),
-                Value::String("plan next steps".to_string()),
-            ),
-            ("memory_bulletin".to_string(), Value::String(long_bulletin)),
-            (
-                "memory_bulletin_citations".to_string(),
-                Value::Array(vec![
-                    Value::String("m-1".to_string()),
-                    Value::String("m-2".to_string()),
-                    Value::String("m-3".to_string()),
-                ]),
-            ),
-        ]),
+        inputs: Map::from_iter([(
+            "user_message".to_string(),
+            Value::String("plan next steps".to_string()),
+        )]),
+        memory_context: RunMemoryContext {
+            bulletin: long_bulletin,
+            citations: vec!["m-1".to_string(), "m-2".to_string(), "m-3".to_string()],
+        },
         current_step_id: Some("plan".to_string()),
         current_attempt: Some(1),
         started_at: 10,
@@ -176,6 +170,17 @@ fn prompt_render_module_injects_memory_context_bundle_with_bounded_citations() {
         .prompt
         .contains("citations=[\"m-1\",\"m-2\",\"m-3\"]"));
     assert!(rendered.context.contains("\"memoryContext\""));
+    let context_json: Value = serde_json::from_str(&rendered.context).expect("context json");
+    assert!(
+        context_json.pointer("/inputs/memory_bulletin").is_none(),
+        "runtime context inputs must not duplicate memory bulletin"
+    );
+    assert!(
+        context_json
+            .pointer("/inputs/memory_bulletin_citations")
+            .is_none(),
+        "runtime context inputs must not duplicate memory citations"
+    );
     assert!(rendered.prompt.len() < 5000);
 }
 
@@ -189,17 +194,14 @@ fn prompt_render_module_memory_context_truncation_keeps_complete_ranked_lines() 
         run_id: "run-mem-lines".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
-        inputs: Map::from_iter([
-            (
-                "user_message".to_string(),
-                Value::String("find ranked lines".to_string()),
-            ),
-            ("memory_bulletin".to_string(), Value::String(ranked_lines)),
-            (
-                "memory_bulletin_citations".to_string(),
-                Value::Array(vec![Value::String("m-001".to_string())]),
-            ),
-        ]),
+        inputs: Map::from_iter([(
+            "user_message".to_string(),
+            Value::String("find ranked lines".to_string()),
+        )]),
+        memory_context: RunMemoryContext {
+            bulletin: ranked_lines,
+            citations: vec!["m-001".to_string()],
+        },
         current_step_id: Some("plan".to_string()),
         current_attempt: Some(1),
         started_at: 10,
@@ -278,6 +280,7 @@ fn prompt_render_module_context_uses_relative_output_paths_with_shared_root() {
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
         inputs: Map::new(),
+        memory_context: RunMemoryContext::default(),
         current_step_id: Some("plan".to_string()),
         current_attempt: Some(1),
         started_at: 10,

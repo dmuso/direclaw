@@ -11,7 +11,7 @@ use direclaw::orchestration::output_contract::{
 use direclaw::orchestration::prompt_render::render_step_prompt;
 use direclaw::orchestration::routing::{process_queued_message, StatusResolutionInput};
 use direclaw::orchestration::run_store::{
-    RunState, StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore,
+    RunMemoryContext, RunState, StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore,
 };
 use direclaw::orchestration::selector::{
     parse_and_validate_selector_result, resolve_selector_with_retries, SelectorAction,
@@ -871,6 +871,7 @@ fn run_timeout_uses_elapsed_runtime_across_multiple_steps() {
         workflow_id: "wf".to_string(),
         state: RunState::Running,
         inputs: Map::new(),
+        memory_context: RunMemoryContext::default(),
         current_step_id: Some("s2".to_string()),
         current_attempt: Some(1),
         started_at: 100,
@@ -1738,6 +1739,7 @@ fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
         workflow_id: engineering_workflow.id.clone(),
         state: RunState::Running,
         inputs: Map::from_iter([("channel".to_string(), Value::String("slack".to_string()))]),
+        memory_context: RunMemoryContext::default(),
         current_step_id: Some("plan_review".to_string()),
         current_attempt: Some(2),
         started_at: 10,
@@ -1787,6 +1789,7 @@ fn step_prompt_renderer_supports_engineering_and_product_placeholders() {
             "user_message".to_string(),
             Value::String("Summarize roadmap tradeoffs".to_string()),
         )]),
+        memory_context: RunMemoryContext::default(),
         current_step_id: Some(product_step.id.clone()),
         current_attempt: Some(1),
         started_at: 20,
@@ -1831,6 +1834,7 @@ fn step_prompt_renderer_fails_fast_on_missing_required_placeholder() {
         workflow_id: workflow.id.clone(),
         state: RunState::Running,
         inputs: Map::new(),
+        memory_context: RunMemoryContext::default(),
         current_step_id: Some(step.id.clone()),
         current_attempt: Some(1),
         started_at: 1,

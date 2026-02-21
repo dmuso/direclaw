@@ -56,6 +56,24 @@ impl std::fmt::Display for RunState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunMemoryContext {
+    #[serde(default)]
+    pub bulletin: String,
+    #[serde(default)]
+    pub citations: Vec<String>,
+}
+
+impl RunMemoryContext {
+    pub fn from_selector_request(bulletin: Option<&str>, citations: &[String]) -> Self {
+        Self {
+            bulletin: bulletin.unwrap_or_default().to_string(),
+            citations: citations.to_vec(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowRunRecord {
@@ -64,6 +82,8 @@ pub struct WorkflowRunRecord {
     pub state: RunState,
     #[serde(default)]
     pub inputs: Map<String, Value>,
+    #[serde(default)]
+    pub memory_context: RunMemoryContext,
     #[serde(default)]
     pub current_step_id: Option<String>,
     #[serde(default)]
@@ -117,6 +137,7 @@ pub struct SelectorStartedRunMetadata {
     pub selector_id: Option<String>,
     pub selected_workflow: Option<String>,
     pub status_conversation_id: Option<String>,
+    pub memory_context: RunMemoryContext,
 }
 
 impl WorkflowRunStore {
@@ -169,6 +190,7 @@ impl WorkflowRunStore {
             workflow_id: workflow_id.into(),
             state: RunState::Queued,
             inputs,
+            memory_context: metadata.memory_context,
             current_step_id: None,
             current_attempt: None,
             started_at: now,

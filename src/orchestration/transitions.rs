@@ -9,7 +9,7 @@ use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
 use crate::orchestration::output_contract::resolve_step_output_paths;
 use crate::orchestration::routing::{resolve_status_run_id, StatusResolutionInput};
 use crate::orchestration::run_store::{
-    ProgressSnapshot, SelectorStartedRunMetadata, WorkflowRunStore,
+    ProgressSnapshot, RunMemoryContext, SelectorStartedRunMetadata, WorkflowRunStore,
 };
 use crate::orchestration::selector::{
     parse_and_validate_selector_result, SelectorAction, SelectorRequest, SelectorResult,
@@ -195,24 +195,6 @@ fn selector_start_inputs(
             Value::String(source_message_id.to_string()),
         );
     }
-    if let Some(memory_bulletin) = request.memory_bulletin.as_ref() {
-        inputs.insert(
-            "memory_bulletin".to_string(),
-            Value::String(memory_bulletin.clone()),
-        );
-    }
-    if !request.memory_bulletin_citations.is_empty() {
-        inputs.insert(
-            "memory_bulletin_citations".to_string(),
-            Value::Array(
-                request
-                    .memory_bulletin_citations
-                    .iter()
-                    .map(|value| Value::String(value.clone()))
-                    .collect(),
-            ),
-        );
-    }
     if let Some(workflow_inputs) = workflow_inputs {
         inputs.insert(
             "workflow_inputs".to_string(),
@@ -220,6 +202,13 @@ fn selector_start_inputs(
         );
     }
     inputs
+}
+
+fn selector_start_memory_context(request: &SelectorRequest) -> RunMemoryContext {
+    RunMemoryContext::from_selector_request(
+        request.memory_bulletin.as_deref(),
+        &request.memory_bulletin_citations,
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,6 +313,7 @@ pub fn route_selector_action(
                     selector_id: Some(request.selector_id.clone()),
                     selected_workflow: Some(workflow_id.clone()),
                     status_conversation_id: request.conversation_id.clone(),
+                    memory_context: selector_start_memory_context(request),
                 },
                 selector_start_inputs(request, ctx.source_message_id, ctx.workflow_inputs),
                 ctx.now,

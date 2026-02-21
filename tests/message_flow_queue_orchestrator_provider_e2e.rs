@@ -171,7 +171,7 @@ workflows:
       - id: start
         type: agent_task
         agent: worker
-        prompt: "memory_context={{inputs.memory_bulletin}}"
+        prompt: "memory_context={{workflow.memory_context_bulletin}}"
         outputs: [summary, artifact]
         output_files:
           summary: outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt
