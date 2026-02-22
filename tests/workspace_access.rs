@@ -11,7 +11,9 @@ fn agent_shared_access_is_deny_by_default_without_orchestrator_grant() {
         r#"
 workspaces_path: /tmp/workspace
 shared_workspaces:
-  common: /tmp/shared/common
+  common:
+    path: /tmp/shared/common
+    description: common shared workspace
 orchestrators:
   alpha:
     shared_access: []
@@ -74,8 +76,12 @@ fn pre_execution_workspace_enforcement_isolated_per_orchestrator() {
         r#"
 workspaces_path: /tmp/workspace
 shared_workspaces:
-  eng: /tmp/shared/eng
-  product: /tmp/shared/product
+  eng:
+    path: /tmp/shared/eng
+    description: engineering shared workspace
+  product:
+    path: /tmp/shared/product
+    description: product shared workspace
 orchestrators:
   alpha:
     shared_access: [eng]

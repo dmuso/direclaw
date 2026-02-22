@@ -26,8 +26,8 @@ pub use paths::{
 pub use save::{save_orchestrator_config, save_settings};
 pub use settings::{
     AuthSyncConfig, AuthSyncSource, ChannelConfig, ChannelKind, ChannelProfile,
-    ChannelProfileIdentity, Monitoring, Settings, SettingsOrchestrator, SlackInboundMode,
-    ThreadResponseMode, ValidationOptions,
+    ChannelProfileIdentity, Monitoring, Settings, SettingsOrchestrator, SharedWorkspaceConfig,
+    SlackInboundMode, ThreadResponseMode, ValidationOptions,
 };
 pub(crate) use setup_draft::{OrchestrationLimitField, SetupDraft};
 pub use typed_fields::{
@@ -147,7 +147,9 @@ channels: {}
             r#"
 workspaces_path: /tmp/workspace
 shared_workspaces:
-  docs: /tmp/docs
+  docs:
+    path: /tmp/docs
+    description: shared docs
 orchestrators:
   alpha:
     shared_access: [missing]
@@ -172,6 +174,38 @@ channels: {}
     }
 
     #[test]
+    fn settings_validation_fails_for_blank_shared_workspace_description() {
+        let settings: Settings = serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp/workspace
+shared_workspaces:
+  docs:
+    path: /tmp/docs
+    description: "   "
+orchestrators:
+  alpha:
+    shared_access: []
+channel_profiles: {}
+monitoring: {}
+channels: {}
+"#,
+        )
+        .expect("parse settings");
+
+        let err = settings
+            .validate(ValidationOptions {
+                require_shared_paths_exist: false,
+            })
+            .expect_err("validation should fail");
+        match err {
+            ConfigError::Settings(message) => {
+                assert!(message.contains("description must be non-empty"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn settings_validation_canonicalizes_and_requires_shared_paths_when_enabled() {
         let temp = tempdir().expect("temp dir");
         let docs = temp.path().join("docs");
@@ -181,7 +215,9 @@ channels: {}
             r#"
 workspaces_path: {workspace}
 shared_workspaces:
-  docs: {docs}
+  docs:
+    path: {docs}
+    description: shared docs
 orchestrators:
   alpha:
     shared_access: [docs]

@@ -308,7 +308,9 @@ mod tests {
             r#"
 workspaces_path: {}
 shared_workspaces:
-  docs: {}
+  docs:
+    path: {}
+    description: shared docs
 orchestrators:
   alpha:
     private_workspace: {}

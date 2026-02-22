@@ -3,9 +3,15 @@ workspaces_path: /Users/example/.direclaw/workspaces
 
 # Named shared workspace registry. Keys are logical names used in orchestrator shared_access lists.
 shared_workspaces:
-  shared: /Users/example/direclaw-shared
-  docs: /Users/example/company-docs
-  data: /Volumes/team-data
+  shared:
+    path: /Users/example/direclaw-shared
+    description: Shared scratch space for cross-orchestrator collaboration artifacts.
+  docs:
+    path: /Users/example/company-docs
+    description: Product and technical documentation used for planning and execution.
+  data:
+    path: /Volumes/team-data
+    description: Large shared datasets and exports used by approved workflows.
 
 # Orchestrator registry. Each orchestrator owns agents/workflows in its private workspace.
 orchestrators:

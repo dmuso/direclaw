@@ -95,10 +95,13 @@ Validation:
 
 ## Shared Workspace Registry
 
-Shared workspace areas are logical names mapped to absolute paths:
+Shared workspace areas are logical names mapped to metadata objects:
 
 - Example logical names: `shared`, `docs`, `data`
 - Registry source: global config field `shared_workspaces`
+- Entry shape:
+  - `path` (absolute path)
+  - `description` (required non-empty text describing intended usage for agents/operators)
 
 Rules:
 

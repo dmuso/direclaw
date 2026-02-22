@@ -38,10 +38,10 @@ pub fn reconcile_orchestrator_shared_mounts(
                 "orchestrator `{orchestrator_id}` references unknown shared workspace `{key}`"
             ))
         })?;
-        let canonical_target = fs::canonicalize(target).map_err(|_| {
+        let canonical_target = fs::canonicalize(&target.path).map_err(|_| {
             OrchestratorError::Config(format!(
                 "shared workspace `{key}` path `{}` is missing or invalid",
-                target.display()
+                target.path.display()
             ))
         })?;
         desired.insert(key.clone(), normalize_absolute_path(&canonical_target)?);
@@ -220,7 +220,9 @@ mod tests {
             r#"
 workspaces_path: {}
 shared_workspaces:
-  docs: {}
+  docs:
+    path: {}
+    description: shared docs
 orchestrators:
   alpha:
     private_workspace: {}
@@ -252,7 +254,10 @@ channels: {{}}
     ) -> Settings {
         let mut shared_yaml = String::new();
         for (key, path) in shared {
-            shared_yaml.push_str(&format!("  {key}: {}\n", path.display()));
+            shared_yaml.push_str(&format!(
+                "  {key}:\n    path: {}\n    description: shared workspace {key}\n",
+                path.display()
+            ));
         }
         let grants_yaml = if grants.is_empty() {
             "[]".to_string()

@@ -11,7 +11,7 @@ use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::output_contract::{
     evaluate_step_result, materialize_output_files, resolve_step_output_paths, StepEvaluation,
 };
-use crate::orchestration::prompt_render::render_step_prompt;
+use crate::orchestration::prompt_render::{render_step_prompt, StepSharedWorkspaceContext};
 use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore};
 use crate::orchestration::workspace_access::{
     enforce_workspace_access, resolve_agent_workspace_root, WorkspaceAccessContext,
@@ -155,6 +155,20 @@ pub(crate) fn execute_step_attempt(
         &run_workspace,
         &output_paths,
         &step_outputs,
+        &context
+            .workspace_access_context
+            .map(|workspace| {
+                workspace
+                    .shared_workspaces
+                    .iter()
+                    .map(|(name, shared)| StepSharedWorkspaceContext {
+                        name: name.clone(),
+                        path: format!("./shared/{name}"),
+                        description: shared.description.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
         &prompt_template,
         &context_template,
     )?;

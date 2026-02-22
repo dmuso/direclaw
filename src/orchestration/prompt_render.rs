@@ -10,6 +10,13 @@ const MEMORY_CONTEXT_MAX_BULLETIN_CHARS: usize = 4_000;
 const MEMORY_CONTEXT_MAX_CITATIONS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepSharedWorkspaceContext {
+    pub name: String,
+    pub path: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepPromptRender {
     pub prompt: String,
     pub context: String,
@@ -149,6 +156,7 @@ pub fn render_step_prompt(
     run_workspace: &Path,
     output_paths: &BTreeMap<String, PathBuf>,
     step_outputs: &BTreeMap<String, Map<String, Value>>,
+    shared_workspaces: &[StepSharedWorkspaceContext],
     prompt_template: &str,
     context_template: &str,
 ) -> Result<StepPromptRender, OrchestratorError> {
@@ -198,6 +206,21 @@ pub fn render_step_prompt(
         step_id: step.id.clone(),
         reason: format!("failed to render output paths json: {err}"),
     })?;
+    let shared_workspaces_value = Value::Array(
+        shared_workspaces
+            .iter()
+            .map(|shared| {
+                Value::Object(Map::from_iter([
+                    ("name".to_string(), Value::String(shared.name.clone())),
+                    ("path".to_string(), Value::String(shared.path.clone())),
+                    (
+                        "description".to_string(),
+                        Value::String(shared.description.clone()),
+                    ),
+                ]))
+            })
+            .collect(),
+    );
 
     let runtime_context_value = Value::Object(Map::from_iter([
         ("runId".to_string(), Value::String(run.run_id.clone())),
@@ -258,6 +281,7 @@ pub fn render_step_prompt(
                 ),
             ])),
         ),
+        ("sharedWorkspaces".to_string(), shared_workspaces_value),
     ]));
     let runtime_context_json =
         serde_json::to_string_pretty(&runtime_context_value).map_err(|err| {

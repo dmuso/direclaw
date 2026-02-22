@@ -499,7 +499,7 @@ fn recall_enforces_source_path_workspace_access() {
     let context = WorkspaceAccessContext {
         orchestrator_id: "alpha".to_string(),
         private_workspace_root: canonical(&private_root),
-        shared_workspace_roots: BTreeMap::new(),
+        shared_workspaces: BTreeMap::new(),
     };
 
     let err = hybrid_recall(

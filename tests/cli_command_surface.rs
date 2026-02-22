@@ -91,7 +91,10 @@ fn write_settings(home: &Path, include_shared_workspace: bool) {
     fs::create_dir_all(&shared_workspace).expect("create shared workspace");
 
     let shared = if include_shared_workspace {
-        format!("  shared: {}", shared_workspace.display())
+        format!(
+            "  shared:\n    path: {}\n    description: shared workspace for cli tests",
+            shared_workspace.display()
+        )
     } else {
         String::new()
     };

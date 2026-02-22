@@ -10,7 +10,9 @@ fn sample_settings() -> Settings {
         r#"
 workspaces_path: /tmp/workspace
 shared_workspaces:
-  eng: /tmp/shared/eng
+  eng:
+    path: /tmp/shared/eng
+    description: engineering shared workspace
 orchestrators:
   alpha:
     shared_access: [eng]

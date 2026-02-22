@@ -17,7 +17,7 @@ Setup/config must support:
 - Channel profiles and channel-profile -> orchestrator mapping
 - Workspace root path
 - Per-orchestrator private workspace override
-- Shared workspace registry: logical name -> absolute path
+- Shared workspace registry: logical name -> `{ path, description }`
 - Per-orchestrator shared workspace allowlist
 - Per-orchestrator config file path resolution and validation
 - Heartbeat interval
@@ -28,6 +28,10 @@ Global config `~/.direclaw/config.yaml` must support:
 
 - `workspaces_path`
 - `shared_workspaces` object
+  - keyed by logical shared workspace name
+  - each value:
+    - `path` absolute filesystem path
+    - `description` required non-empty usage guidance
 - `orchestrators` object keyed by orchestrator id
   - each orchestrator:
     - `private_workspace` (optional override; default `<workspaces_path>/<orchestrator_id>`)

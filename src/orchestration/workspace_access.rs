@@ -8,7 +8,13 @@ use std::path::{Component, Path, PathBuf};
 pub struct WorkspaceAccessContext {
     pub orchestrator_id: String,
     pub private_workspace_root: PathBuf,
-    pub shared_workspace_roots: BTreeMap<String, PathBuf>,
+    pub shared_workspaces: BTreeMap<String, SharedWorkspaceAccess>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedWorkspaceAccess {
+    pub root: PathBuf,
+    pub description: String,
 }
 
 pub fn resolve_workspace_access_context(
@@ -24,21 +30,27 @@ pub fn resolve_workspace_access_context(
         ))
     })?;
 
-    let mut shared_workspace_roots = BTreeMap::new();
+    let mut shared_workspaces = BTreeMap::new();
     for grant in &orchestrator.shared_access {
         let shared = settings.shared_workspaces.get(grant).ok_or_else(|| {
             OrchestratorError::Config(format!(
                 "orchestrator `{orchestrator_id}` references unknown shared workspace `{grant}`"
             ))
         })?;
-        let normalized = canonicalize_absolute_path_if_exists(shared)?;
-        shared_workspace_roots.insert(grant.clone(), normalized);
+        let normalized = canonicalize_absolute_path_if_exists(&shared.path)?;
+        shared_workspaces.insert(
+            grant.clone(),
+            SharedWorkspaceAccess {
+                root: normalized,
+                description: shared.description.clone(),
+            },
+        );
     }
 
     Ok(WorkspaceAccessContext {
         orchestrator_id: orchestrator_id.to_string(),
         private_workspace_root: private_workspace,
-        shared_workspace_roots,
+        shared_workspaces,
     })
 }
 
@@ -64,9 +76,9 @@ pub fn enforce_workspace_access(
             continue;
         }
         if context
-            .shared_workspace_roots
+            .shared_workspaces
             .values()
-            .any(|root| normalized.starts_with(root))
+            .any(|shared| normalized.starts_with(&shared.root))
         {
             continue;
         }
@@ -116,7 +128,7 @@ fn collect_orchestrator_requested_paths(
                     "agent `{agent_id}` references unknown shared workspace `{shared}`"
                 ))
             })?;
-            requested.push(path.clone());
+            requested.push(path.path.clone());
         }
     }
     Ok(requested)

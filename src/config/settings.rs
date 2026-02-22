@@ -50,7 +50,7 @@ impl std::fmt::Display for ChannelKind {
 pub struct Settings {
     pub workspaces_path: PathBuf,
     #[serde(default)]
-    pub shared_workspaces: BTreeMap<String, PathBuf>,
+    pub shared_workspaces: BTreeMap<String, SharedWorkspaceConfig>,
     #[serde(default)]
     pub orchestrators: BTreeMap<String, SettingsOrchestrator>,
     #[serde(default)]
@@ -63,6 +63,12 @@ pub struct Settings {
     pub auth_sync: AuthSyncConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SharedWorkspaceConfig {
+    pub path: PathBuf,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -212,12 +218,18 @@ impl Settings {
         }
 
         let mut shared_keys = HashSet::new();
-        for (key, path) in &self.shared_workspaces {
+        for (key, shared_workspace) in &self.shared_workspaces {
             if key.trim().is_empty() {
                 return Err(ConfigError::Settings(
                     "`shared_workspaces` keys must be non-empty".to_string(),
                 ));
             }
+            if shared_workspace.description.trim().is_empty() {
+                return Err(ConfigError::Settings(format!(
+                    "shared workspace `{key}` description must be non-empty"
+                )));
+            }
+            let path = &shared_workspace.path;
             if !path.is_absolute() {
                 return Err(ConfigError::Settings(format!(
                     "shared workspace `{key}` must use an absolute path"
