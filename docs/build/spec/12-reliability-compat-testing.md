@@ -19,6 +19,9 @@ System must guarantee:
 - Worker restarts are safe for partially processed queue files.
 - Workspace access checks run before provider execution.
 - Misconfigured shared paths fail fast.
+- Legacy agent config fields (`private_workspace`, `shared_access`) fail fast.
+- Agent execution CWD is orchestrator private workspace root.
+- Workflow run task/work areas are under `<orchestrator_private_workspace>/work/runs/<run_id>`.
 - Workflow loops/timeouts are enforced.
 - Unauthorized workflow starts are rejected and logged.
 - Active workflow runs publish observable progress snapshots.
@@ -33,6 +36,7 @@ Requirements:
 
 - Enforce the documented typed config shape at parse/validation time.
 - Reject legacy/unknown config shapes with explicit validation errors.
+- Reject removed `workflow.steps[].workspace_mode` value `agent_workspace` with explicit validation errors.
 - Persist workflow-run records only at canonical paths.
 
 ## Test Strategy
@@ -48,6 +52,8 @@ Requirements:
 - message splitters
 - config validation
 - workspace access resolution and shared-area allowlist enforcement
+- workflow step workspace mode validation (`orchestrator_workspace`/`run_workspace` only)
+- legacy orchestrator-agent field rejection (`private_workspace`, `shared_access`)
 - workflow schema and transition validation
 - diagnostics scope resolver and ambiguity handling
 - diagnostics retrieval ranking and hard limits
@@ -60,6 +66,8 @@ Requirements:
 - per-agent execution ordering
 - reset flag behavior
 - private plus shared workspace visibility behavior
+- provider execution CWD remains orchestrator private workspace root
+- workflow step run workspace resolves under `<orchestrator_private_workspace>/work/runs/<run_id>`
 - workflow execution including approval/rejection loops and timeout handling
 - per-conversation ordering with channel-profile context
 - selector retry and default-workflow baseline behavior

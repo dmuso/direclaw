@@ -61,8 +61,14 @@ Per-orchestrator execution structure:
 - `<orchestrator_runtime_root>/orchestrator/diagnostics/results`
 - `<orchestrator_runtime_root>/orchestrator/diagnostics/logs`
 - `<orchestrator_runtime_root>/workflows/runs`
+- `<orchestrator_runtime_root>/work/runs/<run_id>`
 
 `<orchestrator_runtime_root>` resolves to the orchestrator private workspace root.
+
+Agent execution workspace model:
+
+- Provider-backed agent processes execute with current working directory set to `<orchestrator_runtime_root>`.
+- Workflow run task/work artifacts are created under `<orchestrator_runtime_root>/work/runs/<run_id>`.
 
 Configuration layering model:
 
@@ -108,7 +114,7 @@ Rules:
 - Shared areas are deny-by-default.
 - Each orchestrator gets shared-area grants in global config:
   - `orchestrators.<orchestrator_id>.shared_access[]`
-- Agents declared inside an orchestrator can only use shared areas granted to their orchestrator.
+- Shared workspace access is orchestrator-scoped only.
 - Shared paths must be absolute and canonicalized.
 - Missing or invalid shared paths must fail validation with explicit errors.
 

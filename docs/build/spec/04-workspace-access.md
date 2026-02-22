@@ -2,7 +2,7 @@
 
 ## Scope
 
-Defines orchestrator and agent workspace guarantees, shared workspace allowlists, and pre-execution access validation.
+Defines orchestrator workspace guarantees, shared workspace allowlists, step workspace modes, and pre-execution access validation.
 
 ## Orchestrator Private Workspace Rules
 
@@ -22,7 +22,11 @@ Per-orchestrator config and local assets live under this private workspace, incl
 
 - `<orchestrator_private_workspace>/orchestrator.yaml`
 - workflow definition folders referenced by that orchestrator config
-- orchestrator-local agent workspaces (recommended under `<orchestrator_private_workspace>/agents/<agent_id>`)
+- workflow run work areas under `<orchestrator_private_workspace>/work/runs/<run_id>`
+
+Provider execution guarantee:
+
+- Agents execute from the orchestrator private workspace root (process CWD is `<orchestrator_private_workspace>`).
 
 ## Shared Workspace Rules
 
@@ -32,8 +36,9 @@ Access model:
 
 - Deny by default.
 - Global settings assign shared access per orchestrator via `orchestrators.<orchestrator_id>.shared_access[]`.
-- Effective execution workspace context for an agent in that orchestrator is:
-  - orchestrator private workspace (and resolved agent private workspace inside it)
+- Shared workspace access is orchestrator-level only (no per-agent shared grants).
+- Effective execution workspace context is:
+  - orchestrator private workspace root
   - plus shared areas explicitly allowlisted for the orchestrator
 
 Domain expert guidance:
@@ -53,6 +58,21 @@ Execution guard:
 
 - Workspace access checks must run before provider execution.
 - Unauthorized path access attempts must be rejected and logged.
+
+## Workflow Step Workspace Modes
+
+`workflow.steps[].workspace_mode` supports only:
+
+- `orchestrator_workspace`
+- `run_workspace`
+
+Run workspace location:
+
+- `<orchestrator_private_workspace>/work/runs/<run_id>`
+
+Validation rules:
+
+- `agent_workspace` is invalid and must fail config validation.
 
 ## Orchestrator Workspace Configuration Behavior
 
@@ -75,4 +95,6 @@ Configuration commands must support:
 - Orchestrator with grants sees private plus exact allowlisted shared paths.
 - Misconfigured shared paths fail startup/config validation.
 - Access checks prevent usage of ungranted shared areas.
+- Agent execution CWD resolves to orchestrator private workspace root.
+- Workflow `run_workspace` resolves under `<orchestrator_private_workspace>/work/runs/<run_id>`.
 - Domain-specific channel-profile workflows do not gain cross-domain shared area access unless explicitly granted to the owning orchestrator.

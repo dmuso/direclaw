@@ -60,8 +60,13 @@ Per-orchestrator config requirements:
   - `selection_max_retries`
   - `agents` object keyed by agent id
 - For each orchestrator-local agent:
-  - `provider`, `model`, optional `private_workspace`, `can_orchestrate_workflows`
-  - optional `shared_access[]` (must be subset of orchestrator shared grants from global settings)
+  - `provider`, `model`, `can_orchestrate_workflows`
+- Legacy agent fields are invalid and must fail fast:
+  - `private_workspace`
+  - `shared_access`
+- For each workflow step:
+  - `workspace_mode` supports only `orchestrator_workspace` and `run_workspace`
+  - `agent_workspace` is invalid and must fail config validation
 - `workflow_orchestration` safety defaults may be defined per orchestrator config
   - supported keys include:
     - `default_run_timeout_seconds`
@@ -71,6 +76,11 @@ Per-orchestrator config requirements:
 - `workflows` must contain at least one valid workflow definition
 - `default_workflow` must exist in `workflows`
 - `selector_agent` must reference an agent in the same orchestrator config and must have `can_orchestrate_workflows: true`
+
+Execution workspace behavior:
+
+- Agent/provider executions run with CWD at `<resolved_orchestrator_private_workspace>`.
+- Workflow run work areas resolve to `<resolved_orchestrator_private_workspace>/work/runs/<run_id>`.
 
 Reference examples:
 
@@ -140,7 +150,6 @@ Required subcommands:
 `orchestrator-agent add` must:
 
 - Add agent definition to `<orchestrator_private_workspace>/orchestrator.yaml`.
-- Create default agent private workspace under `<orchestrator_private_workspace>/agents/<agent_id>` unless overridden.
 - Set provider/model and capability flags in orchestrator config.
 
 ## Workflow Commands
