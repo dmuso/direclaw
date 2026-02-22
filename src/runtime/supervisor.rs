@@ -5,6 +5,7 @@ use super::{
 use crate::channels::slack;
 use crate::config::load_orchestrator_config;
 use crate::orchestration::shared_mounts::reconcile_all_orchestrator_shared_mounts;
+use crate::orchestration::skills_mounts::reconcile_all_orchestrator_skill_mounts;
 use crate::prompts::validate_orchestrator_prompt_templates;
 use crate::runtime::worker_registry::apply_worker_event;
 use serde::{Deserialize, Serialize};
@@ -181,6 +182,7 @@ fn reconcile_shared_mounts_on_startup(
     settings: &crate::config::Settings,
 ) -> Result<(), RuntimeError> {
     reconcile_all_orchestrator_shared_mounts(settings)
+        .and_then(|_| reconcile_all_orchestrator_skill_mounts(settings))
         .map_err(|err| RuntimeError::Startup(err.to_string()))
 }
 
@@ -331,5 +333,19 @@ channels: {{}}
         let metadata = fs::symlink_metadata(&link).expect("link metadata");
         assert!(metadata.file_type().is_symlink());
         assert_eq!(fs::read_link(link).expect("read link"), shared_docs);
+        assert_orchestrator_skill_mounts(&private_workspace);
+    }
+
+    fn assert_orchestrator_skill_mounts(private_workspace: &Path) {
+        let skills_root = private_workspace.join("skills");
+        assert!(skills_root.is_dir(), "missing skills root");
+        assert_symlink_to(&private_workspace.join(".agents/skills"), &skills_root);
+        assert_symlink_to(&private_workspace.join(".claude/skills"), &skills_root);
+    }
+
+    fn assert_symlink_to(link: &Path, target: &Path) {
+        let metadata = fs::symlink_metadata(link).expect("link metadata");
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(fs::read_link(link).expect("read link"), target);
     }
 }

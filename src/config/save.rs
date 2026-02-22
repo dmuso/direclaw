@@ -6,6 +6,9 @@ use crate::memory::{bootstrap_memory_paths_for_runtime_root, MemoryPathError};
 use crate::orchestration::shared_mounts::{
     reconcile_all_orchestrator_shared_mounts, reconcile_orchestrator_shared_mounts,
 };
+use crate::orchestration::skills_mounts::{
+    reconcile_all_orchestrator_skill_mounts, reconcile_orchestrator_skill_mounts,
+};
 use crate::prompts::ensure_orchestrator_prompt_templates;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,6 +43,11 @@ pub fn save_settings(settings: &Settings) -> Result<PathBuf, ConfigError> {
             "failed to reconcile shared workspace mounts after saving settings: {err}"
         ))
     })?;
+    reconcile_all_orchestrator_skill_mounts(settings).map_err(|err| {
+        ConfigError::Settings(format!(
+            "failed to reconcile orchestrator skill mounts after saving settings: {err}"
+        ))
+    })?;
     Ok(path)
 }
 
@@ -71,6 +79,11 @@ pub fn save_orchestrator_config(
     reconcile_orchestrator_shared_mounts(settings, orchestrator_id).map_err(|err| {
         ConfigError::Settings(format!(
             "failed to reconcile shared workspace mounts for orchestrator `{orchestrator_id}`: {err}"
+        ))
+    })?;
+    reconcile_orchestrator_skill_mounts(settings, orchestrator_id).map_err(|err| {
+        ConfigError::Settings(format!(
+            "failed to reconcile skill mounts for orchestrator `{orchestrator_id}`: {err}"
         ))
     })?;
     Ok(path)
@@ -119,6 +132,7 @@ channels: {{}}
         save_settings(&settings).expect("save settings");
 
         assert_symlink_to(&private_workspace.join("shared/docs"), &shared_docs);
+        assert_orchestrator_skill_mounts(&private_workspace);
     }
 
     #[test]
@@ -197,6 +211,13 @@ workflows:
         let metadata = fs::symlink_metadata(link).expect("link metadata");
         assert!(metadata.file_type().is_symlink());
         assert_eq!(fs::read_link(link).expect("read link"), target);
+    }
+
+    fn assert_orchestrator_skill_mounts(private_workspace: &Path) {
+        let skills_root = private_workspace.join("skills");
+        assert!(skills_root.is_dir(), "missing skills root");
+        assert_symlink_to(&private_workspace.join(".agents/skills"), &skills_root);
+        assert_symlink_to(&private_workspace.join(".claude/skills"), &skills_root);
     }
 
     struct HomeGuard {
