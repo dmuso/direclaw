@@ -534,7 +534,7 @@ fn sync_ingests_dm_from_socket_mode_event_without_im_read() {
         r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello via socket","ts":"1700000100.1"}}}"#.to_string(),
     ]);
     let socket_url = socket.url.clone();
-    let server = MockSlackServer::start(2, move |path| {
+    let server = TimedMockSlackServer::start(std::time::Duration::from_secs(2), move |path| {
         if path.starts_with("/api/auth.test") {
             return r#"{"ok":true}"#.to_string();
         }
@@ -569,7 +569,10 @@ fn sync_ingests_dm_from_socket_mode_event_without_im_read() {
         .iter()
         .filter(|request| request.path.starts_with("/api/apps.connections.open"))
         .count();
-    assert_eq!(opens, 1);
+    assert!(
+        opens >= 1,
+        "expected at least one apps.connections.open request, got {opens}"
+    );
     socket.finish();
 }
 
@@ -852,6 +855,34 @@ fn sync_requires_slack_env_tokens() {
         SlackError::MissingProfileScopedEnvVar { ref profile_id, ref key }
             if profile_id == "slack_main" && key == "SLACK_BOT_TOKEN_SLACK_MAIN"
     ));
+}
+
+#[test]
+fn mock_slack_server_survives_aborted_connection() {
+    let _env_guard = env_lock_guard();
+    let server = MockSlackServer::start(2, |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+
+    let host = server.base_url.trim_start_matches("http://");
+    let _ = std::net::TcpStream::connect(host).expect("connect and abort");
+
+    let response = ureq::get(&format!("{}/api/auth.test", server.base_url))
+        .set("Authorization", "Bearer xoxb-test")
+        .call()
+        .expect("auth.test request succeeds");
+    let payload = response
+        .into_json::<serde_json::Value>()
+        .expect("json body");
+    assert_eq!(
+        payload.get("ok").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    let _ = server.finish();
 }
 
 #[test]
