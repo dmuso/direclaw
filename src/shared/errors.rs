@@ -46,4 +46,6 @@ pub enum RuntimeError {
     Spawn(String),
     #[error("failed to stop supervisor process {pid}; process is still alive")]
     StopFailedAlive { pid: u32 },
+    #[error("runtime startup failed: {0}")]
+    Startup(String),
 }

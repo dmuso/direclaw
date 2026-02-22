@@ -4,6 +4,7 @@ use super::{
 };
 use crate::channels::slack;
 use crate::config::load_orchestrator_config;
+use crate::orchestration::shared_mounts::reconcile_all_orchestrator_shared_mounts;
 use crate::prompts::validate_orchestrator_prompt_templates;
 use crate::runtime::worker_registry::apply_worker_event;
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,7 @@ pub fn run_supervisor(
 ) -> Result<(), RuntimeError> {
     let paths = StatePaths::new(state_root);
     bootstrap_state_root(&paths)?;
+    reconcile_shared_mounts_on_startup(&settings)?;
 
     let stop_path = paths.stop_signal_path();
     if stop_path.exists() {
@@ -175,6 +177,13 @@ pub fn run_supervisor(
     Ok(())
 }
 
+fn reconcile_shared_mounts_on_startup(
+    settings: &crate::config::Settings,
+) -> Result<(), RuntimeError> {
+    reconcile_all_orchestrator_shared_mounts(settings)
+        .map_err(|err| RuntimeError::Startup(err.to_string()))
+}
+
 fn log_prompt_template_validation_warnings(paths: &StatePaths, settings: &crate::config::Settings) {
     for orchestrator_id in settings.orchestrators.keys() {
         let private_workspace = match settings.resolve_private_workspace(orchestrator_id) {
@@ -281,4 +290,44 @@ fn handle_worker_event(
     }
 
     let _ = save_supervisor_state(paths, state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn startup_reconciliation_creates_shared_mount_symlink() {
+        let temp = tempdir().expect("tempdir");
+        let private_workspace = temp.path().join("workspaces").join("alpha");
+        let shared_docs = temp.path().join("shared").join("docs");
+        fs::create_dir_all(&shared_docs).expect("create docs");
+        let settings: crate::config::Settings = serde_yaml::from_str(&format!(
+            r#"
+workspaces_path: {}
+shared_workspaces:
+  docs: {}
+orchestrators:
+  alpha:
+    private_workspace: {}
+    shared_access: [docs]
+channel_profiles: {{}}
+monitoring: {{}}
+channels: {{}}
+"#,
+            temp.path().join("workspaces").display(),
+            shared_docs.display(),
+            private_workspace.display()
+        ))
+        .expect("parse settings");
+
+        reconcile_shared_mounts_on_startup(&settings).expect("reconcile");
+
+        let link = private_workspace.join("shared/docs");
+        let metadata = fs::symlink_metadata(&link).expect("link metadata");
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(fs::read_link(link).expect("read link"), shared_docs);
+    }
 }

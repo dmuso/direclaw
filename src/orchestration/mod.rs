@@ -10,6 +10,7 @@ pub mod run_store;
 pub mod scheduler;
 pub mod selector;
 pub mod selector_artifacts;
+pub mod shared_mounts;
 pub mod slack_target;
 pub mod step_execution;
 pub mod transitions;
