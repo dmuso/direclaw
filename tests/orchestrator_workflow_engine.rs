@@ -25,7 +25,6 @@ use direclaw::orchestration::workflow_engine::{
     enforce_execution_safety, resolve_execution_safety_limits, ExecutionSafetyLimits,
     WorkflowEngine,
 };
-use direclaw::orchestration::workspace_access::resolve_workspace_access_context;
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::{bootstrap_state_root, StatePaths};
@@ -1530,7 +1529,7 @@ fn command_invoke_validation_enforces_schema_and_allowlist() {
 }
 
 #[test]
-fn process_queue_denies_ungranted_workspace_access_and_logs() {
+fn process_queue_rejects_legacy_agent_private_workspace_field() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
@@ -1607,12 +1606,9 @@ channels: {{}}
         &functions,
         |_attempt, _request, _orchestrator| None,
     )
-    .expect_err("workspace check must fail");
-    assert!(err.to_string().contains("workspace access denied"));
-
-    let security_log = fs::read_to_string(runtime_root.join("logs/orchestrator.log"))
-        .expect("read orchestrator log");
-    assert!(security_log.contains("workspace access denied"));
+    .expect_err("legacy agent workspace field must fail");
+    assert!(err.to_string().contains("unknown field"));
+    assert!(err.to_string().contains("private_workspace"));
 }
 
 #[test]
@@ -2289,33 +2285,10 @@ workflow_orchestration:
 }
 
 #[test]
-fn step_workspace_denial_is_logged_and_run_fails_safely() {
+fn legacy_agent_private_workspace_field_is_rejected_in_orchestrator_yaml() {
     let dir = tempdir().expect("tempdir");
-    let state_root = dir.path().join(".direclaw");
-    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let private_workspace = dir
-        .path()
-        .join("workspace")
-        .join("engineering_orchestrator");
     let denied_agent_workspace = dir.path().join("outside-agent-workspace");
-    let settings: Settings = serde_yaml::from_str(&format!(
-        r#"
-workspaces_path: /tmp/workspace
-shared_workspaces: {{}}
-orchestrators:
-  engineering_orchestrator:
-    private_workspace: {}
-    shared_access: []
-channel_profiles: {{}}
-monitoring: {{}}
-channels: {{}}
-"#,
-        private_workspace.display()
-    ))
-    .expect("settings");
-    let workspace_context = resolve_workspace_access_context(&settings, "engineering_orchestrator")
-        .expect("workspace context");
-    let orchestrator: OrchestratorConfig = serde_yaml::from_str(&format!(
+    let parse_err = serde_yaml::from_str::<OrchestratorConfig>(&format!(
         r#"
 id: engineering_orchestrator
 selector_agent: workflow_router
@@ -2344,24 +2317,9 @@ workflows:
 "#,
         denied_agent_workspace.display()
     ))
-    .expect("orchestrator");
-    let store = WorkflowRunStore::new(&state_root);
-    store.create_run("run-denied", "wf", 1).expect("run");
-    let engine = WorkflowEngine::new(store.clone(), orchestrator)
-        .with_workspace_access_context(workspace_context)
-        .with_runner_binaries(mock_runner_binaries(dir.path()));
-    let run_workspace = private_workspace.join("workflows/runs/run-denied/workspace");
-    assert!(!run_workspace.exists());
-    assert!(!denied_agent_workspace.exists());
-    let err = engine.start("run-denied", 2).expect_err("must fail");
-    assert!(err.to_string().contains("workspace access denied"));
-    let run = store.load_run("run-denied").expect("load run");
-    assert_eq!(run.state, RunState::Failed);
-    assert!(!run_workspace.exists());
-    assert!(!denied_agent_workspace.exists());
-    let security_log = fs::read_to_string(state_root.join("logs/orchestrator.log"))
-        .expect("read orchestrator log");
-    assert!(security_log.contains("workspace access denied"));
+    .expect_err("legacy field must be rejected");
+    assert!(parse_err.to_string().contains("unknown field"));
+    assert!(parse_err.to_string().contains("private_workspace"));
 }
 
 #[test]

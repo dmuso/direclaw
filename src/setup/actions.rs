@@ -1997,12 +1997,6 @@ fn apply_agent_detail_field_edit(
             orchestrator_id,
             agent_id,
         ),
-        AgentDetailAction::ConfigField(AgentEditableField::PrivateWorkspace) => {
-            edit_agent_private_workspace_field(terminal, bootstrap, orchestrator_id, agent_id)
-        }
-        AgentDetailAction::ConfigField(AgentEditableField::SharedAccess) => {
-            edit_agent_shared_access_field(terminal, bootstrap, orchestrator_id, agent_id)
-        }
         AgentDetailAction::ConfigField(AgentEditableField::CanOrchestrateWorkflows) => {
             match bootstrap.toggle_agent_orchestration_capability(orchestrator_id, agent_id) {
                 Ok(_) => Ok(Some("agent orchestration capability toggled".to_string())),
@@ -2119,71 +2113,6 @@ fn edit_agent_model_field(
     let model = model_options[selected_index];
     match bootstrap.set_agent_model(orchestrator_id, agent_id, model) {
         Ok(_) => Ok(Some("agent model updated".to_string())),
-        Err(err) => Ok(Some(err)),
-    }
-}
-
-fn edit_agent_private_workspace_field(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupState,
-    orchestrator_id: &str,
-    agent_id: &str,
-) -> Result<Option<String>, String> {
-    let current = bootstrap
-        .orchestrator_configs
-        .get(orchestrator_id)
-        .and_then(|cfg| cfg.agents.get(agent_id))
-        .and_then(|a| a.private_workspace.as_ref())
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let Some(value) = prompt_line_tui(
-        terminal,
-        "Agent Private Workspace",
-        "private workspace (empty clears):",
-        &current,
-    )?
-    else {
-        return Ok(None);
-    };
-    let workspace = if value.trim().is_empty() {
-        None
-    } else {
-        Some(PathBuf::from(value.trim()))
-    };
-    match bootstrap.set_agent_private_workspace(orchestrator_id, agent_id, workspace) {
-        Ok(_) => Ok(Some("agent private workspace updated".to_string())),
-        Err(err) => Ok(Some(err)),
-    }
-}
-
-fn edit_agent_shared_access_field(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    bootstrap: &mut SetupState,
-    orchestrator_id: &str,
-    agent_id: &str,
-) -> Result<Option<String>, String> {
-    let current = bootstrap
-        .orchestrator_configs
-        .get(orchestrator_id)
-        .and_then(|cfg| cfg.agents.get(agent_id))
-        .map(|a| a.shared_access.join(","))
-        .unwrap_or_default();
-    let Some(value) = prompt_line_tui(
-        terminal,
-        "Agent Shared Access",
-        "Comma-separated shared workspace keys:",
-        &current,
-    )?
-    else {
-        return Ok(None);
-    };
-    let shared_access = value
-        .split(',')
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .collect();
-    match bootstrap.set_agent_shared_access(orchestrator_id, agent_id, shared_access) {
-        Ok(_) => Ok(Some("agent shared_access updated".to_string())),
         Err(err) => Ok(Some(err)),
     }
 }
@@ -2562,7 +2491,7 @@ mod tests {
     fn agent_detail_projection_uses_typed_descriptors() {
         let state = test_setup_state();
         let descriptors = agent_detail_descriptors();
-        assert_eq!(descriptors.len(), 6);
+        assert_eq!(descriptors.len(), 4);
         let rows = project_agent_detail_rows(&state, "main", "default");
         assert_eq!(rows.len(), descriptors.len());
         assert_eq!(rows[0].field, "Provider");

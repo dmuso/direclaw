@@ -8,7 +8,6 @@ use crate::templates::workflow_step_defaults::{
     default_step_output_contract, default_step_output_files, default_step_output_priority,
 };
 use std::collections::BTreeMap;
-use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowTemplate {
@@ -55,18 +54,11 @@ fn workflow_step(
     }
 }
 
-fn agent_config(
-    provider: &str,
-    model: &str,
-    private_workspace: &str,
-    can_orchestrate_workflows: bool,
-) -> AgentConfig {
+fn agent_config(provider: &str, model: &str, can_orchestrate_workflows: bool) -> AgentConfig {
     AgentConfig {
         provider: ConfigProviderKind::parse(provider).expect("default provider is valid"),
         model: model.to_string(),
-        private_workspace: Some(Path::new(private_workspace).to_path_buf()),
         can_orchestrate_workflows,
-        shared_access: Vec::new(),
     }
 }
 
@@ -81,10 +73,7 @@ pub fn initial_orchestrator_config(
     workflow_template: WorkflowTemplate,
 ) -> OrchestratorConfig {
     let selector = "default".to_string();
-    let mut agents = BTreeMap::from_iter([(
-        selector.clone(),
-        agent_config(provider, model, "agents/default", true),
-    )]);
+    let mut agents = BTreeMap::from_iter([(selector.clone(), agent_config(provider, model, true))]);
     let (default_workflow, workflows) = match workflow_template {
         WorkflowTemplate::Minimal => {
             let workflow_id = "default".to_string();
@@ -109,18 +98,9 @@ pub fn initial_orchestrator_config(
             )
         }
         WorkflowTemplate::Engineering => {
-            agents.insert(
-                "planner".to_string(),
-                agent_config(provider, model, "agents/planner", false),
-            );
-            agents.insert(
-                "builder".to_string(),
-                agent_config(provider, model, "agents/builder", false),
-            );
-            agents.insert(
-                "reviewer".to_string(),
-                agent_config(provider, model, "agents/reviewer", false),
-            );
+            agents.insert("planner".to_string(), agent_config(provider, model, false));
+            agents.insert("builder".to_string(), agent_config(provider, model, false));
+            agents.insert("reviewer".to_string(), agent_config(provider, model, false));
 
             let mut review = workflow_step(
                 "feature_delivery",
@@ -206,12 +186,9 @@ pub fn initial_orchestrator_config(
         WorkflowTemplate::Product => {
             agents.insert(
                 "researcher".to_string(),
-                agent_config(provider, model, "agents/researcher", false),
+                agent_config(provider, model, false),
             );
-            agents.insert(
-                "writer".to_string(),
-                agent_config(provider, model, "agents/writer", false),
-            );
+            agents.insert("writer".to_string(), agent_config(provider, model, false));
 
             (
                 "prd_draft".to_string(),

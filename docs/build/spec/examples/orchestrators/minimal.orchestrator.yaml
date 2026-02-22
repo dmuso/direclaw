@@ -24,7 +24,7 @@ workflows:
       - id: generate
         type: agent_task
         agent: default
-        workspace_mode: agent_workspace
+        workspace_mode: run_workspace
         prompt: |
           Complete the request:
           {{inputs.user_prompt}}

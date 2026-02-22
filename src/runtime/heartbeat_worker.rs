@@ -1,5 +1,4 @@
 use crate::config::{load_orchestrator_config, Settings};
-use crate::orchestration::workspace_access::resolve_agent_workspace_root;
 use crate::queue::{sorted_outgoing_paths, IncomingMessage, OutgoingMessage, QueuePaths};
 use crate::runtime::{append_runtime_log, StatePaths};
 use std::fs;
@@ -16,11 +15,13 @@ pub fn configured_heartbeat_interval(settings: &Settings) -> Option<Duration> {
 }
 
 pub fn resolve_heartbeat_prompt(
-    agent_dir: &Path,
+    orchestrator_root: &Path,
     _orchestrator_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
 ) -> Result<Option<String>, String> {
-    let prompt_path = agent_dir.join("heartbeat.md");
+    let prompt_path = orchestrator_root
+        .join("heartbeat")
+        .join(format!("{agent_id}.md"));
     match fs::read_to_string(&prompt_path) {
         Ok(body) => Ok(Some(body.trim().to_string())),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -151,27 +152,30 @@ pub fn tick_heartbeat_worker(state_root: &Path, settings: &Settings) -> Result<(
             }
         };
 
-        for (agent_id, agent) in &orchestrator.agents {
-            let agent_dir = resolve_agent_workspace_root(&private_workspace, agent_id, agent);
-            let prompt = match resolve_heartbeat_prompt(&agent_dir, orchestrator_id, agent_id) {
-                Ok(Some(prompt)) => prompt,
-                Ok(None) => {
-                    append_runtime_log(
-                        &paths,
-                        "info",
-                        "heartbeat.prompt.missing",
-                        &format!(
-                            "orchestrator={orchestrator_id} agent={agent_id} path={}",
-                            agent_dir.join("heartbeat.md").display()
-                        ),
-                    );
-                    continue;
-                }
-                Err(err) => {
-                    failures.push(err);
-                    continue;
-                }
-            };
+        for agent_id in orchestrator.agents.keys() {
+            let prompt =
+                match resolve_heartbeat_prompt(&private_workspace, orchestrator_id, agent_id) {
+                    Ok(Some(prompt)) => prompt,
+                    Ok(None) => {
+                        append_runtime_log(
+                            &paths,
+                            "info",
+                            "heartbeat.prompt.missing",
+                            &format!(
+                                "orchestrator={orchestrator_id} agent={agent_id} path={}",
+                                private_workspace
+                                    .join("heartbeat")
+                                    .join(format!("{agent_id}.md"))
+                                    .display()
+                            ),
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        failures.push(err);
+                        continue;
+                    }
+                };
             let message =
                 match build_heartbeat_incoming_message(orchestrator_id, agent_id, &prompt, tick_at)
                 {

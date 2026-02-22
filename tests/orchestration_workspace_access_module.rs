@@ -36,7 +36,6 @@ agents:
     provider: anthropic
     model: sonnet
     can_orchestrate_workflows: true
-    shared_access: [eng]
 workflows:
   - id: wf
     version: 1
@@ -65,7 +64,7 @@ fn workspace_access_module_resolves_and_enforces_paths() {
     enforce_workspace_access(
         &context,
         &[
-            PathBuf::from("/tmp/workspace/alpha/agents/router"),
+            PathBuf::from("/tmp/workspace/alpha/work/runs/run-1"),
             PathBuf::from("/tmp/shared/eng/notes.md"),
         ],
     )

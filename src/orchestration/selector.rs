@@ -1,7 +1,6 @@
 use crate::config::{OrchestratorConfig, Settings};
 use crate::orchestration::diagnostics::{persist_selector_invocation_log, provider_error_log};
 use crate::orchestration::error::OrchestratorError;
-use crate::orchestration::workspace_access::resolve_agent_workspace_root;
 use crate::prompts::{
     default_selector_context, default_selector_prompt, render_template_with_placeholders,
     resolve_prompt_template_path, PROMPTS_DIR, SELECTOR_CONTEXT_REL_PATH, SELECTOR_PROMPT_REL_PATH,
@@ -88,11 +87,7 @@ pub fn run_selector_attempt_with_provider(
     let private_workspace = settings
         .resolve_private_workspace(&orchestrator.id)
         .map_err(|err| err.to_string())?;
-    let cwd = resolve_agent_workspace_root(
-        &private_workspace,
-        &orchestrator.selector_agent,
-        selector_agent,
-    );
+    let cwd = private_workspace;
     fs::create_dir_all(&cwd).map_err(|err| err.to_string())?;
 
     let request_json = serde_json::to_string_pretty(request).map_err(|err| err.to_string())?;
@@ -104,7 +99,7 @@ pub fn run_selector_attempt_with_provider(
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
 
-    let prompt_root = private_workspace.join(PROMPTS_DIR);
+    let prompt_root = cwd.join(PROMPTS_DIR);
     let prompt_template_path = resolve_prompt_template_path(&prompt_root, SELECTOR_PROMPT_REL_PATH)
         .map_err(|e| format!("invalid selector prompt path `{SELECTOR_PROMPT_REL_PATH}`: {e}"))?;
     let context_template_path =

@@ -1,8 +1,7 @@
 use crate::app::command_support::{
-    load_orchestrator_or_err, load_settings, map_config_err, save_orchestrator_config,
+    load_orchestrator_or_err, load_settings, save_orchestrator_config,
 };
 use crate::config::{AgentConfig, ConfigProviderKind};
-use std::fs;
 
 pub fn cmd_orchestrator_agent(args: &[String]) -> Result<String, String> {
     if args.is_empty() {
@@ -36,21 +35,12 @@ pub fn cmd_orchestrator_agent(args: &[String]) -> Result<String, String> {
             if orchestrator.agents.contains_key(&agent_id) {
                 return Err(format!("agent `{agent_id}` already exists"));
             }
-            let private_workspace = settings
-                .resolve_private_workspace(orchestrator_id)
-                .map_err(map_config_err)?
-                .join("agents")
-                .join(&agent_id);
-            fs::create_dir_all(&private_workspace)
-                .map_err(|e| format!("failed to create {}: {e}", private_workspace.display()))?;
             orchestrator.agents.insert(
                 agent_id.clone(),
                 AgentConfig {
                     provider: ConfigProviderKind::Anthropic,
                     model: "sonnet".to_string(),
-                    private_workspace: Some(private_workspace),
                     can_orchestrate_workflows: false,
-                    shared_access: Vec::new(),
                 },
             );
             save_orchestrator_config(&settings, orchestrator_id, &orchestrator)?;

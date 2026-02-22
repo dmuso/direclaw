@@ -13,9 +13,7 @@ use crate::orchestration::output_contract::{
 };
 use crate::orchestration::prompt_render::{render_step_prompt, StepSharedWorkspaceContext};
 use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore};
-use crate::orchestration::workspace_access::{
-    enforce_workspace_access, resolve_agent_workspace_root, WorkspaceAccessContext,
-};
+use crate::orchestration::workspace_access::{enforce_workspace_access, WorkspaceAccessContext};
 use crate::prompts::{
     context_path_for_prompt_reference, default_step_context, is_prompt_template_reference,
     resolve_prompt_template_path, PROMPTS_DIR,
@@ -55,16 +53,16 @@ pub(crate) fn execute_step_attempt(
     let run_workspace = if let Some(workspace) = context.workspace_access_context {
         workspace
             .private_workspace_root
-            .join("workflows/runs")
+            .join("work")
+            .join("runs")
             .join(&run.run_id)
-            .join("workspace")
     } else {
         context
             .run_store
             .state_root()
-            .join("workflows/runs")
+            .join("work")
+            .join("runs")
             .join(&run.run_id)
-            .join("workspace")
     };
     let prompt_root = if let Some(workspace) = context.workspace_access_context {
         workspace.private_workspace_root.join(PROMPTS_DIR)
@@ -80,19 +78,11 @@ pub(crate) fn execute_step_attempt(
             step_id: step.id.clone(),
             reason: format!("step references unknown agent `{}`", step.agent),
         })?;
-    let agent_workspace = resolve_agent_workspace_root(
-        context
-            .workspace_access_context
-            .map(|ctx| ctx.private_workspace_root.as_path())
-            .unwrap_or_else(|| context.run_store.state_root()),
-        &step.agent,
-        agent,
-    );
-    let execution_cwd = match step.workspace_mode {
+    let step_workspace = match step.workspace_mode {
         WorkflowStepWorkspaceMode::OrchestratorWorkspace => orchestrator_workspace.clone(),
         WorkflowStepWorkspaceMode::RunWorkspace => run_workspace.clone(),
-        WorkflowStepWorkspaceMode::AgentWorkspace => agent_workspace.clone(),
     };
+    let execution_cwd = orchestrator_workspace.clone();
 
     if let Some(workspace) = context.workspace_access_context {
         if let Err(err) = enforce_workspace_access(
@@ -100,8 +90,7 @@ pub(crate) fn execute_step_attempt(
             &[
                 orchestrator_workspace.clone(),
                 run_workspace.clone(),
-                agent_workspace.clone(),
-                execution_cwd.clone(),
+                step_workspace.clone(),
             ],
         ) {
             append_security_log(
@@ -117,8 +106,7 @@ pub(crate) fn execute_step_attempt(
     fs::create_dir_all(&orchestrator_workspace)
         .map_err(|err| io_error(&orchestrator_workspace, err))?;
     fs::create_dir_all(&run_workspace).map_err(|err| io_error(&run_workspace, err))?;
-    fs::create_dir_all(&agent_workspace).map_err(|err| io_error(&agent_workspace, err))?;
-    fs::create_dir_all(&execution_cwd).map_err(|err| io_error(&execution_cwd, err))?;
+    fs::create_dir_all(&step_workspace).map_err(|err| io_error(&step_workspace, err))?;
 
     let step_outputs = load_latest_step_outputs(
         context.run_store.state_root(),
@@ -195,7 +183,7 @@ pub(crate) fn execute_step_attempt(
         reason: err.to_string(),
     })?;
 
-    let reset_flag = execution_cwd.join("reset_flag");
+    let reset_flag = step_workspace.join("reset_flag");
     let reset_resolution =
         consume_reset_flag(&reset_flag).map_err(|err| OrchestratorError::StepExecution {
             step_id: step.id.clone(),

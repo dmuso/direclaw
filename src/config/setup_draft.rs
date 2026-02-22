@@ -669,8 +669,7 @@ impl SetupDraft {
             WorkflowStepWorkspaceMode::OrchestratorWorkspace => {
                 WorkflowStepWorkspaceMode::RunWorkspace
             }
-            WorkflowStepWorkspaceMode::RunWorkspace => WorkflowStepWorkspaceMode::AgentWorkspace,
-            WorkflowStepWorkspaceMode::AgentWorkspace => {
+            WorkflowStepWorkspaceMode::RunWorkspace => {
                 WorkflowStepWorkspaceMode::OrchestratorWorkspace
             }
         };
@@ -815,9 +814,7 @@ impl SetupDraft {
                 provider: ConfigProviderKind::parse(&self.provider)
                     .expect("setup provider remains valid"),
                 model: self.model.clone(),
-                private_workspace: Some(PathBuf::from(format!("agents/{agent_id}"))),
                 can_orchestrate_workflows: false,
-                shared_access: Vec::new(),
             },
         );
         validate_orchestrator_invariants(cfg)
@@ -884,42 +881,6 @@ impl SetupDraft {
             .get_mut(agent_id)
             .ok_or_else(|| "agent no longer exists".to_string())?;
         agent.model = model.to_string();
-        Ok(())
-    }
-
-    pub(crate) fn set_agent_private_workspace(
-        &mut self,
-        orchestrator_id: &str,
-        agent_id: &str,
-        workspace: Option<PathBuf>,
-    ) -> Result<(), String> {
-        let cfg = self
-            .orchestrator_configs
-            .get_mut(orchestrator_id)
-            .ok_or_else(|| "orchestrator missing".to_string())?;
-        let agent = cfg
-            .agents
-            .get_mut(agent_id)
-            .ok_or_else(|| "agent no longer exists".to_string())?;
-        agent.private_workspace = workspace;
-        Ok(())
-    }
-
-    pub(crate) fn set_agent_shared_access(
-        &mut self,
-        orchestrator_id: &str,
-        agent_id: &str,
-        shared_access: Vec<String>,
-    ) -> Result<(), String> {
-        let cfg = self
-            .orchestrator_configs
-            .get_mut(orchestrator_id)
-            .ok_or_else(|| "orchestrator missing".to_string())?;
-        let agent = cfg
-            .agents
-            .get_mut(agent_id)
-            .ok_or_else(|| "agent no longer exists".to_string())?;
-        agent.shared_access = shared_access;
         Ok(())
     }
 

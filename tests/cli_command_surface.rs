@@ -638,7 +638,7 @@ fn fresh_setup_default_workflow_runs_successfully() {
 }
 
 #[test]
-fn workflow_step_workspace_mode_controls_provider_working_directory() {
+fn workflow_steps_always_execute_from_orchestrator_root() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
@@ -654,9 +654,7 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
-            private_workspace: None,
             can_orchestrate_workflows: false,
-            shared_access: Vec::new(),
         },
     );
     orchestrator.workflows = vec![WorkflowConfig {
@@ -698,30 +696,6 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
                 prompt: "s2".to_string(),
                 prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
                 workspace_mode: WorkflowStepWorkspaceMode::RunWorkspace,
-                next: Some("s3".to_string()),
-                on_approve: None,
-                on_reject: None,
-                outputs: out_keys(&["summary", "artifact"]),
-                output_files: out_files(&[
-                    (
-                        "summary",
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}-summary.txt",
-                    ),
-                    (
-                        "artifact",
-                        "outputs/{{workflow.step_id}}-{{workflow.attempt}}.txt",
-                    ),
-                ]),
-                final_output_priority: out_keys(&["artifact", "summary"]),
-                limits: None,
-            },
-            WorkflowStepConfig {
-                id: "s3".to_string(),
-                step_type: WorkflowStepType::AgentTask,
-                agent: "worker".to_string(),
-                prompt: "s3".to_string(),
-                prompt_type: WorkflowStepPromptType::WorkflowResultEnvelope,
-                workspace_mode: WorkflowStepWorkspaceMode::AgentWorkspace,
                 next: None,
                 on_approve: None,
                 on_reject: None,
@@ -783,27 +757,15 @@ fn workflow_step_workspace_mode_controls_provider_working_directory() {
     };
     let s1 = invoc("s1");
     let s2 = invoc("s2");
-    let s3 = invoc("s3");
     let s1_cwd = s1["workingDirectory"].as_str().expect("s1 cwd");
     let s2_cwd = s2["workingDirectory"].as_str().expect("s2 cwd");
-    let s3_cwd = s3["workingDirectory"].as_str().expect("s3 cwd");
     assert_eq!(
         s1_cwd,
         temp.path().join("workspace/alpha").display().to_string()
     );
     assert_eq!(
         s2_cwd,
-        temp.path()
-            .join(format!("workspace/alpha/workflows/runs/{run_id}/workspace"))
-            .display()
-            .to_string()
-    );
-    assert_eq!(
-        s3_cwd,
-        temp.path()
-            .join("workspace/alpha/agents/worker")
-            .display()
-            .to_string()
+        temp.path().join("workspace/alpha").display().to_string()
     );
 }
 
@@ -831,9 +793,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
         AgentConfig {
             provider: ConfigProviderKind::Anthropic,
             model: "sonnet".to_string(),
-            private_workspace: None,
             can_orchestrate_workflows: true,
-            shared_access: Vec::new(),
         },
     );
     orchestrator.agents.insert(
@@ -841,9 +801,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
-            private_workspace: None,
             can_orchestrate_workflows: false,
-            shared_access: Vec::new(),
         },
     );
     orchestrator.workflows = vec![WorkflowConfig {
@@ -1138,9 +1096,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
-            private_workspace: None,
             can_orchestrate_workflows: true,
-            shared_access: Vec::new(),
         },
     );
     orchestrator.agents.insert(
@@ -1148,9 +1104,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
             model: "gpt-5.2".to_string(),
-            private_workspace: None,
             can_orchestrate_workflows: false,
-            shared_access: Vec::new(),
         },
     );
     orchestrator.workflows = vec![WorkflowConfig {
@@ -1249,36 +1203,22 @@ echo '{"type":"item.completed","item":{"type":"agent_message","text":"[workflow_
 }
 
 #[test]
-fn workflow_run_denies_ungranted_agent_workspace_and_creates_no_workspace_dirs() {
+fn workflow_run_rejects_legacy_agent_private_workspace_field() {
     let temp = tempdir().expect("tempdir");
     write_settings(temp.path(), true);
 
     assert_ok(&run(temp.path(), &["orchestrator", "add", "alpha"]));
-    let private_workspace = temp.path().join("workspace").join("alpha");
-    let denied_workspace = temp.path().join("denied-agent-workspace");
     let orchestrator_path = temp.path().join("workspace/alpha/orchestrator.yaml");
-    let mut orchestrator: OrchestratorConfig =
-        serde_yaml::from_str(&fs::read_to_string(&orchestrator_path).expect("read orchestrator"))
-            .expect("parse orchestrator");
-    orchestrator
-        .agents
-        .get_mut("default")
-        .expect("default agent")
-        .private_workspace = Some(denied_workspace.clone());
-    fs::write(
-        &orchestrator_path,
-        serde_yaml::to_string(&orchestrator).expect("serialize orchestrator"),
-    )
-    .expect("write orchestrator");
-
-    assert!(!private_workspace.join("workflows/runs").exists());
-    assert!(!denied_workspace.exists());
+    let orchestrator_yaml = fs::read_to_string(&orchestrator_path).expect("read orchestrator");
+    let mutated = orchestrator_yaml.replace(
+        "can_orchestrate_workflows: true",
+        "can_orchestrate_workflows: true\n    private_workspace: /tmp/legacy-agent-path",
+    );
+    fs::write(&orchestrator_path, mutated).expect("write orchestrator");
 
     let run_output = run(temp.path(), &["workflow", "run", "alpha", "default"]);
-    assert_err_contains(&run_output, "workspace access denied");
-
-    assert!(!private_workspace.join("workflows/runs").exists());
-    assert!(!denied_workspace.exists());
+    assert_err_contains(&run_output, "unknown field");
+    assert_err_contains(&run_output, "private_workspace");
 }
 
 #[test]

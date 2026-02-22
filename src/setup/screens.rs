@@ -71,7 +71,6 @@ pub fn workflow_step_menu_rows(step: &WorkflowStepConfig) -> Vec<SetupFieldRow> 
     let workspace_mode = match step.workspace_mode {
         WorkflowStepWorkspaceMode::OrchestratorWorkspace => "orchestrator_workspace",
         WorkflowStepWorkspaceMode::RunWorkspace => "run_workspace",
-        WorkflowStepWorkspaceMode::AgentWorkspace => "agent_workspace",
     };
     let outputs = if step.outputs.is_empty() {
         "<none>".to_string()

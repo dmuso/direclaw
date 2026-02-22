@@ -159,7 +159,6 @@ fn setup_preserves_add_edit_delete_state_across_save_and_reload() {
         .clone();
     let mut helper_agent = default_agent.clone();
     helper_agent.model = "helper-model-v2".to_string();
-    helper_agent.private_workspace = Some(PathBuf::from("agents/helper"));
     helper_agent.can_orchestrate_workflows = true;
     main_cfg.agents.insert("helper".to_string(), helper_agent);
     main_cfg.selector_agent = "helper".to_string();

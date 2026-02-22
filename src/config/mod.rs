@@ -496,6 +496,56 @@ output_files:
         )
         .expect_err("unknown workspace_mode must fail");
         assert!(err.to_string().contains("workspace_mode"));
+
+        let agent_mode = serde_yaml::from_str::<WorkflowStepConfig>(
+            r#"
+id: step_1
+type: agent_task
+agent: worker
+prompt: hello
+workspace_mode: agent_workspace
+outputs: [summary]
+output_files:
+  summary: outputs/summary.txt
+"#,
+        )
+        .expect_err("agent_workspace mode is no longer supported");
+        assert!(agent_mode.to_string().contains("agent_workspace"));
+    }
+
+    #[test]
+    fn orchestrator_agent_legacy_fields_are_rejected() {
+        let err = serde_yaml::from_str::<OrchestratorConfig>(
+            r#"
+id: alpha
+selector_agent: router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+    private_workspace: /tmp/legacy-agent-workspace
+workflows:
+  - id: wf
+    version: 1
+    description: workflow
+    tags: [test]
+    inputs: [user_prompt]
+    steps:
+      - id: s1
+        type: agent_task
+        agent: router
+        prompt: do work
+        outputs: [summary]
+        output_files:
+          summary: out/summary.txt
+"#,
+        )
+        .expect_err("legacy private_workspace field must fail parsing");
+        assert!(err.to_string().contains("unknown field"));
+        assert!(err.to_string().contains("private_workspace"));
     }
 
     #[test]

@@ -101,22 +101,23 @@ fn sample_outgoing(
 }
 
 fn write_heartbeat_prompt(root: &Path, agent: &str, body: &str) {
-    let agent_dir = root.join(format!("agents/{agent}"));
-    fs::create_dir_all(&agent_dir).expect("agent dir");
-    fs::write(agent_dir.join("heartbeat.md"), body).expect("heartbeat prompt");
+    let heartbeat_dir = root.join("heartbeat");
+    fs::create_dir_all(&heartbeat_dir).expect("heartbeat dir");
+    fs::write(heartbeat_dir.join(format!("{agent}.md")), body).expect("heartbeat prompt");
 }
 
 #[test]
 fn runtime_heartbeat_worker_module_resolves_prompt_from_file_or_none_when_missing() {
     let temp = tempdir().expect("tempdir");
-    let agent_dir = temp.path().join("agents/worker");
-    fs::create_dir_all(&agent_dir).expect("agent dir");
+    let orchestrator_root = temp.path().join("orch-a");
+    fs::create_dir_all(&orchestrator_root).expect("orchestrator root");
 
-    let missing = resolve_heartbeat_prompt(&agent_dir, "orch-a", "worker").expect("missing");
+    let missing =
+        resolve_heartbeat_prompt(&orchestrator_root, "orch-a", "worker").expect("missing");
     assert_eq!(missing, None);
 
-    fs::write(agent_dir.join("heartbeat.md"), "Custom heartbeat prompt").expect("prompt");
-    let custom = resolve_heartbeat_prompt(&agent_dir, "orch-a", "worker").expect("custom");
+    write_heartbeat_prompt(&orchestrator_root, "worker", "Custom heartbeat prompt");
+    let custom = resolve_heartbeat_prompt(&orchestrator_root, "orch-a", "worker").expect("custom");
     assert_eq!(custom, Some("Custom heartbeat prompt".to_string()));
 }
 
@@ -236,7 +237,6 @@ fn runtime_heartbeat_worker_module_tick_enqueues_all_agents_across_orchestrators
     let orch_b = temp.path().join("orch-b");
     write_heartbeat_prompt(&orch_a, "worker-a", "heartbeat from worker-a");
     write_heartbeat_prompt(&orch_b, "worker-b", "heartbeat from file");
-    fs::create_dir_all(orch_b.join("agents/worker-c")).expect("agent dir");
 
     write_orchestrator_config(&orch_a.join("orchestrator.yaml"), "orch_a", &["worker-a"]);
     write_orchestrator_config(

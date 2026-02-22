@@ -6,7 +6,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn deserialize_optional_output_files<'de, D>(
     deserializer: D,
@@ -141,31 +141,24 @@ pub struct OrchestratorConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub provider: ConfigProviderKind,
     pub model: String,
     #[serde(default)]
-    pub private_workspace: Option<PathBuf>,
-    #[serde(default)]
     pub can_orchestrate_workflows: bool,
-    #[serde(default)]
-    pub shared_access: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentEditableField {
     Provider,
     Model,
-    PrivateWorkspace,
-    SharedAccess,
     CanOrchestrateWorkflows,
 }
 
-const AGENT_EDITABLE_FIELDS: [AgentEditableField; 5] = [
+const AGENT_EDITABLE_FIELDS: [AgentEditableField; 3] = [
     AgentEditableField::Provider,
     AgentEditableField::Model,
-    AgentEditableField::PrivateWorkspace,
-    AgentEditableField::SharedAccess,
     AgentEditableField::CanOrchestrateWorkflows,
 ];
 
@@ -178,8 +171,6 @@ impl AgentEditableField {
         match self {
             Self::Provider => "Provider",
             Self::Model => "Model",
-            Self::PrivateWorkspace => "Private Workspace",
-            Self::SharedAccess => "Shared Access",
             Self::CanOrchestrateWorkflows => "Can Orchestrate Workflows",
         }
     }
@@ -190,18 +181,6 @@ impl AgentConfig {
         match field {
             AgentEditableField::Provider => self.provider.to_string(),
             AgentEditableField::Model => self.model.clone(),
-            AgentEditableField::PrivateWorkspace => self
-                .private_workspace
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            AgentEditableField::SharedAccess => {
-                if self.shared_access.is_empty() {
-                    "<none>".to_string()
-                } else {
-                    self.shared_access.join(",")
-                }
-            }
             AgentEditableField::CanOrchestrateWorkflows => {
                 if self.can_orchestrate_workflows {
                     "yes".to_string()
@@ -332,7 +311,6 @@ fn default_workflow_step_prompt_type() -> WorkflowStepPromptType {
 pub enum WorkflowStepWorkspaceMode {
     OrchestratorWorkspace,
     RunWorkspace,
-    AgentWorkspace,
 }
 
 fn default_workflow_step_workspace_mode() -> WorkflowStepWorkspaceMode {
@@ -397,13 +375,11 @@ impl OrchestratorConfig {
         }
         self.validate_setup_invariants()?;
 
-        let orchestrator_grants = settings
-            .orchestrators
-            .get(orchestrator_id)
-            .map(|entry| entry.shared_access.iter().cloned().collect::<HashSet<_>>())
-            .ok_or_else(|| ConfigError::MissingOrchestrator {
+        if !settings.orchestrators.contains_key(orchestrator_id) {
+            return Err(ConfigError::MissingOrchestrator {
                 orchestrator_id: orchestrator_id.to_string(),
-            })?;
+            });
+        }
 
         for (agent_id, agent) in &self.agents {
             AgentId::parse(agent_id).map_err(ConfigError::Orchestrator)?;
@@ -411,13 +387,6 @@ impl OrchestratorConfig {
                 return Err(ConfigError::Orchestrator(format!(
                     "agent `{agent_id}` requires non-empty `model`"
                 )));
-            }
-            for shared in &agent.shared_access {
-                if !orchestrator_grants.contains(shared) {
-                    return Err(ConfigError::Orchestrator(format!(
-                        "agent `{agent_id}` shared access `{shared}` is not granted to orchestrator `{orchestrator_id}`"
-                    )));
-                }
             }
         }
 

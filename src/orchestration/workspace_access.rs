@@ -1,4 +1,4 @@
-use crate::config::{AgentConfig, OrchestratorConfig, Settings};
+use crate::config::{OrchestratorConfig, Settings};
 use crate::orchestration::error::OrchestratorError;
 use std::collections::BTreeMap;
 use std::fs;
@@ -90,18 +90,6 @@ pub fn enforce_workspace_access(
     Ok(())
 }
 
-pub fn resolve_agent_workspace_root(
-    private_workspace_root: &Path,
-    agent_id: &str,
-    agent: &AgentConfig,
-) -> PathBuf {
-    match &agent.private_workspace {
-        Some(path) if path.is_absolute() => path.clone(),
-        Some(path) => private_workspace_root.join(path),
-        None => private_workspace_root.join("agents").join(agent_id),
-    }
-}
-
 fn canonicalize_absolute_path_if_exists(path: &Path) -> Result<PathBuf, OrchestratorError> {
     match fs::canonicalize(path) {
         Ok(canonical) => normalize_absolute_path(&canonical),
@@ -112,26 +100,10 @@ fn canonicalize_absolute_path_if_exists(path: &Path) -> Result<PathBuf, Orchestr
 
 fn collect_orchestrator_requested_paths(
     context: &WorkspaceAccessContext,
-    settings: &Settings,
-    orchestrator: &OrchestratorConfig,
+    _settings: &Settings,
+    _orchestrator: &OrchestratorConfig,
 ) -> Result<Vec<PathBuf>, OrchestratorError> {
-    let mut requested = vec![context.private_workspace_root.clone()];
-    for (agent_id, agent) in &orchestrator.agents {
-        requested.push(resolve_agent_workspace_root(
-            &context.private_workspace_root,
-            agent_id,
-            agent,
-        ));
-        for shared in &agent.shared_access {
-            let path = settings.shared_workspaces.get(shared).ok_or_else(|| {
-                OrchestratorError::Config(format!(
-                    "agent `{agent_id}` references unknown shared workspace `{shared}`"
-                ))
-            })?;
-            requested.push(path.path.clone());
-        }
-    }
-    Ok(requested)
+    Ok(vec![context.private_workspace_root.clone()])
 }
 
 pub(crate) fn normalize_absolute_path(path: &Path) -> Result<PathBuf, OrchestratorError> {

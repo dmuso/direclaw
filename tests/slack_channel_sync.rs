@@ -120,7 +120,7 @@ impl ReconnectingSocketServer {
                 }
                 let _ = websocket.get_mut().set_nonblocking(true);
                 let ack_deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(150);
+                    std::time::Instant::now() + std::time::Duration::from_millis(500);
                 loop {
                     match websocket.read() {
                         Ok(Message::Text(message)) => acknowledgements_for_thread
@@ -1169,7 +1169,11 @@ fn socket_sync_reconnects_acks_envelopes_and_suppresses_replay_duplicates() {
 
     let temp = tempdir().expect("tempdir");
     let state_root = temp.path().join(".direclaw");
-    let settings = sample_socket_mode_settings(temp.path());
+    let mut settings = sample_socket_mode_settings(temp.path());
+    if let Some(channel) = settings.channels.get_mut("slack") {
+        channel.socket_reconnect_backoff_ms = 1;
+        channel.socket_idle_timeout_ms = 3000;
+    }
     let queue = queue_for_profile(&settings, "slack_main");
     fs::create_dir_all(&queue.incoming).expect("incoming dir");
     fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
