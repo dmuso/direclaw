@@ -24,6 +24,14 @@ const ENG_FEATURE_DELIVERY_PLAN_PROMPT: &str =
     include_str!("assets/workflows/engineering/feature_delivery/plan.prompt.md");
 const ENG_FEATURE_DELIVERY_PLAN_CONTEXT: &str =
     include_str!("assets/workflows/engineering/feature_delivery/plan.context.md");
+const ENG_FEATURE_DELIVERY_TASK_DECOMPOSE_PROMPT: &str =
+    include_str!("assets/workflows/engineering/feature_delivery/task_decompose.prompt.md");
+const ENG_FEATURE_DELIVERY_TASK_DECOMPOSE_CONTEXT: &str =
+    include_str!("assets/workflows/engineering/feature_delivery/task_decompose.context.md");
+const ENG_FEATURE_DELIVERY_PLAN_REVIEW_PROMPT: &str =
+    include_str!("assets/workflows/engineering/feature_delivery/plan_review.prompt.md");
+const ENG_FEATURE_DELIVERY_PLAN_REVIEW_CONTEXT: &str =
+    include_str!("assets/workflows/engineering/feature_delivery/plan_review.context.md");
 const ENG_FEATURE_DELIVERY_IMPLEMENT_PROMPT: &str =
     include_str!("assets/workflows/engineering/feature_delivery/implement.prompt.md");
 const ENG_FEATURE_DELIVERY_IMPLEMENT_CONTEXT: &str =
@@ -32,6 +40,10 @@ const ENG_FEATURE_DELIVERY_REVIEW_PROMPT: &str =
     include_str!("assets/workflows/engineering/feature_delivery/review.prompt.md");
 const ENG_FEATURE_DELIVERY_REVIEW_CONTEXT: &str =
     include_str!("assets/workflows/engineering/feature_delivery/review.context.md");
+const ENG_FEATURE_DELIVERY_TASK_LOOP_GATE_PROMPT: &str =
+    include_str!("assets/workflows/engineering/feature_delivery/task_loop_gate.prompt.md");
+const ENG_FEATURE_DELIVERY_TASK_LOOP_GATE_CONTEXT: &str =
+    include_str!("assets/workflows/engineering/feature_delivery/task_loop_gate.context.md");
 const ENG_FEATURE_DELIVERY_DONE_PROMPT: &str =
     include_str!("assets/workflows/engineering/feature_delivery/done.prompt.md");
 const ENG_FEATURE_DELIVERY_DONE_CONTEXT: &str =
@@ -146,6 +158,14 @@ fn builtin_template_content(
             ENG_FEATURE_DELIVERY_PLAN_PROMPT,
             ENG_FEATURE_DELIVERY_PLAN_CONTEXT,
         )),
+        ("feature_delivery", "task_decompose") => Some((
+            ENG_FEATURE_DELIVERY_TASK_DECOMPOSE_PROMPT,
+            ENG_FEATURE_DELIVERY_TASK_DECOMPOSE_CONTEXT,
+        )),
+        ("feature_delivery", "plan_review") => Some((
+            ENG_FEATURE_DELIVERY_PLAN_REVIEW_PROMPT,
+            ENG_FEATURE_DELIVERY_PLAN_REVIEW_CONTEXT,
+        )),
         ("feature_delivery", "implement") => Some((
             ENG_FEATURE_DELIVERY_IMPLEMENT_PROMPT,
             ENG_FEATURE_DELIVERY_IMPLEMENT_CONTEXT,
@@ -153,6 +173,10 @@ fn builtin_template_content(
         ("feature_delivery", "review") => Some((
             ENG_FEATURE_DELIVERY_REVIEW_PROMPT,
             ENG_FEATURE_DELIVERY_REVIEW_CONTEXT,
+        )),
+        ("feature_delivery", "task_loop_gate") => Some((
+            ENG_FEATURE_DELIVERY_TASK_LOOP_GATE_PROMPT,
+            ENG_FEATURE_DELIVERY_TASK_LOOP_GATE_CONTEXT,
         )),
         ("feature_delivery", "done") => Some((
             ENG_FEATURE_DELIVERY_DONE_PROMPT,

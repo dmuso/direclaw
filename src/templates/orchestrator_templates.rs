@@ -1,7 +1,7 @@
 use crate::config::{
-    AgentConfig, ConfigProviderKind, OrchestratorConfig, WorkflowConfig, WorkflowInputs,
-    WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType, WorkflowStepWorkspaceMode,
-    WorkflowTag,
+    AgentConfig, ConfigProviderKind, OrchestratorConfig, OutputKey, PathTemplate, WorkflowConfig,
+    WorkflowInputs, WorkflowStepConfig, WorkflowStepPromptType, WorkflowStepType,
+    WorkflowStepWorkspaceMode, WorkflowTag,
 };
 use crate::prompts::default_prompt_rel_path;
 use crate::templates::workflow_step_defaults::{
@@ -109,8 +109,53 @@ pub fn initial_orchestrator_config(
                 "reviewer",
                 &default_prompt_rel_path("feature_delivery", "review"),
             );
-            review.on_approve = Some("done".to_string());
+            review.on_approve = Some("task_loop_gate".to_string());
             review.on_reject = Some("implement".to_string());
+
+            let mut plan_review = workflow_step(
+                "feature_delivery",
+                "plan_review",
+                "agent_review",
+                "reviewer",
+                &default_prompt_rel_path("feature_delivery", "plan_review"),
+            );
+            plan_review.on_approve = Some("task_decompose".to_string());
+            plan_review.on_reject = Some("plan".to_string());
+
+            let mut task_decompose = workflow_step(
+                "feature_delivery",
+                "task_decompose",
+                "agent_task",
+                "planner",
+                &default_prompt_rel_path("feature_delivery", "task_decompose"),
+            );
+            task_decompose.outputs = vec![
+                OutputKey::parse("summary").expect("default output key is valid"),
+                OutputKey::parse("task_list").expect("default output key is valid"),
+            ];
+            task_decompose.output_files = BTreeMap::from_iter([
+                (
+                    OutputKey::parse_output_file_key("summary")
+                        .expect("default output key is valid"),
+                    PathTemplate::parse(
+                        "tasks/summary__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.txt",
+                    )
+                    .expect("default path template is valid"),
+                ),
+                (
+                    OutputKey::parse_output_file_key("task_list")
+                        .expect("default output key is valid"),
+                    PathTemplate::parse(
+                        "tasks/task_list__{{workflow.run_id}}__{{workflow.step_id}}__a{{workflow.attempt}}.json",
+                    )
+                    .expect("default path template is valid"),
+                ),
+            ]);
+            task_decompose.final_output_priority = vec![
+                OutputKey::parse("task_list").expect("default output key is valid"),
+                OutputKey::parse("summary").expect("default output key is valid"),
+            ];
+            task_decompose.next = Some("implement".to_string());
 
             let mut implement = workflow_step(
                 "feature_delivery",
@@ -120,6 +165,16 @@ pub fn initial_orchestrator_config(
                 &default_prompt_rel_path("feature_delivery", "implement"),
             );
             implement.next = Some("review".to_string());
+
+            let mut task_loop_gate = workflow_step(
+                "feature_delivery",
+                "task_loop_gate",
+                "agent_review",
+                "reviewer",
+                &default_prompt_rel_path("feature_delivery", "task_loop_gate"),
+            );
+            task_loop_gate.on_approve = Some("implement".to_string());
+            task_loop_gate.on_reject = Some("done".to_string());
 
             (
                 "feature_delivery".to_string(),
@@ -146,11 +201,14 @@ pub fn initial_orchestrator_config(
                                     "planner",
                                     &default_prompt_rel_path("feature_delivery", "plan"),
                                 );
-                                plan.next = Some("implement".to_string());
+                                plan.next = Some("plan_review".to_string());
                                 plan
                             },
+                            plan_review,
+                            task_decompose,
                             implement,
                             review,
+                            task_loop_gate,
                             workflow_step(
                                 "feature_delivery",
                                 "done",
