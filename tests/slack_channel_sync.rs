@@ -113,20 +113,28 @@ impl ReconnectingSocketServer {
                 };
                 let _ = stream.set_nonblocking(false);
                 let mut websocket = tungstenite::accept(stream).expect("accept websocket");
+                let expected_acks = payloads.len();
                 for payload in payloads {
                     websocket
                         .send(Message::Text(payload))
                         .expect("send socket payload");
                 }
                 let _ = websocket.get_mut().set_nonblocking(true);
+                let mut ack_count = 0usize;
                 let ack_deadline =
                     std::time::Instant::now() + std::time::Duration::from_millis(500);
                 loop {
                     match websocket.read() {
-                        Ok(Message::Text(message)) => acknowledgements_for_thread
-                            .lock()
-                            .expect("lock acks")
-                            .push(message.to_string()),
+                        Ok(Message::Text(message)) => {
+                            acknowledgements_for_thread
+                                .lock()
+                                .expect("lock acks")
+                                .push(message.to_string());
+                            ack_count = ack_count.saturating_add(1);
+                            if ack_count >= expected_acks {
+                                break;
+                            }
+                        }
                         Err(tungstenite::Error::Io(err))
                             if err.kind() == std::io::ErrorKind::WouldBlock =>
                         {
