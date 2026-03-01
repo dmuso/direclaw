@@ -420,10 +420,23 @@ fn process_claimed_message(
                     ))
                 }
                 Ok(queue::FailureDisposition::DeadLettered { path, attempt }) => {
+                    if let Err(notify_err) = enqueue_dead_letter_failure_notification(
+                        &scoped.queue_paths,
+                        settings,
+                        &scoped.claimed.payload,
+                        &run_store,
+                        attempt,
+                        &error_text,
+                    ) {
+                        return Err(format!(
+                            "{error_text} (dead-lettered after attempt {attempt}; path={}; additionally failed to enqueue failure notification: {notify_err})",
+                            path.display()
+                        ));
+                    }
                     return Err(format!(
                         "{error_text} (dead-lettered after attempt {attempt}; path={})",
                         path.display()
-                    ))
+                    ));
                 }
                 Err(queue_err) => {
                     return Err(format!(
@@ -797,6 +810,150 @@ fn step_attempts_by_time(state_root: &Path, run_id: &str) -> Vec<StepAttemptReco
     attempts
 }
 
+fn enqueue_dead_letter_failure_notification(
+    queue_paths: &QueuePaths,
+    settings: &Settings,
+    inbound: &queue::IncomingMessage,
+    run_store: &WorkflowRunStore,
+    failure_attempt: u32,
+    queue_error: &str,
+) -> Result<(), String> {
+    let latest_run = run_store
+        .latest_run_for_source_message_id(&inbound.message_id)
+        .map_err(|err| err.to_string())?;
+    let attempts = latest_run
+        .as_ref()
+        .map(|run| step_attempts_by_time(run_store.state_root(), &run.run_id))
+        .unwrap_or_default();
+    let failure_message = render_dead_letter_failure_message(
+        latest_run.as_ref(),
+        &attempts,
+        failure_attempt,
+        queue_error,
+    );
+
+    let (channel, channel_profile_id, conversation_id, target_ref) =
+        outbound_context_for_inbound(settings, inbound);
+    let outgoing = OutgoingMessage {
+        channel,
+        channel_profile_id,
+        sender: inbound.sender.clone(),
+        message: failure_message,
+        original_message: inbound.message.clone(),
+        timestamp: now_secs(),
+        message_id: inbound.message_id.clone(),
+        agent: "orchestrator".to_string(),
+        conversation_id,
+        target_ref,
+        files: Vec::new(),
+        workflow_run_id: inbound.workflow_run_id.clone(),
+        workflow_step_id: inbound.workflow_step_id.clone(),
+    };
+    queue::enqueue_outgoing(queue_paths, &outgoing).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn outbound_context_for_inbound(
+    settings: &Settings,
+    inbound: &queue::IncomingMessage,
+) -> (String, Option<String>, Option<String>, Option<Value>) {
+    match resolve_outbound_slack_target(settings, inbound) {
+        Ok(Some(target)) => {
+            let conversation_id = match target.posting_mode {
+                SlackPostingMode::ChannelPost => target.channel_id.clone(),
+                SlackPostingMode::ThreadReply => format!(
+                    "{}:{}",
+                    target.channel_id,
+                    target.thread_ts.clone().unwrap_or_default()
+                ),
+            };
+            (
+                "slack".to_string(),
+                Some(target.channel_profile_id.clone()),
+                Some(conversation_id),
+                Some(slack_target_ref_to_value(&target)),
+            )
+        }
+        Ok(None) | Err(_) => (
+            inbound.channel.clone(),
+            inbound.channel_profile_id.clone(),
+            inbound.conversation_id.clone(),
+            None,
+        ),
+    }
+}
+
+fn render_dead_letter_failure_message(
+    run: Option<&crate::orchestration::run_store::WorkflowRunRecord>,
+    attempts: &[StepAttemptRecord],
+    failure_attempt: u32,
+    queue_error: &str,
+) -> String {
+    let run_id = run.map(|value| value.run_id.as_str()).unwrap_or("unknown");
+    let reason = run
+        .and_then(|value| value.terminal_reason.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| queue_error.to_string());
+
+    let mut succeeded = attempts
+        .iter()
+        .filter(|attempt| attempt.state == "succeeded")
+        .map(|attempt| format!("{}#{}", attempt.step_id, attempt.attempt))
+        .collect::<Vec<_>>();
+    succeeded.sort();
+    succeeded.dedup();
+
+    let mut failed = attempts
+        .iter()
+        .filter(|attempt| attempt.state.starts_with("failed"))
+        .map(format_failed_step)
+        .collect::<Vec<_>>();
+    failed.sort();
+    failed.dedup();
+
+    let succeeded_rendered = if succeeded.is_empty() {
+        "none recorded".to_string()
+    } else {
+        succeeded.join(", ")
+    };
+    let failed_rendered = if failed.is_empty() {
+        "none recorded".to_string()
+    } else {
+        failed.join(", ")
+    };
+
+    format!(
+        "Workflow failed.\nrun_id={run_id}\nfailed_queue_attempt={failure_attempt}\nsucceeded steps: {succeeded_rendered}\nfailed steps: {failed_rendered}\nreason: {}",
+        flatten_and_limit(&reason, 500)
+    )
+}
+
+fn format_failed_step(attempt: &StepAttemptRecord) -> String {
+    let mut base = format!("{}#{}", attempt.step_id, attempt.attempt);
+    if let Some(error) = attempt
+        .error
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        base.push_str(": ");
+        base.push_str(&flatten_and_limit(error, 140));
+    }
+    base
+}
+
+fn flatten_and_limit(text: &str, max_chars: usize) -> String {
+    let flattened = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if flattened.chars().count() <= max_chars {
+        return flattened;
+    }
+    flattened.chars().take(max_chars).collect::<String>()
+}
+
 fn final_user_message(
     run_store: &WorkflowRunStore,
     run_id: &str,
@@ -939,8 +1096,12 @@ fn extract_output_label_value(text: &str, label: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{final_user_message, workflow_lifecycle_messages};
-    use crate::orchestration::run_store::{StepAttemptRecord, WorkflowRunStore};
+    use super::{
+        final_user_message, render_dead_letter_failure_message, workflow_lifecycle_messages,
+    };
+    use crate::orchestration::run_store::{
+        RunMemoryContext, RunState, StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore,
+    };
     use serde_json::{Map, Value};
     use tempfile::tempdir;
 
@@ -1062,5 +1223,72 @@ mod tests {
         assert!(messages
             .iter()
             .all(|(message, _sender)| !message.contains("Running step")));
+    }
+
+    #[test]
+    fn dead_letter_message_includes_succeeded_and_failed_details() {
+        let run = WorkflowRunRecord {
+            run_id: "run-99".to_string(),
+            workflow_id: "triage".to_string(),
+            state: RunState::Failed,
+            inputs: Map::new(),
+            memory_context: RunMemoryContext::default(),
+            current_step_id: Some("plan".to_string()),
+            current_attempt: Some(2),
+            started_at: 10,
+            updated_at: 20,
+            total_iterations: 3,
+            source_message_id: Some("msg-1".to_string()),
+            selector_id: None,
+            selected_workflow: None,
+            status_conversation_id: None,
+            terminal_reason: Some("engine start failed".to_string()),
+        };
+        let attempts = vec![
+            StepAttemptRecord {
+                run_id: "run-99".to_string(),
+                step_id: "prepare".to_string(),
+                attempt: 1,
+                started_at: 11,
+                ended_at: 12,
+                state: "succeeded".to_string(),
+                outputs: Map::new(),
+                output_files: Default::default(),
+                final_output_priority: Vec::new(),
+                next_step_id: None,
+                error: None,
+                output_validation_errors: Default::default(),
+            },
+            StepAttemptRecord {
+                run_id: "run-99".to_string(),
+                step_id: "plan".to_string(),
+                attempt: 2,
+                started_at: 13,
+                ended_at: 14,
+                state: "failed".to_string(),
+                outputs: Map::new(),
+                output_files: Default::default(),
+                final_output_priority: Vec::new(),
+                next_step_id: None,
+                error: Some("provider exited 7".to_string()),
+                output_validation_errors: Default::default(),
+            },
+        ];
+        let message = render_dead_letter_failure_message(Some(&run), &attempts, 3, "queue failure");
+        assert!(message.contains("Workflow failed."));
+        assert!(message.contains("run_id=run-99"));
+        assert!(message.contains("failed_queue_attempt=3"));
+        assert!(message.contains("succeeded steps: prepare#1"));
+        assert!(message.contains("failed steps: plan#2: provider exited 7"));
+        assert!(message.contains("reason: engine start failed"));
+    }
+
+    #[test]
+    fn dead_letter_message_falls_back_to_queue_error_without_run_context() {
+        let message = render_dead_letter_failure_message(None, &[], 2, "max iterations");
+        assert!(message.contains("run_id=unknown"));
+        assert!(message.contains("succeeded steps: none recorded"));
+        assert!(message.contains("failed steps: none recorded"));
+        assert!(message.contains("reason: max iterations"));
     }
 }

@@ -70,6 +70,10 @@ Queue worker behavior:
 5. Orchestrator executes workflow step(s) and returns response payload fields.
 6. On success, write an outgoing payload file.
 7. On failure, attempt requeue `processing -> incoming`.
+8. If retry budget is exhausted and the message is moved to `queue/failed` (dead-lettered), enqueue one user-facing outgoing failure summary for the original conversation context. The summary must include:
+   - what succeeded (when run artifacts exist),
+   - what failed (when run artifacts exist), and
+   - why it failed (terminal reason or queue failure reason).
 
 `<orchestrator_runtime_root>` resolves to the orchestrator private workspace root.
 
@@ -94,6 +98,7 @@ Cross-agent failures or delays must not block unrelated agents.
 - Queue claim/move operations must be atomic where possible.
 - Processing failures must never silently drop messages.
 - Requeue attempts must preserve payload content and execution eligibility.
+- Dead-lettered messages must produce one user-facing failure summary outgoing message.
 - Worker restarts must safely tolerate partially moved queue files.
 
 ## Acceptance Criteria
@@ -103,3 +108,4 @@ Cross-agent failures or delays must not block unrelated agents.
 - Ordering is preserved for multiple queued messages in the same conversation/workflow key.
 - Messages for different keys can execute concurrently.
 - Forced execution failures produce requeue attempts and logs.
+- Dead-letter outcomes emit one user-facing failure summary containing succeeded/failed/why details.

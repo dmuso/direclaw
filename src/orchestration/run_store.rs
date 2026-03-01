@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -461,6 +462,49 @@ impl WorkflowRunStore {
             pending_human_input,
             next_expected_action: next_expected_action.into(),
         })
+    }
+
+    pub fn latest_run_for_source_message_id(
+        &self,
+        source_message_id: &str,
+    ) -> Result<Option<WorkflowRunRecord>, OrchestratorError> {
+        let runs_root = self.state_root.join("workflows/runs");
+        let entries = match fs::read_dir(&runs_root) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io_error(&runs_root, source)),
+        };
+
+        let mut latest: Option<WorkflowRunRecord> = None;
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(&runs_root, source))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+
+            let raw = fs::read_to_string(&path).map_err(|source| io_error(&path, source))?;
+            let run: WorkflowRunRecord =
+                serde_json::from_str(&raw).map_err(|source| json_error(&path, source))?;
+            if run.source_message_id.as_deref() != Some(source_message_id) {
+                continue;
+            }
+            let should_replace = latest
+                .as_ref()
+                .map(|current| {
+                    run.updated_at > current.updated_at
+                        || (run.updated_at == current.updated_at
+                            && run.started_at > current.started_at)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                latest = Some(run);
+            }
+        }
+        Ok(latest)
     }
 }
 

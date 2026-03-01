@@ -13,6 +13,7 @@ System must guarantee:
 
 - Queue claims/file moves are atomic where possible.
 - Processing failures do not silently drop messages.
+- Dead-lettered workflow messages emit exactly one user-facing failure summary (not one per retry).
 - Channel-originated messages route through orchestrator selection + workflow dispatch.
 - Per-agent ordering is preserved.
 - Cross-agent concurrency is independent.
@@ -62,6 +63,7 @@ Requirements:
 ### Integration Tests
 
 - queue lifecycle (`incoming -> processing -> outgoing`)
+- dead-letter behavior emits one failure summary containing what succeeded, what failed, and why
 - channel inbound -> orchestrator selector -> workflow dispatch
 - per-agent execution ordering
 - reset flag behavior
