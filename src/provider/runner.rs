@@ -131,12 +131,13 @@ pub fn run_provider(
     let stderr = stderr_reader.join().unwrap_or_default();
 
     if !exit_status.success() {
+        let failure_detail = format_failure_detail(&stdout, &stderr);
         let mut log = base_log.clone();
         log.exit_code = exit_status.code();
         return Err(ProviderError::NonZeroExit {
             provider: request.provider.clone(),
             exit_code: exit_status.code().unwrap_or(-1),
-            stderr,
+            stderr: failure_detail,
             log: Box::new(log),
         });
     }
@@ -162,4 +163,16 @@ pub fn run_provider(
         message,
         log: parse_log,
     })
+}
+
+fn format_failure_detail(stdout: &str, stderr: &str) -> String {
+    let stdout = stdout.trim();
+    let stderr = stderr.trim();
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => stderr.to_string(),
+        (false, true) => stdout.to_string(),
+        (false, false) => format!("stderr:\n{stderr}\n\nstdout:\n{stdout}"),
+    }
 }

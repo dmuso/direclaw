@@ -130,6 +130,43 @@ fn provider_non_zero_exit_is_explicit() {
 }
 
 #[test]
+fn provider_non_zero_exit_uses_stdout_when_stderr_is_empty() {
+    let dir = tempdir().expect("tempdir");
+    let bin = dir.path().join("codex-fail-stdout-only");
+    write_script(
+        &bin,
+        "#!/bin/sh\necho 'structured failure detail from stdout'\nexit 9\n",
+    );
+
+    let artifacts =
+        write_file_backed_prompt(dir.path(), "req-c2", "prompt", "ctx").expect("artifacts");
+    let request = base_request(
+        ProviderKind::OpenAi,
+        "gpt-5.3-codex-spark",
+        dir.path(),
+        artifacts,
+    );
+    let bins = RunnerBinaries {
+        anthropic: "unused".to_string(),
+        openai: bin.display().to_string(),
+    };
+
+    let err = run_provider(&request, &bins).expect_err("expected failure");
+    match err {
+        ProviderError::NonZeroExit {
+            exit_code, stderr, ..
+        } => {
+            assert_eq!(exit_code, 9);
+            assert!(
+                stderr.contains("structured failure detail from stdout"),
+                "unexpected non-zero exit detail: {stderr}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
 fn provider_timeout_is_explicit() {
     let start = Instant::now();
     let dir = tempdir().expect("tempdir");

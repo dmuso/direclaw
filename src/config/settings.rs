@@ -178,7 +178,7 @@ fn default_socket_reconnect_backoff_ms() -> u64 {
 }
 
 fn default_socket_idle_timeout_ms() -> u64 {
-    1500
+    30_000
 }
 
 fn default_history_backfill_interval_seconds() -> u64 {

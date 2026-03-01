@@ -1,5 +1,5 @@
 use direclaw::config::{
-    ChannelKind, ConfigProviderKind, OrchestratorConfig, Settings, ValidationOptions,
+    ChannelConfig, ChannelKind, ConfigProviderKind, OrchestratorConfig, Settings, ValidationOptions,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -74,6 +74,12 @@ fn config_paths_module_exposes_default_path_helpers() {
 fn config_settings_module_exposes_validation_options() {
     let options = direclaw::config::settings::ValidationOptions::default();
     assert!(options.require_shared_paths_exist);
+}
+
+#[test]
+fn slack_channel_default_idle_timeout_is_not_aggressively_low() {
+    let slack = ChannelConfig::default();
+    assert_eq!(slack.socket_idle_timeout_ms, 30_000);
 }
 
 #[test]
