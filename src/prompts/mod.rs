@@ -520,4 +520,14 @@ mod tests {
             .expect_err("legacy inputs memory placeholder should fail");
         assert!(err.contains("unsupported step placeholder"));
     }
+
+    #[test]
+    fn default_selector_prompt_requires_full_result_envelope() {
+        let prompt = default_selector_prompt();
+        assert!(prompt.contains("selectorId"));
+        assert!(prompt.contains("status"));
+        assert!(prompt.contains("action"));
+        assert!(prompt.contains("selectedWorkflow"));
+        assert!(prompt.contains("must include all keys"));
+    }
 }

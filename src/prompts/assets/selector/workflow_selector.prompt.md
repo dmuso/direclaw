@@ -16,5 +16,20 @@ Instructions:
 3. Select exactly one supported action and validate any selected workflow/function against the request fields.
 4. Output exactly one structured JSON selector result to this path:
 {{selector.result_path}}
-5. Do not output structured JSON anywhere else and do not rely on stdout.
+5. The JSON result must include all keys below (camelCase) exactly:
+   - selectorId
+   - status
+   - action
+   - selectedWorkflow
+   - diagnosticsScope
+   - functionId
+   - functionArgs
+   - reason
+6. Set `selectorId` to the exact `selectorId` value from the selector request JSON.
+7. For keys that do not apply for the selected action, write `null` (do not omit keys).
+8. Action-specific requirements:
+   - workflow_start: set `selectedWorkflow` to one of `availableWorkflows`.
+   - command_invoke: set `functionId` to one of `availableFunctions` and set `functionArgs` to an object.
+   - diagnostics_investigate: set `diagnosticsScope` to an object.
+9. Do not output structured JSON anywhere else and do not rely on stdout.
 Do not use markdown fences.
