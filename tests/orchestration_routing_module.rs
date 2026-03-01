@@ -3,6 +3,7 @@ use direclaw::orchestration::routing::{
     FunctionRegistry, StatusResolutionInput,
 };
 use direclaw::orchestration::transitions::RoutedSelectorAction;
+use direclaw::orchestration::{conversation_context, conversation_context::ThreadContextLimits};
 use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
 use direclaw::runtime::bootstrap_memory_runtime_paths;
@@ -316,6 +317,7 @@ channel_profiles:
     orchestrator_id: main
     slack_app_user_id: UAPP
     require_mention_in_channels: true
+    thread_response_mode: selective_reply
 monitoring: {{}}
 channels: {{}}
 "#,
@@ -1404,5 +1406,124 @@ memory:
     assert!(
         embeddings_count > 0,
         "expected embedding rows to be persisted"
+    );
+}
+
+#[test]
+fn routing_includes_recent_thread_context_in_selector_request() {
+    let temp = tempdir().expect("tempdir");
+    let workspace_root = temp.path().join("workspaces");
+    let private_workspace = workspace_root.join("main");
+    fs::create_dir_all(&private_workspace).expect("create private workspace");
+    write_minimal_orchestrator_yaml(&private_workspace);
+
+    let settings = serde_yaml::from_str::<direclaw::config::Settings>(&format!(
+        r#"
+workspaces_path: {}
+shared_workspaces: {{}}
+orchestrators:
+  main:
+    private_workspace: {}
+    shared_access: []
+channel_profiles:
+  engineering:
+    channel: slack
+    orchestrator_id: main
+    slack_app_user_id: UAPP
+    require_mention_in_channels: true
+monitoring: {{}}
+channels: {{}}
+"#,
+        workspace_root.display(),
+        private_workspace.display()
+    ))
+    .expect("settings");
+
+    let runtime_root = settings
+        .resolve_channel_profile_runtime_root("engineering")
+        .expect("runtime root");
+
+    conversation_context::append_inbound_turn(
+        &runtime_root,
+        "engineering",
+        "C1:100.1",
+        "m-1",
+        10,
+        "U42",
+        "here is the first message",
+    )
+    .expect("append inbound");
+    conversation_context::append_outbound_turn(
+        &runtime_root,
+        "engineering",
+        "C1:100.1",
+        "m-1-out",
+        11,
+        "orchestrator",
+        "Workflow failed.\nrun_id=run-abc",
+        Some("run-abc"),
+        None,
+    )
+    .expect("append outbound");
+
+    let inbound = IncomingMessage {
+        channel: "slack".to_string(),
+        channel_profile_id: Some("engineering".to_string()),
+        sender: "dana".to_string(),
+        sender_id: "U42".to_string(),
+        message: "can you investigate why this failed?".to_string(),
+        timestamp: 12,
+        message_id: "msg-thread-ctx".to_string(),
+        conversation_id: Some("C1:100.1".to_string()),
+        is_direct: false,
+        is_thread_reply: true,
+        is_mentioned: false,
+        files: vec![],
+        workflow_run_id: None,
+        workflow_step_id: None,
+    };
+
+    let _ = process_queued_message(
+        temp.path(),
+        &settings,
+        &inbound,
+        12,
+        &BTreeMap::new(),
+        &FunctionRegistry::v1_defaults(
+            direclaw::orchestration::run_store::WorkflowRunStore::new(runtime_root.clone()),
+            &settings,
+        ),
+        |_attempt, _request, _orchestrator| {
+            Some(
+                r#"{
+                  "selectorId":"sel-msg-thread-ctx",
+                  "status":"selected",
+                  "action":"no_response",
+                  "selectedWorkflow":null,
+                  "diagnosticsScope":null,
+                  "functionId":null,
+                  "functionArgs":null,
+                  "reason":"thread follow-up"
+                }"#
+                .to_string(),
+            )
+        },
+    )
+    .expect("route inbound");
+
+    let request_path =
+        runtime_root.join("orchestrator/artifacts/selector-processing-sel-msg-thread-ctx.json");
+    let request_json: Value =
+        serde_json::from_str(&fs::read_to_string(request_path).expect("read selector request"))
+            .expect("parse selector request");
+    let thread_context = request_json
+        .get("threadContext")
+        .and_then(Value::as_str)
+        .expect("threadContext should be present");
+    assert!(thread_context.contains("first message"));
+    assert!(thread_context.contains("run_id=run-abc"));
+    assert!(
+        thread_context.chars().count() <= ThreadContextLimits::default().max_chars,
+        "thread context must be bounded"
     );
 }

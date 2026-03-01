@@ -1,6 +1,7 @@
 use super::{append_runtime_log, now_secs, StatePaths, WorkerEvent};
 use crate::channels::policy::classify_response_eligibility;
 use crate::config::Settings;
+use crate::orchestration::conversation_context::append_outbound_turn;
 use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::function_registry::FunctionRegistry;
 use crate::orchestration::routing::process_queued_message_with_runner_binaries_and_hook;
@@ -381,13 +382,14 @@ fn process_claimed_message(
 ) -> Result<(), String> {
     let run_store = WorkflowRunStore::new(&scoped.queue_paths.root);
     let functions = FunctionRegistry::v1_defaults(run_store.clone(), settings);
+    let active_conversation_runs = resolve_active_conversation_runs(&run_store, &scoped.claimed);
 
     let action = process_queued_message_with_runner_binaries_and_hook(
         &scoped.queue_paths.root,
         settings,
         &scoped.claimed.payload,
         now_secs(),
-        &BTreeMap::new(),
+        &active_conversation_runs,
         &functions,
         Some(binaries.clone()),
         |_attempt, _request, _orchestrator_cfg| None,
@@ -498,9 +500,51 @@ fn process_claimed_message(
             workflow_step_id: scoped.claimed.payload.workflow_step_id.clone(),
         })
         .collect();
+
+    for outgoing_message in &outgoing {
+        if let (Some(channel_profile_id), Some(conversation_id)) = (
+            outgoing_message.channel_profile_id.as_deref(),
+            outgoing_message.conversation_id.as_deref(),
+        ) {
+            let _ = append_outbound_turn(
+                &scoped.queue_paths.root,
+                channel_profile_id,
+                conversation_id,
+                &outgoing_message.message_id,
+                outgoing_message.timestamp,
+                &outgoing_message.agent,
+                &outgoing_message.message,
+                outgoing_message.workflow_run_id.as_deref(),
+                outgoing_message.workflow_step_id.as_deref(),
+            );
+        }
+    }
+
     queue::complete_success_many(&scoped.queue_paths, &scoped.claimed, &outgoing)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn resolve_active_conversation_runs(
+    run_store: &WorkflowRunStore,
+    claimed: &queue::ClaimedMessage,
+) -> BTreeMap<(String, String), String> {
+    let mut out = BTreeMap::new();
+    let Some(channel_profile_id) = claimed.payload.channel_profile_id.as_deref() else {
+        return out;
+    };
+    let Some(conversation_id) = claimed.payload.conversation_id.as_deref() else {
+        return out;
+    };
+    if let Ok(Some(run)) =
+        run_store.latest_run_for_conversation(channel_profile_id, conversation_id, false)
+    {
+        out.insert(
+            (channel_profile_id.to_string(), conversation_id.to_string()),
+            run.run_id,
+        );
+    }
+    out
 }
 
 fn queue_max_requeue_attempts() -> u32 {
@@ -612,6 +656,22 @@ fn enqueue_workflow_selection_ack(
         workflow_run_id: inbound.workflow_run_id.clone(),
         workflow_step_id: inbound.workflow_step_id.clone(),
     };
+    if let (Some(channel_profile_id), Some(conversation_id)) = (
+        outgoing.channel_profile_id.as_deref(),
+        outgoing.conversation_id.as_deref(),
+    ) {
+        let _ = append_outbound_turn(
+            &queue_paths.root,
+            channel_profile_id,
+            conversation_id,
+            &outgoing.message_id,
+            outgoing.timestamp,
+            &outgoing.agent,
+            &outgoing.message,
+            outgoing.workflow_run_id.as_deref(),
+            outgoing.workflow_step_id.as_deref(),
+        );
+    }
     queue::enqueue_outgoing(queue_paths, &outgoing).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1097,11 +1157,13 @@ fn extract_output_label_value(text: &str, label: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        final_user_message, render_dead_letter_failure_message, workflow_lifecycle_messages,
+        final_user_message, render_dead_letter_failure_message, resolve_active_conversation_runs,
+        workflow_lifecycle_messages,
     };
     use crate::orchestration::run_store::{
         RunMemoryContext, RunState, StepAttemptRecord, WorkflowRunRecord, WorkflowRunStore,
     };
+    use crate::queue::ClaimedMessage;
     use serde_json::{Map, Value};
     use tempfile::tempdir;
 
@@ -1231,6 +1293,7 @@ mod tests {
             run_id: "run-99".to_string(),
             workflow_id: "triage".to_string(),
             state: RunState::Failed,
+            channel_profile_id: None,
             inputs: Map::new(),
             memory_context: RunMemoryContext::default(),
             current_step_id: Some("plan".to_string()),
@@ -1290,5 +1353,57 @@ mod tests {
         assert!(message.contains("succeeded steps: none recorded"));
         assert!(message.contains("failed steps: none recorded"));
         assert!(message.contains("reason: max iterations"));
+    }
+
+    #[test]
+    fn resolve_active_conversation_runs_uses_latest_non_terminal_conversation_run() {
+        let dir = tempdir().expect("tempdir");
+        let run_store = WorkflowRunStore::new(dir.path());
+
+        let mut old = run_store
+            .create_run("run-old", "quick_answer", 10)
+            .expect("create old run");
+        old.channel_profile_id = Some("eng".to_string());
+        old.status_conversation_id = Some("C123:100.1".to_string());
+        old.state = RunState::Failed;
+        old.updated_at = 20;
+        run_store.persist_run(&old).expect("persist old run");
+
+        let mut active = run_store
+            .create_run("run-active", "quick_answer", 30)
+            .expect("create active run");
+        active.channel_profile_id = Some("eng".to_string());
+        active.status_conversation_id = Some("C123:100.1".to_string());
+        active.state = RunState::Running;
+        active.updated_at = 40;
+        run_store.persist_run(&active).expect("persist active run");
+
+        let claimed = ClaimedMessage {
+            incoming_path: dir.path().join("incoming/msg.json"),
+            processing_path: dir.path().join("processing/msg.json"),
+            payload: crate::queue::IncomingMessage {
+                channel: "slack".to_string(),
+                channel_profile_id: Some("eng".to_string()),
+                sender: "Dana".to_string(),
+                sender_id: "U42".to_string(),
+                message: "status".to_string(),
+                timestamp: 100,
+                message_id: "msg".to_string(),
+                conversation_id: Some("C123:100.1".to_string()),
+                is_direct: false,
+                is_thread_reply: true,
+                is_mentioned: false,
+                files: Vec::new(),
+                workflow_run_id: None,
+                workflow_step_id: None,
+            },
+        };
+
+        let map = resolve_active_conversation_runs(&run_store, &claimed);
+        assert_eq!(
+            map.get(&("eng".to_string(), "C123:100.1".to_string()))
+                .map(String::as_str),
+            Some("run-active")
+        );
     }
 }

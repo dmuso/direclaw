@@ -42,6 +42,7 @@ fn sample_run(run_id: &str) -> WorkflowRunRecord {
         run_id: run_id.to_string(),
         workflow_id: "fix_issue".to_string(),
         state: RunState::Running,
+        channel_profile_id: None,
         inputs: Map::new(),
         memory_context: RunMemoryContext::default(),
         current_step_id: None,

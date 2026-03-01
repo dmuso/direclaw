@@ -7,6 +7,9 @@ use crate::memory::{
     HybridRecallRequest, MemoryBulletin, MemoryBulletinOptions, MemoryPaths, MemoryRecallOptions,
     MemoryRepository,
 };
+use crate::orchestration::conversation_context::{
+    append_inbound_turn, render_recent_thread_context, ThreadContextLimits,
+};
 use crate::orchestration::diagnostics::append_security_log;
 use crate::orchestration::error::OrchestratorError;
 pub use crate::orchestration::function_registry::{FunctionCall, FunctionRegistry};
@@ -466,6 +469,49 @@ where
         None
     };
 
+    let thread_context = if let (Some(channel_profile_id), Some(conversation_id)) = (
+        inbound.channel_profile_id.as_deref(),
+        inbound.conversation_id.as_deref(),
+    ) {
+        if let Err(err) = append_inbound_turn(
+            &runtime_root,
+            channel_profile_id,
+            conversation_id,
+            &inbound.message_id,
+            now,
+            &inbound.sender_id,
+            &inbound.message,
+        ) {
+            append_security_log(
+                &runtime_root,
+                &format!(
+                    "failed to persist inbound conversation context for message `{}`: {}",
+                    inbound.message_id, err
+                ),
+            );
+        }
+        match render_recent_thread_context(
+            &runtime_root,
+            channel_profile_id,
+            conversation_id,
+            ThreadContextLimits::default(),
+        ) {
+            Ok(rendered) => rendered,
+            Err(err) => {
+                append_security_log(
+                    &runtime_root,
+                    &format!(
+                        "failed to render thread context for message `{}`: {}",
+                        inbound.message_id, err
+                    ),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let request = SelectorRequest {
         selector_id: format!("sel-{}", inbound.message_id),
         channel_profile_id: inbound
@@ -475,6 +521,7 @@ where
         message_id: inbound.message_id.clone(),
         conversation_id: inbound.conversation_id.clone(),
         user_message: inbound.message.clone(),
+        thread_context,
         memory_bulletin: memory_bulletin.as_ref().map(|value| value.rendered.clone()),
         memory_bulletin_citations: memory_bulletin
             .as_ref()
@@ -607,6 +654,7 @@ fn route_scheduled_trigger(
         message_id: envelope.execution_id.clone(),
         conversation_id: inbound.conversation_id.clone(),
         user_message: format!("scheduled trigger {}", envelope.job_id),
+        thread_context: None,
         memory_bulletin: None,
         memory_bulletin_citations: Vec::new(),
         available_workflows: orchestrator

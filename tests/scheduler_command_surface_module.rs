@@ -47,6 +47,7 @@ fn selector_validation_rejects_unknown_scheduler_args() {
         message_id: "m1".to_string(),
         conversation_id: Some("thread-1".to_string()),
         user_message: "pause job".to_string(),
+        thread_context: None,
         memory_bulletin: None,
         memory_bulletin_citations: vec![],
         available_workflows: vec![],

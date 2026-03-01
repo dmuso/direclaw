@@ -14,6 +14,7 @@ fn prompt_render_module_renders_inputs_state_and_output_paths() {
         run_id: "run-123".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
+        channel_profile_id: None,
         inputs: Map::from_iter([
             (
                 "channel_profile_id".to_string(),
@@ -102,6 +103,7 @@ fn prompt_render_module_injects_memory_context_bundle_with_bounded_citations() {
         run_id: "run-mem".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
+        channel_profile_id: None,
         inputs: Map::from_iter([(
             "user_message".to_string(),
             Value::String("plan next steps".to_string()),
@@ -196,6 +198,7 @@ fn prompt_render_module_memory_context_truncation_keeps_complete_ranked_lines() 
         run_id: "run-mem-lines".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
+        channel_profile_id: None,
         inputs: Map::from_iter([(
             "user_message".to_string(),
             Value::String("find ranked lines".to_string()),
@@ -282,6 +285,7 @@ fn prompt_render_module_context_uses_relative_output_paths_with_shared_root() {
         run_id: "run-ctx".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
+        channel_profile_id: None,
         inputs: Map::new(),
         memory_context: RunMemoryContext::default(),
         current_step_id: Some("plan".to_string()),
@@ -384,6 +388,7 @@ fn prompt_render_module_includes_shared_workspaces_in_runtime_context() {
         run_id: "run-shared".to_string(),
         workflow_id: "wf-default".to_string(),
         state: RunState::Running,
+        channel_profile_id: None,
         inputs: Map::new(),
         memory_context: RunMemoryContext::default(),
         current_step_id: Some("plan".to_string()),

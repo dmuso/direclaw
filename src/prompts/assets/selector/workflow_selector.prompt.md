@@ -6,6 +6,7 @@ Decision policy:
 - Prioritize the user's explicit requested action over surrounding background context.
 - Distinguish contextual setup/background from the actual ask before choosing an action.
 - Use background details only to inform the action, not to override the direct request.
+- When `threadContext` is present in the request JSON, use it to resolve follow-up references (for example "this failed" or "that run").
 - Choose from availableWorkflows/defaultWorkflow/availableFunctions exactly as provided.
 - Action `no_response` is allowed only for low-value opportunistic context messages.
 - Never use `no_response` when the inbound context indicates an explicit profile mention.

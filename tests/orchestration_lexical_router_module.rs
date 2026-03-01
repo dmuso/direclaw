@@ -54,6 +54,7 @@ fn request(user_message: &str) -> SelectorRequest {
         message_id: "msg-1".to_string(),
         conversation_id: Some("thread-1".to_string()),
         user_message: user_message.to_string(),
+        thread_context: None,
         memory_bulletin: None,
         memory_bulletin_citations: Vec::new(),
         available_workflows: vec!["quick_answer".to_string(), "deploy_release".to_string()],

@@ -261,6 +261,8 @@ pub struct SelectorRequest {
     pub conversation_id: Option<String>,
     pub user_message: String,
     #[serde(default)]
+    pub thread_context: Option<String>,
+    #[serde(default)]
     pub memory_bulletin: Option<String>,
     #[serde(default)]
     pub memory_bulletin_citations: Vec<String>,

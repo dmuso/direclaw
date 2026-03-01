@@ -189,6 +189,12 @@ fn selector_start_inputs(
             Value::String(conversation_id.clone()),
         );
     }
+    if let Some(thread_context) = request.thread_context.as_ref() {
+        inputs.insert(
+            "thread_context".to_string(),
+            Value::String(thread_context.clone()),
+        );
+    }
     if let Some(source_message_id) = source_message_id {
         inputs.insert(
             "source_message_id".to_string(),
@@ -312,6 +318,7 @@ pub fn route_selector_action(
                     source_message_id: ctx.source_message_id.map(|v| v.to_string()),
                     selector_id: Some(request.selector_id.clone()),
                     selected_workflow: Some(workflow_id.clone()),
+                    channel_profile_id: Some(request.channel_profile_id.clone()),
                     status_conversation_id: request.conversation_id.clone(),
                     memory_context: selector_start_memory_context(request),
                 },
@@ -382,6 +389,13 @@ pub fn route_selector_action(
                         ctx.active_conversation_runs
                             .get(&(profile.clone(), conv.clone()))
                             .cloned()
+                            .or_else(|| {
+                                ctx.run_store
+                                    .latest_run_for_conversation(profile, conv, true)
+                                    .ok()
+                                    .flatten()
+                                    .map(|run| run.run_id)
+                            })
                     } else {
                         None
                     }

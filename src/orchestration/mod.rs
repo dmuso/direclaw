@@ -1,3 +1,4 @@
+pub mod conversation_context;
 pub mod diagnostics;
 pub mod error;
 pub mod function_registry;

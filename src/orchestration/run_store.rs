@@ -82,6 +82,8 @@ pub struct WorkflowRunRecord {
     pub workflow_id: String,
     pub state: RunState,
     #[serde(default)]
+    pub channel_profile_id: Option<String>,
+    #[serde(default)]
     pub inputs: Map<String, Value>,
     #[serde(default)]
     pub memory_context: RunMemoryContext,
@@ -137,6 +139,7 @@ pub struct SelectorStartedRunMetadata {
     pub source_message_id: Option<String>,
     pub selector_id: Option<String>,
     pub selected_workflow: Option<String>,
+    pub channel_profile_id: Option<String>,
     pub status_conversation_id: Option<String>,
     pub memory_context: RunMemoryContext,
 }
@@ -190,6 +193,7 @@ impl WorkflowRunStore {
             run_id: run_id.into(),
             workflow_id: workflow_id.into(),
             state: RunState::Queued,
+            channel_profile_id: metadata.channel_profile_id,
             inputs,
             memory_context: metadata.memory_context,
             current_step_id: None,
@@ -504,6 +508,58 @@ impl WorkflowRunStore {
                 latest = Some(run);
             }
         }
+        Ok(latest)
+    }
+
+    pub fn latest_run_for_conversation(
+        &self,
+        channel_profile_id: &str,
+        conversation_id: &str,
+        include_terminal: bool,
+    ) -> Result<Option<WorkflowRunRecord>, OrchestratorError> {
+        let runs_root = self.state_root.join("workflows/runs");
+        let entries = match fs::read_dir(&runs_root) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(io_error(&runs_root, source)),
+        };
+
+        let mut latest: Option<WorkflowRunRecord> = None;
+        for entry in entries {
+            let entry = entry.map_err(|source| io_error(&runs_root, source))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+
+            let raw = fs::read_to_string(&path).map_err(|source| io_error(&path, source))?;
+            let run: WorkflowRunRecord =
+                serde_json::from_str(&raw).map_err(|source| json_error(&path, source))?;
+            if run.channel_profile_id.as_deref() != Some(channel_profile_id) {
+                continue;
+            }
+            if run.status_conversation_id.as_deref() != Some(conversation_id) {
+                continue;
+            }
+            if !include_terminal && run.state.clone().is_terminal() {
+                continue;
+            }
+            let should_replace = latest
+                .as_ref()
+                .map(|current| {
+                    run.updated_at > current.updated_at
+                        || (run.updated_at == current.updated_at
+                            && run.started_at > current.started_at)
+                })
+                .unwrap_or(true);
+            if should_replace {
+                latest = Some(run);
+            }
+        }
+
         Ok(latest)
     }
 }

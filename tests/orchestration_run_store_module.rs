@@ -50,3 +50,50 @@ fn run_store_module_loads_latest_run_by_source_message_id() {
         .expect("lookup missing");
     assert!(missing.is_none());
 }
+
+#[test]
+fn run_store_module_resolves_latest_run_by_conversation() {
+    let temp = tempdir().expect("tempdir");
+    let store = WorkflowRunStore::new(temp.path());
+
+    let mut old_run = store
+        .create_run("run-old", "wf-default", 10)
+        .expect("create old run");
+    old_run.channel_profile_id = Some("engineering".to_string());
+    old_run.status_conversation_id = Some("C1:100.1".to_string());
+    old_run.state = RunState::Failed;
+    old_run.updated_at = 20;
+    store.persist_run(&old_run).expect("persist old run");
+
+    let mut new_run = store
+        .create_run("run-new", "wf-default", 30)
+        .expect("create new run");
+    new_run.channel_profile_id = Some("engineering".to_string());
+    new_run.status_conversation_id = Some("C1:100.1".to_string());
+    new_run.state = RunState::Running;
+    new_run.updated_at = 40;
+    store.persist_run(&new_run).expect("persist new run");
+
+    let mut terminal_run = store
+        .create_run("run-terminal", "wf-default", 50)
+        .expect("create terminal run");
+    terminal_run.channel_profile_id = Some("engineering".to_string());
+    terminal_run.status_conversation_id = Some("C1:100.1".to_string());
+    terminal_run.state = RunState::Failed;
+    terminal_run.updated_at = 60;
+    store
+        .persist_run(&terminal_run)
+        .expect("persist terminal run");
+
+    let active = store
+        .latest_run_for_conversation("engineering", "C1:100.1", false)
+        .expect("active lookup")
+        .expect("active run");
+    assert_eq!(active.run_id, "run-new");
+
+    let terminal_only = store
+        .latest_run_for_conversation("engineering", "C1:100.1", true)
+        .expect("terminal lookup")
+        .expect("terminal run");
+    assert_eq!(terminal_only.run_id, "run-terminal");
+}
