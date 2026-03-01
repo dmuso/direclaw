@@ -2,6 +2,7 @@ use super::{
     file_tags, is_valid_queue_json_filename, logging::append_queue_log, outgoing_filename,
     IncomingMessage, OutgoingMessage, QueueError, QueuePaths,
 };
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,18 @@ pub struct ClaimedMessage {
     pub incoming_path: PathBuf,
     pub processing_path: PathBuf,
     pub payload: IncomingMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequeuedMessage {
+    pub path: PathBuf,
+    pub attempt: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailureDisposition {
+    Requeued(RequeuedMessage),
+    DeadLettered { path: PathBuf, attempt: u32 },
 }
 
 pub fn claim_oldest(paths: &QueuePaths) -> Result<Option<ClaimedMessage>, QueueError> {
@@ -116,7 +129,51 @@ pub fn requeue_failure(
     paths: &QueuePaths,
     claimed: &ClaimedMessage,
 ) -> Result<PathBuf, QueueError> {
+    Ok(requeue_failure_with_attempt(paths, claimed)?.path)
+}
+
+pub fn requeue_failure_with_attempt(
+    paths: &QueuePaths,
+    claimed: &ClaimedMessage,
+) -> Result<RequeuedMessage, QueueError> {
     requeue_processing_file(paths, &claimed.processing_path)
+}
+
+pub fn dead_letter_failure(
+    paths: &QueuePaths,
+    claimed: &ClaimedMessage,
+    failure_attempt: u32,
+    error: &str,
+) -> Result<PathBuf, QueueError> {
+    fs::create_dir_all(&paths.failed).map_err(|e| io_err(&paths.failed, e))?;
+    let file_name = dead_letter_filename(&claimed.payload.message_id);
+    let failed_path = paths.failed.join(file_name);
+    let envelope = json!({
+        "failed_at": chrono::Utc::now().timestamp(),
+        "failure_attempt": failure_attempt,
+        "error": error,
+        "source_processing_path": claimed.processing_path.display().to_string(),
+        "message": claimed.payload,
+    });
+    let body = serde_json::to_string_pretty(&envelope).map_err(|e| parse_err(&failed_path, e))?;
+    fs::write(&failed_path, body).map_err(|e| io_err(&failed_path, e))?;
+    fs::remove_file(&claimed.processing_path).map_err(|e| io_err(&claimed.processing_path, e))?;
+    Ok(failed_path)
+}
+
+pub fn requeue_or_dead_letter_failure(
+    paths: &QueuePaths,
+    claimed: &ClaimedMessage,
+    max_requeue_attempts: u32,
+    error: &str,
+) -> Result<FailureDisposition, QueueError> {
+    let attempt = next_failure_attempt(&claimed.processing_path);
+    if attempt >= max_requeue_attempts.max(1) {
+        let path = dead_letter_failure(paths, claimed, attempt, error)?;
+        return Ok(FailureDisposition::DeadLettered { path, attempt });
+    }
+    let requeued = requeue_processing_file(paths, &claimed.processing_path)?;
+    Ok(FailureDisposition::Requeued(requeued))
 }
 
 fn io_err(path: &Path, source: std::io::Error) -> QueueError {
@@ -181,12 +238,41 @@ fn unique_outgoing_filename(
 
 static REQUEUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn unique_requeue_name(original_name: &str) -> String {
+fn unique_requeue_name(original_name: &str, attempt: u32) -> String {
     let path = Path::new(original_name);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("json");
-    let hash = short_name_hash(original_name);
+    let hash = short_name_hash(&format!("{original_name}:{attempt}"));
     let counter = REQUEUE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-    format!("requeue_{hash}_{counter}.{ext}")
+    format!("requeue_a{attempt}_{hash}_{counter}.{ext}")
+}
+
+fn requeue_attempt_from_name(original_name: &str) -> u32 {
+    let Some(stem) = Path::new(original_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+    else {
+        return 0;
+    };
+    let Some(rest) = stem.strip_prefix("requeue_a") else {
+        return 0;
+    };
+    let Some((attempt_raw, _)) = rest.split_once('_') else {
+        return 0;
+    };
+    attempt_raw.parse::<u32>().unwrap_or(0)
+}
+
+fn dead_letter_filename(message_id: &str) -> String {
+    let hash = short_name_hash(message_id);
+    let counter = REQUEUE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    format!("failed_{hash}_{counter}.json")
+}
+
+fn next_failure_attempt(processing_path: &Path) -> u32 {
+    let Some(file_name) = processing_path.file_name().and_then(|v| v.to_str()) else {
+        return 1;
+    };
+    requeue_attempt_from_name(file_name).saturating_add(1)
 }
 
 fn short_name_hash(value: &str) -> String {
@@ -202,7 +288,7 @@ fn short_name_hash(value: &str) -> String {
 fn requeue_processing_file(
     paths: &QueuePaths,
     processing_path: &Path,
-) -> Result<PathBuf, QueueError> {
+) -> Result<RequeuedMessage, QueueError> {
     let file_name = processing_path.file_name().ok_or_else(|| {
         io_err(
             processing_path,
@@ -213,7 +299,13 @@ fn requeue_processing_file(
         )
     })?;
     let file_name = file_name.to_string_lossy();
-    let incoming = paths.incoming.join(unique_requeue_name(&file_name));
+    let attempt = requeue_attempt_from_name(&file_name).saturating_add(1);
+    let incoming = paths
+        .incoming
+        .join(unique_requeue_name(&file_name, attempt));
     fs::rename(processing_path, &incoming).map_err(|e| io_err(processing_path, e))?;
-    Ok(incoming)
+    Ok(RequeuedMessage {
+        path: incoming,
+        attempt,
+    })
 }

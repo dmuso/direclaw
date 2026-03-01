@@ -6,6 +6,7 @@ pub struct QueuePaths {
     pub incoming: PathBuf,
     pub processing: PathBuf,
     pub outgoing: PathBuf,
+    pub failed: PathBuf,
 }
 
 impl QueuePaths {
@@ -15,6 +16,7 @@ impl QueuePaths {
             incoming: state_root.join("queue/incoming"),
             processing: state_root.join("queue/processing"),
             outgoing: state_root.join("queue/outgoing"),
+            failed: state_root.join("queue/failed"),
         }
     }
 }

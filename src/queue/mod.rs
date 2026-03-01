@@ -10,7 +10,8 @@ pub use file_tags::{
 };
 pub use lifecycle::{
     claim_oldest, complete_success, complete_success_many, complete_success_no_outgoing,
-    requeue_failure, ClaimedMessage,
+    dead_letter_failure, requeue_failure, requeue_failure_with_attempt,
+    requeue_or_dead_letter_failure, ClaimedMessage, FailureDisposition, RequeuedMessage,
 };
 pub use message::{IncomingMessage, OutgoingMessage};
 pub use outbound::{

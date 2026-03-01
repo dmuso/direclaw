@@ -15,6 +15,10 @@ fn queue_paths_module_exposes_existing_path_apis() {
         queue.outgoing,
         std::path::Path::new("/tmp/state/queue/outgoing")
     );
+    assert_eq!(
+        queue.failed,
+        std::path::Path::new("/tmp/state/queue/failed")
+    );
 
     assert_eq!(outgoing_filename("heartbeat", "hb-1", 100), "hb-1.json");
     assert_eq!(outgoing_filename("slack", "m-1", 100), "slack_m-1_100.json");

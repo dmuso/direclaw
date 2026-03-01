@@ -81,6 +81,7 @@ pub fn drain_queue_once_with_binaries(
         fs::create_dir_all(&paths.incoming).map_err(|e| e.to_string())?;
         fs::create_dir_all(&paths.processing).map_err(|e| e.to_string())?;
         fs::create_dir_all(&paths.outgoing).map_err(|e| e.to_string())?;
+        fs::create_dir_all(&paths.failed).map_err(|e| e.to_string())?;
     }
     let mut scheduler = queue::PerKeyScheduler::default();
     let (result_tx, result_rx) = mpsc::channel::<QueueTaskCompletion>();
@@ -172,6 +173,34 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
     events: Sender<WorkerEvent>,
     config: QueueProcessorLoopConfig,
 ) {
+    let queue_sets = match collect_orchestrator_queue_paths(&settings) {
+        Ok(paths) => paths,
+        Err(error) => {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: worker_id.clone(),
+                at: now_secs(),
+                message: error,
+                fatal: false,
+            });
+            return;
+        }
+    };
+    for paths in &queue_sets {
+        if let Err(error) = fs::create_dir_all(&paths.incoming)
+            .and_then(|_| fs::create_dir_all(&paths.processing))
+            .and_then(|_| fs::create_dir_all(&paths.outgoing))
+            .and_then(|_| fs::create_dir_all(&paths.failed))
+        {
+            let _ = events.send(WorkerEvent::Error {
+                worker_id: worker_id.clone(),
+                at: now_secs(),
+                message: error.to_string(),
+                fatal: false,
+            });
+            return;
+        }
+    }
+
     match recover_processing_queue_entries_for_settings(&state_root, &settings) {
         Ok(report) => {
             for path in report.recovered {
@@ -198,33 +227,6 @@ pub(crate) fn run_queue_processor_loop_with_binaries(
                 message: error,
                 fatal: false,
             });
-        }
-    }
-
-    let queue_sets = match collect_orchestrator_queue_paths(&settings) {
-        Ok(paths) => paths,
-        Err(error) => {
-            let _ = events.send(WorkerEvent::Error {
-                worker_id: worker_id.clone(),
-                at: now_secs(),
-                message: error,
-                fatal: false,
-            });
-            return;
-        }
-    };
-    for paths in &queue_sets {
-        if let Err(error) = fs::create_dir_all(&paths.incoming)
-            .and_then(|_| fs::create_dir_all(&paths.processing))
-            .and_then(|_| fs::create_dir_all(&paths.outgoing))
-        {
-            let _ = events.send(WorkerEvent::Error {
-                worker_id: worker_id.clone(),
-                at: now_secs(),
-                message: error.to_string(),
-                fatal: false,
-            });
-            return;
         }
     }
 
@@ -388,11 +390,39 @@ fn process_claimed_message(
         &functions,
         Some(binaries.clone()),
         |_attempt, _request, _orchestrator_cfg| None,
-    )
-    .map_err(|e| {
-        let _ = queue::requeue_failure(&scoped.queue_paths, &scoped.claimed);
-        e.to_string()
-    })?;
+    );
+    let action = match action {
+        Ok(action) => action,
+        Err(err) => {
+            let error_text = err.to_string();
+            let max_requeue_attempts = queue_max_requeue_attempts();
+            let failure_result = queue::requeue_or_dead_letter_failure(
+                &scoped.queue_paths,
+                &scoped.claimed,
+                max_requeue_attempts,
+                &error_text,
+            );
+            match failure_result {
+                Ok(queue::FailureDisposition::Requeued(requeued)) => {
+                    return Err(format!(
+                        "{error_text} (requeued attempt {} of max {})",
+                        requeued.attempt, max_requeue_attempts
+                    ))
+                }
+                Ok(queue::FailureDisposition::DeadLettered { path, attempt }) => {
+                    return Err(format!(
+                        "{error_text} (dead-lettered after attempt {attempt}; path={})",
+                        path.display()
+                    ))
+                }
+                Err(queue_err) => {
+                    return Err(format!(
+                        "{error_text} (additionally failed to handle queue failure: {queue_err})"
+                    ))
+                }
+            }
+        }
+    };
 
     if matches!(action, RoutedSelectorAction::NoResponse { .. }) {
         queue::complete_success_no_outgoing(&scoped.queue_paths, &scoped.claimed)
@@ -448,6 +478,14 @@ fn process_claimed_message(
     queue::complete_success_many(&scoped.queue_paths, &scoped.claimed, &outgoing)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn queue_max_requeue_attempts() -> u32 {
+    std::env::var("DIRECLAW_QUEUE_MAX_REQUEUE_ATTEMPTS")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(3)
 }
 
 fn collect_orchestrator_queue_paths(settings: &Settings) -> Result<Vec<QueuePaths>, String> {

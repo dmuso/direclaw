@@ -415,4 +415,48 @@ channels: {{}}
             "processing directory should be empty after stop"
         );
     }
+
+    #[test]
+    fn queue_worker_startup_does_not_error_when_queue_dirs_are_missing() {
+        let dir = tempdir().expect("tempdir");
+        let state_root = dir.path().join(".direclaw");
+        let paths = StatePaths::new(&state_root);
+        bootstrap_state_root(&paths).expect("bootstrap");
+
+        let settings = write_settings_and_orchestrator(dir.path(), &dir.path().join("orch"));
+        let stop = Arc::new(AtomicBool::new(true));
+        let (tx, rx) = mpsc::channel::<WorkerEvent>();
+
+        queue_worker::run_queue_processor_loop_with_binaries(
+            "queue_processor".to_string(),
+            state_root,
+            settings,
+            stop,
+            tx,
+            queue_worker::QueueProcessorLoopConfig {
+                slow_shutdown: false,
+                max_concurrency: 1,
+                binaries: RunnerBinaries {
+                    anthropic: "claude".to_string(),
+                    openai: "codex".to_string(),
+                },
+            },
+        );
+
+        let mut saw_stopped = false;
+        while let Ok(event) = rx.recv_timeout(Duration::from_millis(250)) {
+            match event {
+                WorkerEvent::Error { message, .. } => {
+                    panic!("queue worker should not emit startup error: {message}")
+                }
+                WorkerEvent::Stopped { .. } => {
+                    saw_stopped = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_stopped, "queue worker should emit stopped event");
+    }
 }

@@ -1,6 +1,7 @@
 use direclaw::queue::{
     claim_oldest, complete_success, complete_success_many, complete_success_no_outgoing,
-    requeue_failure, IncomingMessage, OutgoingMessage, QueuePaths,
+    dead_letter_failure, requeue_failure, requeue_failure_with_attempt, IncomingMessage,
+    OutgoingMessage, QueuePaths,
 };
 use std::fs;
 use tempfile::tempdir;
@@ -49,6 +50,7 @@ fn queue_lifecycle_moves_incoming_to_processing_to_outgoing() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let incoming = make_incoming("msg-1");
     let path = queue.incoming.join("msg-1.json");
@@ -76,6 +78,7 @@ fn queue_failure_requeues_payload_without_loss() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let incoming = make_incoming("msg-2");
     let raw = serde_json::to_string(&incoming).expect("serialize");
@@ -97,6 +100,7 @@ fn queue_claim_parse_failure_requeues_back_to_incoming() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let in_path = queue.incoming.join("bad.json");
     fs::write(&in_path, "{not-json}").expect("write invalid json");
@@ -128,6 +132,7 @@ fn queue_requeue_failure_does_not_clobber_existing_incoming_file() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let incoming = make_incoming("msg-3");
     let raw = serde_json::to_string(&incoming).expect("serialize");
@@ -156,6 +161,7 @@ fn queue_requeue_parse_failures_do_not_grow_filename_unbounded() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let long_name = format!("{}.json", "a".repeat(240));
     fs::write(queue.incoming.join(long_name), "{bad-json").expect("write invalid");
@@ -189,6 +195,7 @@ fn complete_success_enforces_send_file_stripping_truncation_and_file_validation(
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let incoming = make_incoming("msg-4");
     fs::write(
@@ -232,6 +239,7 @@ fn complete_success_many_writes_ordered_outbound_messages_for_one_claim() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let incoming = make_incoming("msg-5");
     fs::write(
@@ -274,6 +282,7 @@ fn complete_success_no_outgoing_removes_processing_without_writing_outbound() {
     fs::create_dir_all(&queue.incoming).expect("incoming");
     fs::create_dir_all(&queue.processing).expect("processing");
     fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
 
     let incoming = make_incoming("msg-6");
     fs::write(
@@ -290,4 +299,61 @@ fn complete_success_no_outgoing_removes_processing_without_writing_outbound() {
         .expect("outgoing")
         .next()
         .is_none());
+}
+
+#[test]
+fn queue_requeue_failure_with_attempt_tracks_retry_count() {
+    let dir = tempdir().expect("tempdir");
+    let queue = QueuePaths::from_state_root(dir.path());
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
+
+    let incoming = make_incoming("msg-7");
+    fs::write(
+        queue.incoming.join("msg-7.json"),
+        serde_json::to_string(&incoming).expect("serialize"),
+    )
+    .expect("write");
+
+    let claimed_1 = claim_oldest(&queue).expect("claim").expect("item");
+    let first = requeue_failure_with_attempt(&queue, &claimed_1).expect("first requeue");
+    assert_eq!(first.attempt, 1);
+    assert!(first.path.exists());
+
+    let claimed_2 = claim_oldest(&queue).expect("claim").expect("item");
+    let second = requeue_failure_with_attempt(&queue, &claimed_2).expect("second requeue");
+    assert_eq!(second.attempt, 2);
+    assert!(second.path.exists());
+}
+
+#[test]
+fn queue_dead_letter_failure_persists_envelope_and_removes_processing() {
+    let dir = tempdir().expect("tempdir");
+    let queue = QueuePaths::from_state_root(dir.path());
+    fs::create_dir_all(&queue.incoming).expect("incoming");
+    fs::create_dir_all(&queue.processing).expect("processing");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing");
+    fs::create_dir_all(&queue.failed).expect("failed");
+
+    let incoming = make_incoming("msg-8");
+    fs::write(
+        queue.incoming.join("msg-8.json"),
+        serde_json::to_string(&incoming).expect("serialize"),
+    )
+    .expect("write");
+
+    let claimed = claim_oldest(&queue).expect("claim").expect("item");
+    let failed_path =
+        dead_letter_failure(&queue, &claimed, 3, "provider exploded").expect("dead letter");
+    assert!(!claimed.processing_path.exists());
+    assert!(failed_path.exists());
+
+    let envelope: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(failed_path).expect("read envelope"))
+            .expect("parse envelope");
+    assert_eq!(envelope["failure_attempt"], 3);
+    assert_eq!(envelope["error"], "provider exploded");
+    assert_eq!(envelope["message"]["messageId"], "msg-8");
 }
