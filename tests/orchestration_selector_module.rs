@@ -8,6 +8,8 @@ use direclaw::provider::RunnerBinaries;
 use direclaw::queue::IncomingMessage;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use tempfile::tempdir;
 
 fn sample_request() -> SelectorRequest {
@@ -49,6 +51,13 @@ fn sample_orchestrator() -> OrchestratorConfig {
         workflows: Vec::new(),
         workflow_orchestration: None,
     }
+}
+
+fn write_script(path: &std::path::Path, body: &str) {
+    fs::write(path, body).expect("write script");
+    let mut perms = fs::metadata(path).expect("metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).expect("chmod");
 }
 
 #[test]
@@ -163,6 +172,91 @@ channels: {}
     .expect_err("selector agent must exist");
 
     assert!(err.contains("selector agent `selector` missing"));
+}
+
+#[test]
+fn selector_module_writes_prompt_artifacts_under_orchestrator_artifacts() {
+    let temp = tempdir().expect("tempdir");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("workspace");
+
+    let selector_bin = temp.path().join("claude-mock");
+    write_script(
+        &selector_bin,
+        r#"#!/bin/sh
+set -eu
+msg="$*"
+result_path=$(printf "%s" "$msg" | sed -n 's/.*Write selector result JSON to: \([^ ]*\).*/\1/p')
+selector_id=$(basename "$result_path" | sed -E 's/^selector-provider-result-(.*)_attempt_[0-9]+\.json$/\1/')
+printf '{"selectorId":"%s","status":"selected","action":"workflow_start","selectedWorkflow":"default"}' "$selector_id" > "$result_path"
+echo ok
+"#,
+    );
+
+    let settings: direclaw::config::Settings = serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: {workspaces}
+shared_workspaces: {{}}
+orchestrators:
+  eng:
+    private_workspace: {workspace}
+    shared_access: []
+channel_profiles:
+  engineering:
+    channel: slack
+    orchestrator_id: eng
+    slack_app_user_id: U123
+    require_mention_in_channels: true
+monitoring: {{}}
+channels: {{}}
+"#,
+        workspaces = temp.path().display(),
+        workspace = workspace.display()
+    ))
+    .expect("settings");
+
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: eng
+selector_agent: selector
+default_workflow: default
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  selector:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+workflows:
+  - id: default
+    version: 1
+    steps: []
+"#,
+    )
+    .expect("orchestrator");
+
+    let result = run_selector_attempt_with_provider(
+        temp.path(),
+        &settings,
+        &sample_request(),
+        &orchestrator,
+        1,
+        &RunnerBinaries {
+            anthropic: selector_bin.display().to_string(),
+            openai: selector_bin.display().to_string(),
+        },
+    )
+    .expect("selector result");
+
+    assert!(result.contains("\"workflow_start\""));
+    assert!(workspace
+        .join("orchestrator/artifacts/selector/sel-1/attempts/1/prompt.md")
+        .is_file());
+    assert!(workspace
+        .join("orchestrator/artifacts/selector/sel-1/attempts/1/context.md")
+        .is_file());
+    assert!(!workspace.join("prompt.md").is_file());
+    assert!(!workspace.join("context.md").is_file());
 }
 
 #[test]

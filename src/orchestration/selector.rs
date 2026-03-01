@@ -134,9 +134,19 @@ pub fn run_selector_attempt_with_provider(
             "unsupported selector placeholder `{{{{{token}}}}}`"
         )),
     })?;
+    let selector_attempt_artifacts_dir = cwd
+        .join("orchestrator/artifacts/selector")
+        .join(&request.selector_id)
+        .join("attempts")
+        .join(attempt.to_string());
     let request_id = format!("{}_attempt_{attempt}", request.selector_id);
-    let artifacts = write_file_backed_prompt(&cwd, &request_id, &prompt, &context)
-        .map_err(|err| err.to_string())?;
+    let artifacts = write_file_backed_prompt(
+        &selector_attempt_artifacts_dir,
+        &request_id,
+        &prompt,
+        &context,
+    )
+    .map_err(|err| err.to_string())?;
 
     let provider_request = ProviderRequest {
         agent_id: orchestrator.selector_agent.clone(),
