@@ -97,8 +97,7 @@ impl ReconnectingSocketServer {
         let acknowledgements_for_thread = Arc::clone(&acknowledgements);
         let handle = thread::spawn(move || {
             for payloads in sessions {
-                let accept_deadline =
-                    std::time::Instant::now() + std::time::Duration::from_millis(500);
+                let accept_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
                 let (stream, _) = loop {
                     match listener.accept() {
                         Ok(conn) => break conn,
@@ -1154,6 +1153,34 @@ fn sync_requires_profile_scoped_tokens_for_multiple_profiles() {
     fs::create_dir_all(&state_root).expect("state root");
     let err = sync_once(&state_root, &settings).expect_err("missing scoped env should fail");
     assert!(matches!(err, SlackError::MissingProfileScopedEnvVar { .. }));
+}
+
+#[test]
+fn reconnecting_socket_server_waits_long_enough_for_delayed_client_connect() {
+    let socket = ReconnectingSocketServer::start(vec![vec![
+        r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D555","channel_type":"im","user":"U777","text":"hello once","ts":"1700000100.1"}}}"#
+            .to_string(),
+    ]]);
+    let url = socket.url.clone();
+
+    std::thread::sleep(std::time::Duration::from_millis(900));
+
+    let (mut client, _) = tungstenite::connect(url.as_str()).expect("connect delayed client");
+    match client.read() {
+        Ok(Message::Text(payload)) => assert!(payload.contains("\"envelope_id\":\"env-1\"")),
+        other => panic!("expected payload text frame, got {other:?}"),
+    }
+    client
+        .send(Message::Text(r#"{"envelope_id":"env-1"}"#.to_string()))
+        .expect("ack envelope");
+    let _ = client.close(None);
+
+    let acks = socket.finish();
+    assert!(
+        acks.iter()
+            .any(|ack| ack.contains("\"envelope_id\":\"env-1\"")),
+        "missing delayed-client ack: {acks:?}"
+    );
 }
 
 #[test]
