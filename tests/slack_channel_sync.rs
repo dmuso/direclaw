@@ -1391,6 +1391,138 @@ fn socket_runtime_recovers_from_idle_stall_and_continues_ingesting() {
 }
 
 #[test]
+fn socket_runtime_backfills_missed_messages_between_reconnects() {
+    let _env_guard = env_lock_guard();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind reconnecting socket server");
+    listener
+        .set_nonblocking(true)
+        .expect("set nonblocking listener");
+    let addr = listener.local_addr().expect("socket addr");
+    let socket_url = format!("ws://{addr}");
+    let socket_handle = thread::spawn(move || {
+        let first_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let (first_stream, _) = loop {
+            match listener.accept() {
+                Ok(conn) => break conn,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= first_deadline {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        };
+        first_stream
+            .set_nonblocking(false)
+            .expect("set blocking stream");
+        let mut first_socket = tungstenite::accept(first_stream).expect("accept first socket");
+        first_socket
+            .send(Message::Text(r#"{"envelope_id":"env-1","type":"events_api","payload":{"event":{"type":"message","channel":"D111","channel_type":"im","user":"U111","text":"first via socket","ts":"1700000400.1"}}}"#.to_string()))
+            .expect("send first payload");
+        let _ = first_socket.close(None);
+
+        // Accept one reconnect attempt then close; the missed message is supplied via history.
+        let second_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let (second_stream, _) = loop {
+            match listener.accept() {
+                Ok(conn) => break conn,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= second_deadline {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return,
+            }
+        };
+        second_stream
+            .set_nonblocking(false)
+            .expect("set blocking second stream");
+        let mut second_socket = tungstenite::accept(second_stream).expect("accept second socket");
+        let _ = second_socket.close(None);
+    });
+
+    let history_calls = Arc::new(AtomicUsize::new(0));
+    let history_calls_for_server = Arc::clone(&history_calls);
+    let server = TimedMockSlackServer::start(std::time::Duration::from_millis(500), move |path| {
+        if path.starts_with("/api/auth.test") {
+            return r#"{"ok":true}"#.to_string();
+        }
+        if path.starts_with("/api/apps.connections.open") {
+            return format!(r#"{{"ok":true,"url":"{socket_url}"}}"#);
+        }
+        if path.starts_with("/api/conversations.list") {
+            return r#"{"ok":true,"conversations":[{"id":"D111","is_im":true}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        if path.starts_with("/api/conversations.history") {
+            let call = history_calls_for_server.fetch_add(1, Ordering::Relaxed);
+            if call == 0 {
+                return r#"{"ok":true,"messages":[{"ts":"1700000400.1","thread_ts":"1700000400.1","text":"first via history","user":"U111"}],"response_metadata":{"next_cursor":""}}"#.to_string();
+            }
+            return r#"{"ok":true,"messages":[{"ts":"1700000400.2","thread_ts":"1700000400.2","text":"second via history","user":"U111"}],"response_metadata":{"next_cursor":""}}"#.to_string();
+        }
+        r#"{"ok":false,"error":"unexpected_path"}"#.to_string()
+    });
+    set_env(&server.base_url);
+
+    let temp = tempdir().expect("tempdir");
+    let state_root = temp.path().join(".direclaw");
+    let mut settings = sample_socket_mode_settings(temp.path());
+    if let Some(config) = settings.channels.get_mut("slack") {
+        config.socket_idle_timeout_ms = 100;
+        config.socket_reconnect_backoff_ms = 10;
+        config.history_backfill_enabled = true;
+    }
+    let queue = queue_for_profile(&settings, "slack_main");
+    fs::create_dir_all(&queue.incoming).expect("incoming dir");
+    fs::create_dir_all(&queue.outgoing).expect("outgoing dir");
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_for_thread = Arc::clone(&stop);
+    let run_state_root = state_root.clone();
+    let run_settings = settings.clone();
+    let runtime = thread::spawn(move || {
+        run_socket_runtime_until_stop(&run_state_root, &run_settings, stop_for_thread)
+            .expect("socket runtime succeeds");
+    });
+
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    runtime.join().expect("join runtime thread");
+    socket_handle.join().expect("join socket thread");
+
+    let incoming_files = fs::read_dir(&queue.incoming)
+        .expect("incoming list")
+        .map(|entry| entry.expect("entry").path())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        incoming_files.len(),
+        2,
+        "expected socket + history recovery"
+    );
+    let combined = incoming_files
+        .iter()
+        .map(|path| fs::read_to_string(path).expect("read incoming"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        combined.contains("second via history"),
+        "expected recovered message from history, got: {combined}"
+    );
+
+    let requests = server.finish();
+    let history_request_count = requests
+        .iter()
+        .filter(|request| request.path.starts_with("/api/conversations.history"))
+        .count();
+    assert!(
+        history_request_count >= 1,
+        "expected runtime backfill calls to conversations.history"
+    );
+}
+
+#[test]
 fn sync_avoids_duplicate_ingestion_on_repeated_polling() {
     let _env_guard = env_lock_guard();
     let server = MockSlackServer::start(8, |path| {

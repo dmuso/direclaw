@@ -118,6 +118,7 @@ struct SlackProfileRuntime {
     api: SlackApiClient,
     allowlist: BTreeSet<String>,
     include_im_conversations: bool,
+    history_backfill_enabled: bool,
 }
 
 fn io_error(path: &Path, source: std::io::Error) -> SlackError {
@@ -210,8 +211,13 @@ fn sync_once_internal(
     let channel_cfg = settings.channels.get("slack").cloned().unwrap_or_default();
     let run_backfill = mode == SyncMode::BackfillOnly && channel_cfg.history_backfill_enabled;
     let run_socket = mode == SyncMode::SocketOnly;
-    let runtimes =
-        build_profile_runtimes(settings, include_im_conversations, run_socket, run_backfill)?;
+    let runtimes = build_profile_runtimes(
+        settings,
+        include_im_conversations,
+        channel_cfg.history_backfill_enabled,
+        run_socket,
+        run_backfill,
+    )?;
 
     let mut report = SlackSyncReport {
         profiles_processed: runtimes.len(),
@@ -258,6 +264,7 @@ fn sync_once_internal(
 fn build_profile_runtimes(
     settings: &Settings,
     include_im_conversations: bool,
+    history_backfill_enabled: bool,
     validate_socket_auth: bool,
     validate_backfill_connection: bool,
 ) -> Result<BTreeMap<String, SlackProfileRuntime>, SlackError> {
@@ -303,6 +310,7 @@ fn build_profile_runtimes(
                 api,
                 allowlist: env.allowlist,
                 include_im_conversations,
+                history_backfill_enabled,
             },
         );
     }
@@ -322,6 +330,7 @@ pub fn run_socket_runtime_until_stop(
     let runtimes = build_profile_runtimes(
         settings,
         slack_include_im_conversations(settings),
+        channel_cfg.history_backfill_enabled,
         true,
         false,
     )?;

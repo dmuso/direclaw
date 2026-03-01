@@ -1,4 +1,5 @@
 use super::api::SlackMessage;
+use super::history_backfill;
 use super::ingest::{enqueue_incoming, should_accept_channel_message};
 use super::{SlackError, SlackProfileRuntime};
 use crate::config::ChannelProfile;
@@ -135,6 +136,7 @@ pub(super) fn process_socket_inbound_for_profile(
         SocketRunSettings {
             reconnect_backoff_ms,
             idle_timeout_ms,
+            recover_missed_messages: false,
             deadline: Some(deadline),
             stop: None,
         },
@@ -158,6 +160,7 @@ pub(super) fn run_socket_inbound_for_profile_until_stop(
         SocketRunSettings {
             reconnect_backoff_ms,
             idle_timeout_ms,
+            recover_missed_messages: runtime.history_backfill_enabled,
             deadline: None,
             stop: Some(stop),
         },
@@ -168,6 +171,7 @@ pub(super) fn run_socket_inbound_for_profile_until_stop(
 struct SocketRunSettings<'a> {
     reconnect_backoff_ms: u64,
     idle_timeout_ms: u64,
+    recover_missed_messages: bool,
     deadline: Option<Instant>,
     stop: Option<&'a AtomicBool>,
 }
@@ -191,6 +195,40 @@ fn run_socket_loop(
     loop {
         if should_stop(settings.stop) || deadline_reached(settings.deadline) {
             break;
+        }
+
+        if settings.recover_missed_messages {
+            match history_backfill::process_inbound_for_profile(
+                state_root,
+                queue_paths,
+                profile_id,
+                runtime,
+            ) {
+                Ok(enqueued) => {
+                    enqueued_total += enqueued;
+                }
+                Err(err @ SlackError::RateLimited { .. }) => {
+                    health.connected = false;
+                    health.last_error = Some(err.to_string());
+                    save_health(state_root, profile_id, &health);
+                    return Err(err);
+                }
+                Err(err) => {
+                    let class = classify_socket_failure(&err.to_string());
+                    let message =
+                        format_socket_error("socket catch-up failed", &err.to_string(), class);
+                    health.connected = false;
+                    health.last_error = Some(message.clone());
+                    save_health(state_root, profile_id, &health);
+                    if class == RetryClass::NonRetryable {
+                        return Err(SlackError::ApiRequest(message));
+                    }
+                    if !sleep_reconnect(reconnect_backoff, settings.stop, settings.deadline) {
+                        break;
+                    }
+                    continue;
+                }
+            }
         }
 
         health.last_reconnect = Some(super::now_secs());
