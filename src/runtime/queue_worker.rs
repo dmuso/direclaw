@@ -1,8 +1,9 @@
 use super::{append_runtime_log, now_secs, StatePaths, WorkerEvent};
 use crate::channels::policy::classify_response_eligibility;
 use crate::config::Settings;
+use crate::orchestration::error::OrchestratorError;
 use crate::orchestration::function_registry::FunctionRegistry;
-use crate::orchestration::routing::process_queued_message_with_runner_binaries;
+use crate::orchestration::routing::process_queued_message_with_runner_binaries_and_hook;
 use crate::orchestration::run_store::{RunState, StepAttemptRecord, WorkflowRunStore};
 use crate::orchestration::scheduler::parse_trigger_envelope;
 use crate::orchestration::slack_target::{
@@ -381,7 +382,7 @@ fn process_claimed_message(
     let run_store = WorkflowRunStore::new(&scoped.queue_paths.root);
     let functions = FunctionRegistry::v1_defaults(run_store.clone(), settings);
 
-    let action = process_queued_message_with_runner_binaries(
+    let action = process_queued_message_with_runner_binaries_and_hook(
         &scoped.queue_paths.root,
         settings,
         &scoped.claimed.payload,
@@ -390,6 +391,15 @@ fn process_claimed_message(
         &functions,
         Some(binaries.clone()),
         |_attempt, _request, _orchestrator_cfg| None,
+        |workflow_id| {
+            enqueue_workflow_selection_ack(
+                &scoped.queue_paths,
+                settings,
+                &scoped.claimed.payload,
+                workflow_id,
+            )
+            .map_err(OrchestratorError::Config)
+        },
     );
     let action = match action {
         Ok(action) => action,
@@ -543,6 +553,54 @@ fn resolve_outbound_slack_target(
     }
 
     Ok(None)
+}
+
+fn enqueue_workflow_selection_ack(
+    queue_paths: &QueuePaths,
+    settings: &Settings,
+    inbound: &queue::IncomingMessage,
+    workflow_id: &str,
+) -> Result<(), String> {
+    let outbound_slack_target = resolve_outbound_slack_target(settings, inbound)?;
+    let outbound_channel = outbound_slack_target
+        .as_ref()
+        .map(|_| "slack".to_string())
+        .unwrap_or_else(|| inbound.channel.clone());
+    let outbound_channel_profile_id = outbound_slack_target
+        .as_ref()
+        .map(|target| target.channel_profile_id.clone())
+        .or_else(|| inbound.channel_profile_id.clone());
+    let outbound_conversation_id = outbound_slack_target
+        .as_ref()
+        .map(|target| match target.posting_mode {
+            SlackPostingMode::ChannelPost => target.channel_id.clone(),
+            SlackPostingMode::ThreadReply => format!(
+                "{}:{}",
+                target.channel_id,
+                target.thread_ts.clone().unwrap_or_default()
+            ),
+        })
+        .or_else(|| inbound.conversation_id.clone());
+    let outbound_target_ref = outbound_slack_target
+        .as_ref()
+        .map(slack_target_ref_to_value);
+    let outgoing = OutgoingMessage {
+        channel: outbound_channel,
+        channel_profile_id: outbound_channel_profile_id,
+        sender: inbound.sender.clone(),
+        message: format!("Actioning workflow {workflow_id}..."),
+        original_message: inbound.message.clone(),
+        timestamp: now_secs(),
+        message_id: format!("{}-workflow-ack", inbound.message_id),
+        agent: "orchestrator".to_string(),
+        conversation_id: outbound_conversation_id,
+        target_ref: outbound_target_ref,
+        files: Vec::new(),
+        workflow_run_id: inbound.workflow_run_id.clone(),
+        workflow_step_id: inbound.workflow_step_id.clone(),
+    };
+    queue::enqueue_outgoing(queue_paths, &outgoing).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn resolve_runner_binaries() -> RunnerBinaries {

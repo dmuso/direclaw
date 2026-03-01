@@ -223,7 +223,7 @@ pub fn process_queued_message<F>(
 where
     F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
 {
-    process_queued_message_with_runner_binaries(
+    process_queued_message_with_runner_binaries_and_hook(
         state_root,
         settings,
         inbound,
@@ -232,6 +232,7 @@ where
         functions,
         None,
         next_selector_attempt,
+        |_workflow_id| Ok(()),
     )
 }
 
@@ -244,10 +245,39 @@ pub fn process_queued_message_with_runner_binaries<F>(
     active_conversation_runs: &BTreeMap<(String, String), String>,
     functions: &FunctionRegistry,
     runner_binaries: Option<RunnerBinaries>,
-    mut next_selector_attempt: F,
+    next_selector_attempt: F,
 ) -> Result<RoutedSelectorAction, OrchestratorError>
 where
     F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
+{
+    process_queued_message_with_runner_binaries_and_hook(
+        state_root,
+        settings,
+        inbound,
+        now,
+        active_conversation_runs,
+        functions,
+        runner_binaries,
+        next_selector_attempt,
+        |_workflow_id| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn process_queued_message_with_runner_binaries_and_hook<F, H>(
+    state_root: &Path,
+    settings: &Settings,
+    inbound: &IncomingMessage,
+    now: i64,
+    active_conversation_runs: &BTreeMap<(String, String), String>,
+    functions: &FunctionRegistry,
+    runner_binaries: Option<RunnerBinaries>,
+    mut next_selector_attempt: F,
+    mut on_workflow_selected: H,
+) -> Result<RoutedSelectorAction, OrchestratorError>
+where
+    F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
+    H: FnMut(&str) -> Result<(), OrchestratorError>,
 {
     let runner_binaries = runner_binaries.unwrap_or_else(resolve_runner_binaries);
     let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
@@ -496,6 +526,18 @@ where
             .as_deref()
             .unwrap_or("selector completed"),
     )?;
+    if selection.result.status == SelectorStatus::Selected
+        && selection.result.action == Some(SelectorAction::WorkflowStart)
+    {
+        if let Some(workflow_id) = selection
+            .result
+            .selected_workflow
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            on_workflow_selected(workflow_id)?;
+        }
+    }
 
     let status_input = StatusResolutionInput {
         explicit_run_id: None,

@@ -75,6 +75,14 @@ pub fn complete_success(
     Ok(all.remove(0))
 }
 
+pub fn enqueue_outgoing(
+    paths: &QueuePaths,
+    outgoing: &OutgoingMessage,
+) -> Result<PathBuf, QueueError> {
+    fs::create_dir_all(&paths.outgoing).map_err(|e| io_err(&paths.outgoing, e))?;
+    write_outgoing_message(paths, outgoing, 0)
+}
+
 pub fn complete_success_no_outgoing(
     _paths: &QueuePaths,
     claimed: &ClaimedMessage,
@@ -100,25 +108,7 @@ pub fn complete_success_many(
 
     let mut written_paths = Vec::with_capacity(outgoing.len());
     for (index, item) in outgoing.iter().enumerate() {
-        let (normalized_outgoing, omitted_files) = file_tags::normalize_outgoing_message(item);
-        if !omitted_files.is_empty() {
-            append_queue_log(
-                paths,
-                &format!(
-                    "outgoing message `{}` omitted invalid/unreadable files: {}",
-                    item.message_id,
-                    omitted_files.join(", ")
-                ),
-            );
-        }
-
-        let filename =
-            unique_outgoing_filename(&item.channel, &item.message_id, item.timestamp, index);
-        let out_path = paths.outgoing.join(filename);
-        let body = serde_json::to_string_pretty(&normalized_outgoing)
-            .map_err(|e| parse_err(&out_path, e))?;
-        fs::write(&out_path, body).map_err(|e| io_err(&out_path, e))?;
-        written_paths.push(out_path);
+        written_paths.push(write_outgoing_message(paths, item, index)?);
     }
 
     fs::remove_file(&claimed.processing_path).map_err(|e| io_err(&claimed.processing_path, e))?;
@@ -234,6 +224,39 @@ fn unique_outgoing_filename(
         return format!("{stem}_{index}.json");
     }
     format!("{base}_{index}")
+}
+
+fn write_outgoing_message(
+    paths: &QueuePaths,
+    item: &OutgoingMessage,
+    start_index: usize,
+) -> Result<PathBuf, QueueError> {
+    let (normalized_outgoing, omitted_files) = file_tags::normalize_outgoing_message(item);
+    if !omitted_files.is_empty() {
+        append_queue_log(
+            paths,
+            &format!(
+                "outgoing message `{}` omitted invalid/unreadable files: {}",
+                item.message_id,
+                omitted_files.join(", ")
+            ),
+        );
+    }
+
+    let mut index = start_index;
+    loop {
+        let filename =
+            unique_outgoing_filename(&item.channel, &item.message_id, item.timestamp, index);
+        let out_path = paths.outgoing.join(filename);
+        if out_path.exists() {
+            index = index.saturating_add(1);
+            continue;
+        }
+        let body = serde_json::to_string_pretty(&normalized_outgoing)
+            .map_err(|e| parse_err(&out_path, e))?;
+        fs::write(&out_path, body).map_err(|e| io_err(&out_path, e))?;
+        return Ok(out_path);
+    }
 }
 
 static REQUEUE_COUNTER: AtomicU64 = AtomicU64::new(0);
