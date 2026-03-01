@@ -18,7 +18,7 @@ fn sample_request() -> SelectorRequest {
         channel_profile_id: "engineering".to_string(),
         message_id: "m1".to_string(),
         conversation_id: Some("c1".to_string()),
-        user_message: "status".to_string(),
+        user_message: "/workflow.status run-1".to_string(),
         thread_context: None,
         memory_bulletin: None,
         memory_bulletin_citations: Vec::new(),
@@ -125,6 +125,22 @@ fn selector_module_rejects_unknown_argument() {
 }
 
 #[test]
+fn selector_module_rejects_command_invoke_without_slash_command() {
+    let mut request = sample_request();
+    request.user_message = "workflow.status run-1".to_string();
+    let raw = r#"{
+      "selectorId":"sel-1",
+      "status":"selected",
+      "action":"command_invoke",
+      "functionId":"workflow.status",
+      "functionArgs":{"runId":"run-1"}
+    }"#;
+
+    let err = parse_and_validate_selector_result(raw, &request).expect_err("must fail");
+    assert!(err.to_string().contains("requires explicit slash command"));
+}
+
+#[test]
 fn selector_module_accepts_no_response_action() {
     let request = sample_request();
     let raw = r#"{
@@ -136,6 +152,21 @@ fn selector_module_accepts_no_response_action() {
     let parsed = parse_and_validate_selector_result(raw, &request).expect("valid selector");
     assert_eq!(parsed.status, SelectorStatus::Selected);
     assert_eq!(parsed.action, Some(SelectorAction::NoResponse));
+}
+
+#[test]
+fn selector_module_rejects_diagnostics_investigate_action() {
+    let request = sample_request();
+    let raw = r#"{
+      "selectorId":"sel-1",
+      "status":"selected",
+      "action":"diagnostics_investigate",
+      "diagnosticsScope":{"runId":"run-1"}
+    }"#;
+    let err = parse_and_validate_selector_result(raw, &request).expect_err("must fail");
+    assert!(err
+        .to_string()
+        .contains("unknown variant `diagnostics_investigate`"));
 }
 
 #[test]

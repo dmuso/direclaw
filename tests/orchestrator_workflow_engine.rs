@@ -1,9 +1,4 @@
 use direclaw::config::{OrchestratorConfig, OutputKey, PathTemplate, Settings};
-use direclaw::memory::{
-    bootstrap_memory_paths, embed_query_text, MemoryCapturedBy, MemoryNode, MemoryNodeType,
-    MemoryPaths, MemoryRepository, MemorySource, MemorySourceRecord, MemorySourceType,
-    MemoryStatus,
-};
 use direclaw::orchestration::function_registry::FunctionRegistry;
 use direclaw::orchestration::output_contract::{
     evaluate_step_result, parse_workflow_result_envelope, resolve_step_output_paths,
@@ -254,7 +249,6 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
         status: SelectorStatus::Selected,
         action: Some(SelectorAction::WorkflowStart),
         selected_workflow: Some("fix_issue".to_string()),
-        diagnostics_scope: None,
         function_id: None,
         function_args: None,
         reason: None,
@@ -385,7 +379,6 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
         status: SelectorStatus::Selected,
         action: Some(SelectorAction::WorkflowStatus),
         selected_workflow: None,
-        diagnostics_scope: None,
         function_id: None,
         function_args: None,
         reason: None,
@@ -436,7 +429,6 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
         status: SelectorStatus::Selected,
         action: Some(SelectorAction::CommandInvoke),
         selected_workflow: None,
-        diagnostics_scope: None,
         function_id: Some("workflow.status".to_string()),
         function_args: Some(Map::from_iter([(
             "runId".to_string(),
@@ -444,8 +436,10 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
         )])),
         reason: None,
     };
+    let mut command_request = request.clone();
+    command_request.user_message = format!("/workflow.status {run_id}");
     let routed_command = route_selector_action(
-        &request,
+        &command_request,
         &command_result,
         RouteContext {
             status_input: &StatusResolutionInput {
@@ -482,7 +476,9 @@ fn selector_actions_start_workflow_status_and_commands_execute() {
       "functionId":"orchestrator.shutdown",
       "functionArgs":{}
     }"#;
-    let err = parse_and_validate_selector_result(unknown_function, &request)
+    let mut unknown_request = request.clone();
+    unknown_request.user_message = "/orchestrator.shutdown".to_string();
+    let err = parse_and_validate_selector_result(unknown_function, &unknown_request)
         .expect_err("reject unknown function");
     assert!(err.to_string().contains("availableFunctions"));
 }
@@ -902,7 +898,7 @@ fn run_timeout_uses_elapsed_runtime_across_multiple_steps() {
 }
 
 #[test]
-fn diagnostics_and_queue_dispatch_paths_are_supported() {
+fn queue_dispatch_paths_are_supported() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
     bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
@@ -957,64 +953,6 @@ channels: {{}}
         store.clone(),
     );
 
-    let request = sample_selector_request();
-    let runner_binaries = mock_runner_binaries(dir.path());
-    let diag_result = SelectorResult {
-        selector_id: "selector-1".to_string(),
-        status: SelectorStatus::Selected,
-        action: Some(SelectorAction::DiagnosticsInvestigate),
-        selected_workflow: None,
-        diagnostics_scope: Some(Map::from_iter([(
-            "runId".to_string(),
-            Value::String("run-diag".to_string()),
-        )])),
-        function_id: None,
-        function_args: None,
-        reason: None,
-    };
-
-    let diag = route_selector_action(
-        &request,
-        &diag_result,
-        RouteContext {
-            status_input: &StatusResolutionInput {
-                explicit_run_id: None,
-                inbound_workflow_run_id: None,
-                channel_profile_id: Some("engineering".to_string()),
-                conversation_id: Some("thread-1".to_string()),
-            },
-            active_conversation_runs: &BTreeMap::new(),
-            functions: &functions,
-            run_store: &store,
-            orchestrator: &sample_orchestrator(),
-            workspace_access_context: None,
-            runner_binaries: Some(runner_binaries),
-            memory_enabled: false,
-            source_message_id: Some("message-1"),
-            workflow_inputs: None,
-            now: 200,
-        },
-    )
-    .expect("diag route");
-
-    match diag {
-        RoutedSelectorAction::DiagnosticsInvestigate {
-            run_id: Some(found),
-            findings,
-        } => {
-            assert_eq!(found, "run-diag");
-            assert!(findings.contains("Diagnostics summary"));
-        }
-        other => panic!("unexpected diagnostics route: {other:?}"),
-    }
-
-    assert!(runtime_root
-        .join("orchestrator/artifacts/diagnostics-context-diag-selector-1-200.json")
-        .is_file());
-    assert!(runtime_root
-        .join("orchestrator/artifacts/diagnostics-result-diag-selector-1-200.json")
-        .is_file());
-
     let mut active = BTreeMap::new();
     active.insert(
         ("engineering".to_string(), "thread-1".to_string()),
@@ -1061,411 +999,6 @@ channels: {{}}
 }
 
 #[test]
-fn diagnostics_persists_memory_evidence_bundle_with_provenance() {
-    let dir = tempdir().expect("tempdir");
-    let state_root = dir.path().join(".direclaw");
-    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let store = WorkflowRunStore::new(&state_root);
-    store
-        .create_run("run-diag-mem", "fix_issue", 5)
-        .expect("create run");
-
-    let paths = MemoryPaths::from_runtime_root(&state_root);
-    bootstrap_memory_paths(&paths).expect("bootstrap memory paths");
-    let repo = MemoryRepository::open(&paths.database, "engineering_orchestrator").expect("repo");
-    repo.ensure_schema().expect("schema");
-    let node = MemoryNode {
-        memory_id: "mem-1".to_string(),
-        orchestrator_id: "engineering_orchestrator".to_string(),
-        node_type: MemoryNodeType::Fact,
-        importance: 80,
-        content: "Please fix this bug: deployment blocked by a failing integration test"
-            .to_string(),
-        summary: "Please fix this bug - deployment blocked".to_string(),
-        confidence: 0.9,
-        source: MemorySource {
-            source_type: MemorySourceType::Diagnostics,
-            source_path: None,
-            conversation_id: Some("thread-1".to_string()),
-            workflow_run_id: Some("run-diag-mem".to_string()),
-            step_id: None,
-            captured_by: MemoryCapturedBy::System,
-        },
-        status: MemoryStatus::Active,
-        created_at: 10,
-        updated_at: 10,
-    };
-    repo.upsert_nodes_and_edges(
-        &MemorySourceRecord {
-            orchestrator_id: "engineering_orchestrator".to_string(),
-            idempotency_key: "diag-evidence-1".to_string(),
-            source_type: MemorySourceType::Diagnostics,
-            source_path: None,
-            conversation_id: Some("thread-1".to_string()),
-            workflow_run_id: Some("run-diag-mem".to_string()),
-            step_id: None,
-            captured_by: MemoryCapturedBy::System,
-        },
-        &[node],
-        &[],
-    )
-    .expect("persist memory");
-    let query_embedding = embed_query_text("please fix this bug").expect("query embedding");
-    repo.upsert_embedding("mem-1", &query_embedding, 10)
-        .expect("persist embedding");
-
-    let request = sample_selector_request();
-    let functions = FunctionRegistry::with_run_store(
-        vec![
-            "workflow.status".to_string(),
-            "workflow.cancel".to_string(),
-            "orchestrator.list".to_string(),
-        ],
-        store.clone(),
-    );
-    let diag_result = SelectorResult {
-        selector_id: "selector-1".to_string(),
-        status: SelectorStatus::Selected,
-        action: Some(SelectorAction::DiagnosticsInvestigate),
-        selected_workflow: None,
-        diagnostics_scope: Some(Map::from_iter([(
-            "runId".to_string(),
-            Value::String("run-diag-mem".to_string()),
-        )])),
-        function_id: None,
-        function_args: None,
-        reason: None,
-    };
-
-    let _ = route_selector_action(
-        &request,
-        &diag_result,
-        RouteContext {
-            status_input: &StatusResolutionInput {
-                explicit_run_id: None,
-                inbound_workflow_run_id: None,
-                channel_profile_id: Some("engineering".to_string()),
-                conversation_id: Some("thread-1".to_string()),
-            },
-            active_conversation_runs: &BTreeMap::new(),
-            functions: &functions,
-            run_store: &store,
-            orchestrator: &sample_orchestrator(),
-            workspace_access_context: None,
-            runner_binaries: None,
-            memory_enabled: true,
-            source_message_id: Some("message-1"),
-            workflow_inputs: None,
-            now: 400,
-        },
-    )
-    .expect("diag route");
-
-    let evidence_path = state_root
-        .join("orchestrator/artifacts/diagnostics-memory-evidence-diag-selector-1-400.json");
-    assert!(
-        evidence_path.is_file(),
-        "missing diagnostics memory evidence"
-    );
-    let evidence = fs::read_to_string(&evidence_path).expect("read evidence");
-    assert!(evidence.contains("memoryId"));
-    assert!(evidence.contains("sourceType"));
-    assert!(evidence.contains("finalScore"));
-    assert!(evidence.contains("\"mode\": \"hybrid\""));
-}
-
-#[test]
-fn diagnostics_persists_findings_back_into_memory_graph() {
-    let dir = tempdir().expect("tempdir");
-    let state_root = dir.path().join(".direclaw");
-    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let store = WorkflowRunStore::new(&state_root);
-    store
-        .create_run("run-diag-writeback", "fix_issue", 5)
-        .expect("create run");
-
-    let paths = MemoryPaths::from_runtime_root(&state_root);
-    bootstrap_memory_paths(&paths).expect("bootstrap memory paths");
-    let repo = MemoryRepository::open(&paths.database, "engineering_orchestrator").expect("repo");
-    repo.ensure_schema().expect("schema");
-
-    let request = sample_selector_request();
-    let functions = FunctionRegistry::with_run_store(
-        vec![
-            "workflow.status".to_string(),
-            "workflow.cancel".to_string(),
-            "orchestrator.list".to_string(),
-        ],
-        store.clone(),
-    );
-    let diag_result = SelectorResult {
-        selector_id: "selector-1".to_string(),
-        status: SelectorStatus::Selected,
-        action: Some(SelectorAction::DiagnosticsInvestigate),
-        selected_workflow: None,
-        diagnostics_scope: Some(Map::from_iter([(
-            "runId".to_string(),
-            Value::String("run-diag-writeback".to_string()),
-        )])),
-        function_id: None,
-        function_args: None,
-        reason: None,
-    };
-
-    let _ = route_selector_action(
-        &request,
-        &diag_result,
-        RouteContext {
-            status_input: &StatusResolutionInput {
-                explicit_run_id: None,
-                inbound_workflow_run_id: None,
-                channel_profile_id: Some("engineering".to_string()),
-                conversation_id: Some("thread-1".to_string()),
-            },
-            active_conversation_runs: &BTreeMap::new(),
-            functions: &functions,
-            run_store: &store,
-            orchestrator: &sample_orchestrator(),
-            workspace_access_context: None,
-            runner_binaries: None,
-            memory_enabled: true,
-            source_message_id: Some("message-1"),
-            workflow_inputs: None,
-            now: 430,
-        },
-    )
-    .expect("diag route");
-
-    let db = rusqlite::Connection::open(&paths.database).expect("open sqlite");
-    let (count, memory_id): (i64, String) = db
-        .query_row(
-            "
-            SELECT COUNT(*), COALESCE(MAX(memory_id), '')
-            FROM memories
-            WHERE orchestrator_id = 'engineering_orchestrator'
-              AND source_type = 'diagnostics'
-            ",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("query diagnostics memories");
-    assert!(count >= 1, "expected diagnostics memory to be persisted");
-    assert!(
-        memory_id.starts_with("d-"),
-        "unexpected diagnostics memory id prefix: {memory_id}"
-    );
-    assert_eq!(
-        memory_id.len(),
-        8,
-        "unexpected diagnostics memory id length: {memory_id}"
-    );
-    assert!(
-        memory_id[2..].chars().all(|ch| ch.is_ascii_hexdigit()),
-        "unexpected diagnostics memory id format: {memory_id}"
-    );
-
-    let embedding_count: i64 = db
-        .query_row(
-            "SELECT COUNT(*) FROM memory_embeddings WHERE memory_id = ?1",
-            rusqlite::params![memory_id],
-            |row| row.get(0),
-        )
-        .expect("count diagnostics embeddings");
-    assert_eq!(embedding_count, 1);
-}
-
-#[test]
-fn diagnostics_does_not_recall_memory_when_scope_is_unresolved() {
-    let dir = tempdir().expect("tempdir");
-    let state_root = dir.path().join(".direclaw");
-    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let store = WorkflowRunStore::new(&state_root);
-
-    let paths = MemoryPaths::from_runtime_root(&state_root);
-    bootstrap_memory_paths(&paths).expect("bootstrap memory paths");
-    let repo = MemoryRepository::open(&paths.database, "engineering_orchestrator").expect("repo");
-    repo.ensure_schema().expect("schema");
-    let node = MemoryNode {
-        memory_id: "mem-1".to_string(),
-        orchestrator_id: "engineering_orchestrator".to_string(),
-        node_type: MemoryNodeType::Fact,
-        importance: 80,
-        content: "Any text that would match diagnostics recall".to_string(),
-        summary: "recall candidate".to_string(),
-        confidence: 0.9,
-        source: MemorySource {
-            source_type: MemorySourceType::Diagnostics,
-            source_path: None,
-            conversation_id: Some("thread-1".to_string()),
-            workflow_run_id: None,
-            step_id: None,
-            captured_by: MemoryCapturedBy::System,
-        },
-        status: MemoryStatus::Active,
-        created_at: 10,
-        updated_at: 10,
-    };
-    repo.upsert_nodes_and_edges(
-        &MemorySourceRecord {
-            orchestrator_id: "engineering_orchestrator".to_string(),
-            idempotency_key: "diag-unresolved-1".to_string(),
-            source_type: MemorySourceType::Diagnostics,
-            source_path: None,
-            conversation_id: Some("thread-1".to_string()),
-            workflow_run_id: None,
-            step_id: None,
-            captured_by: MemoryCapturedBy::System,
-        },
-        &[node],
-        &[],
-    )
-    .expect("persist memory");
-
-    let request = sample_selector_request();
-    let functions = FunctionRegistry::with_run_store(
-        vec![
-            "workflow.status".to_string(),
-            "workflow.cancel".to_string(),
-            "orchestrator.list".to_string(),
-        ],
-        store.clone(),
-    );
-    let unresolved_diag = SelectorResult {
-        selector_id: "selector-1".to_string(),
-        status: SelectorStatus::Selected,
-        action: Some(SelectorAction::DiagnosticsInvestigate),
-        selected_workflow: None,
-        diagnostics_scope: Some(Map::from_iter([(
-            "runId".to_string(),
-            Value::String(" ".to_string()),
-        )])),
-        function_id: None,
-        function_args: None,
-        reason: None,
-    };
-
-    let routed = route_selector_action(
-        &request,
-        &unresolved_diag,
-        RouteContext {
-            status_input: &StatusResolutionInput {
-                explicit_run_id: None,
-                inbound_workflow_run_id: None,
-                channel_profile_id: None,
-                conversation_id: None,
-            },
-            active_conversation_runs: &BTreeMap::new(),
-            functions: &functions,
-            run_store: &store,
-            orchestrator: &sample_orchestrator(),
-            workspace_access_context: None,
-            runner_binaries: None,
-            memory_enabled: true,
-            source_message_id: Some("message-1"),
-            workflow_inputs: None,
-            now: 410,
-        },
-    )
-    .expect("diag route");
-
-    match routed {
-        RoutedSelectorAction::DiagnosticsInvestigate {
-            run_id: None,
-            findings,
-        } => assert!(findings.contains("scope is ambiguous")),
-        other => panic!("unexpected diagnostics route: {other:?}"),
-    }
-
-    let evidence_path = state_root
-        .join("orchestrator/artifacts/diagnostics-memory-evidence-diag-selector-1-410.json");
-    assert!(
-        !evidence_path.is_file(),
-        "unexpected diagnostics evidence for unresolved scope"
-    );
-
-    let context_path =
-        state_root.join("orchestrator/artifacts/diagnostics-context-diag-selector-1-410.json");
-    let context: Value =
-        serde_json::from_str(&fs::read_to_string(context_path).expect("read context json"))
-            .expect("parse context json");
-    assert!(
-        context.get("memoryEvidence").is_none(),
-        "memory evidence must be omitted for unresolved diagnostics scope"
-    );
-}
-
-#[test]
-fn diagnostics_persists_memory_evidence_failure_artifact() {
-    let dir = tempdir().expect("tempdir");
-    let state_root = dir.path().join(".direclaw");
-    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
-    let store = WorkflowRunStore::new(&state_root);
-    store
-        .create_run("run-diag-fail", "fix_issue", 5)
-        .expect("create run");
-
-    let db_path = MemoryPaths::from_runtime_root(&state_root).database;
-    fs::create_dir_all(&db_path).expect("create invalid sqlite directory");
-
-    let request = sample_selector_request();
-    let functions = FunctionRegistry::with_run_store(
-        vec![
-            "workflow.status".to_string(),
-            "workflow.cancel".to_string(),
-            "orchestrator.list".to_string(),
-        ],
-        store.clone(),
-    );
-    let diag_result = SelectorResult {
-        selector_id: "selector-1".to_string(),
-        status: SelectorStatus::Selected,
-        action: Some(SelectorAction::DiagnosticsInvestigate),
-        selected_workflow: None,
-        diagnostics_scope: Some(Map::from_iter([(
-            "runId".to_string(),
-            Value::String("run-diag-fail".to_string()),
-        )])),
-        function_id: None,
-        function_args: None,
-        reason: None,
-    };
-
-    let _ = route_selector_action(
-        &request,
-        &diag_result,
-        RouteContext {
-            status_input: &StatusResolutionInput {
-                explicit_run_id: None,
-                inbound_workflow_run_id: None,
-                channel_profile_id: Some("engineering".to_string()),
-                conversation_id: Some("thread-1".to_string()),
-            },
-            active_conversation_runs: &BTreeMap::new(),
-            functions: &functions,
-            run_store: &store,
-            orchestrator: &sample_orchestrator(),
-            workspace_access_context: None,
-            runner_binaries: None,
-            memory_enabled: true,
-            source_message_id: Some("message-1"),
-            workflow_inputs: None,
-            now: 420,
-        },
-    )
-    .expect("diag route");
-
-    let evidence_path = state_root
-        .join("orchestrator/artifacts/diagnostics-memory-evidence-diag-selector-1-420.json");
-    assert!(
-        evidence_path.is_file(),
-        "missing diagnostics memory evidence failure artifact"
-    );
-    let evidence = fs::read_to_string(evidence_path).expect("read evidence");
-    assert!(evidence.contains("failure"));
-    assert!(evidence.contains("diagnosticsId"));
-}
-
-#[test]
 fn malicious_output_file_template_is_blocked_before_step_execution() {
     let dir = tempdir().expect("tempdir");
     let state_root = dir.path().join(".direclaw");
@@ -1499,7 +1032,7 @@ fn command_invoke_validation_enforces_schema_and_allowlist() {
         channel_profile_id: "engineering".to_string(),
         message_id: "message-1".to_string(),
         conversation_id: Some("thread-1".to_string()),
-        user_message: "cancel".to_string(),
+        user_message: "/workflow.cancel run-1".to_string(),
         thread_context: None,
         memory_bulletin: None,
         memory_bulletin_citations: Vec::new(),

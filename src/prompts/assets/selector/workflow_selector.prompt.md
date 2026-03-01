@@ -22,7 +22,6 @@ Instructions:
    - status
    - action
    - selectedWorkflow
-   - diagnosticsScope
    - functionId
    - functionArgs
    - reason
@@ -30,7 +29,6 @@ Instructions:
 7. For keys that do not apply for the selected action, write `null` (do not omit keys).
 8. Action-specific requirements:
    - workflow_start: set `selectedWorkflow` to one of `availableWorkflows`.
-   - command_invoke: set `functionId` to one of `availableFunctions` and set `functionArgs` to an object.
-   - diagnostics_investigate: set `diagnosticsScope` to an object.
+   - command_invoke: choose this only when the user explicitly typed a slash command with the exact function id (for example `/workflow.status`), then set `functionId` to one of `availableFunctions` and set `functionArgs` to an object.
 9. Do not output structured JSON anywhere else and do not rely on stdout.
 Do not use markdown fences.

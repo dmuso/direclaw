@@ -55,7 +55,6 @@ struct Scored<T> {
 enum Intent {
     WorkflowStart,
     WorkflowStatus,
-    DiagnosticsInvestigate,
     CommandInvoke,
 }
 
@@ -74,7 +73,6 @@ pub fn resolve_lexical_decision(
     let function_scores = score_functions(request, &query_tokens, config);
 
     let status_score = score_intent(&query_tokens, STATUS_INTENT);
-    let diagnostics_score = score_intent(&query_tokens, DIAGNOSTICS_INTENT);
     let command_intent_score = score_intent(&query_tokens, COMMAND_INTENT);
 
     let best_workflow = top_score(&workflow_scores)?;
@@ -88,10 +86,6 @@ pub fn resolve_lexical_decision(
         Scored {
             value: Intent::WorkflowStatus,
             score: status_score,
-        },
-        Scored {
-            value: Intent::DiagnosticsInvestigate,
-            score: diagnostics_score,
         },
         Scored {
             value: Intent::CommandInvoke,
@@ -121,61 +115,46 @@ pub fn resolve_lexical_decision(
         return None;
     }
 
-    let (action, selected_workflow, diagnostics_scope, function_id, function_args, reason) =
-        match best_action.value {
-            Intent::WorkflowStart => (
-                SelectorAction::WorkflowStart,
-                Some(best_workflow.value.clone()),
+    let (action, selected_workflow, function_id, function_args, reason) = match best_action.value {
+        Intent::WorkflowStart => (
+            SelectorAction::WorkflowStart,
+            Some(best_workflow.value.clone()),
+            None,
+            None,
+            format!(
+                "selector_source=lexical intent=workflow_start score={:.2}",
+                best_action.score
+            ),
+        ),
+        Intent::WorkflowStatus => (
+            SelectorAction::WorkflowStatus,
+            None,
+            None,
+            None,
+            format!(
+                "selector_source=lexical intent=workflow_status score={:.2}",
+                best_action.score
+            ),
+        ),
+        Intent::CommandInvoke => {
+            let selected = best_function?;
+            let schema = request
+                .available_function_schemas
+                .iter()
+                .find(|schema| schema.function_id == selected.value)?;
+            let args = extract_function_args(request, orchestrator, schema, &query_tokens)?;
+            (
+                SelectorAction::CommandInvoke,
                 None,
-                None,
-                None,
+                Some(selected.value.clone()),
+                Some(args),
                 format!(
-                    "selector_source=lexical intent=workflow_start score={:.2}",
+                    "selector_source=lexical intent=command_invoke score={:.2}",
                     best_action.score
                 ),
-            ),
-            Intent::WorkflowStatus => (
-                SelectorAction::WorkflowStatus,
-                None,
-                None,
-                None,
-                None,
-                format!(
-                    "selector_source=lexical intent=workflow_status score={:.2}",
-                    best_action.score
-                ),
-            ),
-            Intent::DiagnosticsInvestigate => (
-                SelectorAction::DiagnosticsInvestigate,
-                None,
-                Some(Map::new()),
-                None,
-                None,
-                format!(
-                    "selector_source=lexical intent=diagnostics_investigate score={:.2}",
-                    best_action.score
-                ),
-            ),
-            Intent::CommandInvoke => {
-                let selected = best_function?;
-                let schema = request
-                    .available_function_schemas
-                    .iter()
-                    .find(|schema| schema.function_id == selected.value)?;
-                let args = extract_function_args(request, orchestrator, schema, &query_tokens)?;
-                (
-                    SelectorAction::CommandInvoke,
-                    None,
-                    None,
-                    Some(selected.value.clone()),
-                    Some(args),
-                    format!(
-                        "selector_source=lexical intent=command_invoke score={:.2}",
-                        best_action.score
-                    ),
-                )
-            }
-        };
+            )
+        }
+    };
 
     Some(LexicalDecision {
         result: SelectorResult {
@@ -183,7 +162,6 @@ pub fn resolve_lexical_decision(
             status: SelectorStatus::Selected,
             action: Some(action),
             selected_workflow,
-            diagnostics_scope,
             function_id,
             function_args,
             reason: Some(reason),
@@ -481,17 +459,6 @@ fn infer_arg_value(
 
 const STATUS_INTENT: &[&str] = &[
     "status", "progress", "update", "latest", "state", "running", "current", "how", "far",
-];
-const DIAGNOSTICS_INTENT: &[&str] = &[
-    "why",
-    "failed",
-    "fail",
-    "error",
-    "investigate",
-    "diagnostics",
-    "diagnose",
-    "root",
-    "cause",
 ];
 const COMMAND_INTENT: &[&str] = &[
     "list",

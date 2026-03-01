@@ -119,7 +119,6 @@ fn enforce_no_response_policy(
 
     result.action = Some(SelectorAction::WorkflowStart);
     result.selected_workflow = Some(orchestrator.default_workflow.clone());
-    result.diagnostics_scope = None;
     result.function_id = None;
     result.function_args = None;
     result.reason = Some("no_response_overridden_to_default_workflow".to_string());
@@ -204,7 +203,6 @@ where
             status: SelectorStatus::Selected,
             action: Some(SelectorAction::NoResponse),
             selected_workflow: None,
-            diagnostics_scope: None,
             function_id: None,
             function_args: None,
             reason: Some("selector_retry_exhausted_no_response".to_string()),
@@ -645,7 +643,7 @@ fn route_scheduled_trigger(
     let workspace_context =
         verify_orchestrator_workspace_access(settings, orchestrator_id, &orchestrator)?;
 
-    let request = SelectorRequest {
+    let mut request = SelectorRequest {
         selector_id: format!("schedule-{}", envelope.execution_id),
         channel_profile_id: inbound
             .channel_profile_id
@@ -679,7 +677,6 @@ fn route_scheduled_trigger(
                 status: SelectorStatus::Selected,
                 action: Some(SelectorAction::WorkflowStart),
                 selected_workflow: Some(workflow_id),
-                diagnostics_scope: None,
                 function_id: None,
                 function_args: None,
                 reason: Some(format!(
@@ -691,19 +688,22 @@ fn route_scheduled_trigger(
         crate::orchestration::scheduler::TargetAction::CommandInvoke {
             function_id,
             function_args,
-        } => SelectorResult {
-            selector_id: request.selector_id.clone(),
-            status: SelectorStatus::Selected,
-            action: Some(SelectorAction::CommandInvoke),
-            selected_workflow: None,
-            diagnostics_scope: None,
-            function_id: Some(function_id),
-            function_args: Some(function_args),
-            reason: Some(format!(
-                "scheduled_trigger job_id={} execution_id={}",
-                envelope.job_id, envelope.execution_id
-            )),
-        },
+        } => {
+            // Keep command validation uniform by synthesizing a slash-command user message.
+            request.user_message = format!("/{function_id}");
+            SelectorResult {
+                selector_id: request.selector_id.clone(),
+                status: SelectorStatus::Selected,
+                action: Some(SelectorAction::CommandInvoke),
+                selected_workflow: None,
+                function_id: Some(function_id),
+                function_args: Some(function_args),
+                reason: Some(format!(
+                    "scheduled_trigger job_id={} execution_id={}",
+                    envelope.job_id, envelope.execution_id
+                )),
+            }
+        }
     };
 
     match route_selector_action(

@@ -740,9 +740,6 @@ fn action_to_outbound_messages(
                 vec![(message.clone(), "orchestrator".to_string())]
             }
         }
-        RoutedSelectorAction::DiagnosticsInvestigate { findings, .. } => {
-            vec![(findings.clone(), "diagnostics".to_string())]
-        }
         RoutedSelectorAction::CommandInvoke { result } => {
             let rendered = serde_json::to_string_pretty(result)
                 .unwrap_or_else(|_| "command completed".to_string());

@@ -46,7 +46,7 @@ fn selector_validation_rejects_unknown_scheduler_args() {
         channel_profile_id: "eng".to_string(),
         message_id: "m1".to_string(),
         conversation_id: Some("thread-1".to_string()),
-        user_message: "pause job".to_string(),
+        user_message: "/schedule.pause job-1".to_string(),
         thread_context: None,
         memory_bulletin: None,
         memory_bulletin_citations: vec![],

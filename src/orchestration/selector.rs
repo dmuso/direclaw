@@ -286,7 +286,6 @@ pub enum SelectorStatus {
 pub enum SelectorAction {
     WorkflowStart,
     WorkflowStatus,
-    DiagnosticsInvestigate,
     CommandInvoke,
     NoResponse,
 }
@@ -301,13 +300,39 @@ pub struct SelectorResult {
     #[serde(default)]
     pub selected_workflow: Option<String>,
     #[serde(default)]
-    pub diagnostics_scope: Option<Map<String, Value>>,
-    #[serde(default)]
     pub function_id: Option<String>,
     #[serde(default)]
     pub function_args: Option<Map<String, Value>>,
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+fn is_command_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-')
+}
+
+fn has_explicit_slash_command(user_message: &str, function_id: &str) -> bool {
+    let message = user_message.to_ascii_lowercase();
+    let needle = format!("/{}", function_id.to_ascii_lowercase());
+    for (start, _) in message.match_indices(&needle) {
+        let end = start + needle.len();
+        let has_valid_prefix = start == 0
+            || message[..start]
+                .chars()
+                .last()
+                .map(|ch| !is_command_identifier_char(ch))
+                .unwrap_or(true);
+        let has_valid_suffix = end >= message.len()
+            || message[end..]
+                .chars()
+                .next()
+                .map(|ch| !is_command_identifier_char(ch))
+                .unwrap_or(true);
+        if has_valid_prefix && has_valid_suffix {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn parse_and_validate_selector_result(
@@ -343,19 +368,17 @@ pub fn parse_and_validate_selector_result(
                     }
                 }
                 SelectorAction::WorkflowStatus => {}
-                SelectorAction::DiagnosticsInvestigate => {
-                    if result.diagnostics_scope.is_none() {
-                        return Err(OrchestratorError::SelectorValidation(
-                            "diagnostics_investigate requires diagnosticsScope object".to_string(),
-                        ));
-                    }
-                }
                 SelectorAction::CommandInvoke => {
                     let function_id = result.function_id.as_ref().ok_or_else(|| {
                         OrchestratorError::SelectorValidation(
                             "command_invoke requires functionId".to_string(),
                         )
                     })?;
+                    if !has_explicit_slash_command(&request.user_message, function_id) {
+                        return Err(OrchestratorError::SelectorValidation(format!(
+                            "command_invoke requires explicit slash command `/{function_id}` in user_message"
+                        )));
+                    }
                     if !request.available_functions.iter().any(|f| f == function_id) {
                         return Err(OrchestratorError::SelectorValidation(format!(
                             "function `{function_id}` is not in availableFunctions"
@@ -444,7 +467,6 @@ where
             status: SelectorStatus::Selected,
             action: Some(SelectorAction::WorkflowStart),
             selected_workflow: Some(orchestrator.default_workflow.clone()),
-            diagnostics_scope: None,
             function_id: None,
             function_args: None,
             reason: Some("fallback_to_default_workflow_after_retry_limit".to_string()),

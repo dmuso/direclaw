@@ -52,7 +52,6 @@ fn transitions_module_routes_status_without_active_run() {
         status: SelectorStatus::Selected,
         action: Some(SelectorAction::WorkflowStatus),
         selected_workflow: None,
-        diagnostics_scope: None,
         function_id: None,
         function_args: None,
         reason: None,
