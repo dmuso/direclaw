@@ -393,14 +393,17 @@ fn process_claimed_message(
         &functions,
         Some(binaries.clone()),
         |_attempt, _request, _orchestrator_cfg| None,
-        |workflow_id| {
-            enqueue_workflow_selection_ack(
-                &scoped.queue_paths,
-                settings,
-                &scoped.claimed.payload,
-                workflow_id,
-            )
-            .map_err(OrchestratorError::Config)
+        |workflow_id, workflow_step_count| {
+            if workflow_step_count > 1 {
+                enqueue_workflow_selection_ack(
+                    &scoped.queue_paths,
+                    settings,
+                    &scoped.claimed.payload,
+                    workflow_id,
+                )
+                .map_err(OrchestratorError::Config)?;
+            }
+            Ok(())
         },
     );
     let action = match action {

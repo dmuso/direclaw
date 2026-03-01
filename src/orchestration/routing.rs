@@ -233,7 +233,7 @@ where
         functions,
         None,
         next_selector_attempt,
-        |_workflow_id| Ok(()),
+        |_workflow_id, _workflow_step_count| Ok(()),
     )
 }
 
@@ -260,7 +260,7 @@ where
         functions,
         runner_binaries,
         next_selector_attempt,
-        |_workflow_id| Ok(()),
+        |_workflow_id, _workflow_step_count| Ok(()),
     )
 }
 
@@ -278,7 +278,7 @@ pub fn process_queued_message_with_runner_binaries_and_hook<F, H>(
 ) -> Result<RoutedSelectorAction, OrchestratorError>
 where
     F: FnMut(u32, &SelectorRequest, &OrchestratorConfig) -> Option<String>,
-    H: FnMut(&str) -> Result<(), OrchestratorError>,
+    H: FnMut(&str, usize) -> Result<(), OrchestratorError>,
 {
     let runner_binaries = runner_binaries.unwrap_or_else(resolve_runner_binaries);
     let orchestrator_id = resolve_orchestrator_id(settings, inbound)?;
@@ -580,7 +580,13 @@ where
             .as_deref()
             .filter(|value| !value.trim().is_empty())
         {
-            on_workflow_selected(workflow_id)?;
+            let workflow_step_count = orchestrator
+                .workflows
+                .iter()
+                .find(|workflow| workflow.id == workflow_id)
+                .map(|workflow| workflow.steps.len())
+                .unwrap_or(0);
+            on_workflow_selected(workflow_id, workflow_step_count)?;
         }
     }
 
