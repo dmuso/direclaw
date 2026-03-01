@@ -9,6 +9,7 @@ pub mod queue;
 pub mod runtime;
 pub mod setup;
 pub mod shared;
+pub mod skills;
 pub mod templates;
 
 pub(crate) use crate::app::command_catalog::V1_FUNCTIONS;

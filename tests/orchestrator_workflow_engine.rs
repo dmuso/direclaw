@@ -53,7 +53,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
     can_orchestrate_workflows: false
 workflows:
   - id: engineering_default
@@ -1550,7 +1550,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
     private_workspace: /tmp/outside
 workflows:
   - id: engineering_default
@@ -1655,7 +1655,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
 workflows:
   - id: fix_issue
     version: 1

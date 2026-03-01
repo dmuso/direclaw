@@ -653,7 +653,7 @@ fn workflow_steps_always_execute_from_orchestrator_root() {
         "worker".to_string(),
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
-            model: "gpt-5.2".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
             can_orchestrate_workflows: false,
         },
     );
@@ -800,7 +800,7 @@ fn workflow_runtime_consumes_tui_style_fields_end_to_end() {
         "worker".to_string(),
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
-            model: "gpt-5.2".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
             can_orchestrate_workflows: false,
         },
     );
@@ -1095,7 +1095,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         "default".to_string(),
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
-            model: "gpt-5.2".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
             can_orchestrate_workflows: true,
         },
     );
@@ -1103,7 +1103,7 @@ fn workflow_run_enforces_step_timeout_from_cli_config() {
         "worker".to_string(),
         AgentConfig {
             provider: ConfigProviderKind::OpenAi,
-            model: "gpt-5.2".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
             can_orchestrate_workflows: false,
         },
     );
@@ -1253,7 +1253,7 @@ fn channel_profile_provider_model_and_agent_alias_work() {
 
     assert_ok(&run(
         temp.path(),
-        &["provider", "openai", "--model", "gpt-5.2"],
+        &["provider", "openai", "--model", "gpt-5.3-codex-spark"],
     ));
     assert_ok(&run(temp.path(), &["model", "gpt-5.3-codex"]));
     assert_ok(&run(temp.path(), &["provider"]));

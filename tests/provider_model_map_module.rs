@@ -6,5 +6,9 @@ fn model_map_module_resolves_aliases() {
         resolve_anthropic_model("sonnet").expect("map sonnet"),
         "claude-sonnet-4-5"
     );
+    assert_eq!(
+        resolve_anthropic_model("haiku").expect("map haiku"),
+        "claude-haiku-4-5"
+    );
     assert!(resolve_anthropic_model("unknown-model").is_err());
 }

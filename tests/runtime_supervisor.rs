@@ -130,7 +130,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
 workflows:
   - id: triage
     version: 1
@@ -200,7 +200,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
 workflows:
   - id: default
     version: 1
@@ -281,7 +281,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
 workflows:
   - id: triage
     version: 1

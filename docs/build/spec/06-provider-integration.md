@@ -61,6 +61,7 @@ Model mapping:
 
 - `sonnet` -> `claude-sonnet-4-5`
 - `opus` -> `claude-opus-4-6`
+- `haiku` -> `claude-haiku-4-5`
 
 Anthropic output handling:
 
@@ -75,7 +76,7 @@ Command shape:
 
 Model handling:
 
-- Pass through supported names such as `gpt-5.2`, `gpt-5.3-codex`.
+- Pass through supported names such as `gpt-5.3-codex`, `gpt-5.3-codex-spark`.
 
 Output handling:
 

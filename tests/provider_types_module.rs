@@ -8,7 +8,7 @@ fn provider_types_module_exposes_core_request_types() {
     let request = ProviderRequest {
         agent_id: "agent-1".to_string(),
         provider: ProviderKind::OpenAi,
-        model: "gpt-5.2".to_string(),
+        model: "gpt-5.3-codex-spark".to_string(),
         cwd: dir.path().to_path_buf(),
         message: "run".to_string(),
         prompt_artifacts: direclaw::provider::write_file_backed_prompt(

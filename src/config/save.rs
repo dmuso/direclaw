@@ -10,6 +10,7 @@ use crate::orchestration::skills_mounts::{
     reconcile_all_orchestrator_skill_mounts, reconcile_orchestrator_skill_mounts,
 };
 use crate::prompts::ensure_orchestrator_prompt_templates;
+use crate::skills::ensure_orchestrator_skill_files;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -67,6 +68,7 @@ pub fn save_orchestrator_config(
         | MemoryPathError::CreateDir { path, source } => ConfigError::CreateDir { path, source },
     })?;
     ensure_orchestrator_prompt_templates(&private_workspace, orchestrator)?;
+    ensure_orchestrator_skill_files(&private_workspace)?;
     let path = private_workspace.join("orchestrator.yaml");
     let body = serde_yaml::to_string(orchestrator).map_err(|source| ConfigError::Encode {
         path: path.display().to_string(),
@@ -205,6 +207,9 @@ workflows:
         save_orchestrator_config(&settings, "alpha", &orchestrator).expect("save orchestrator");
 
         assert_symlink_to(&private_workspace.join("shared/docs"), &shared_docs);
+        assert!(private_workspace
+            .join("skills/direclaw-routing-selector-forensics/SKILL.md")
+            .is_file());
     }
 
     fn assert_symlink_to(link: &Path, target: &Path) {

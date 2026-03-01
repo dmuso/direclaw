@@ -201,7 +201,7 @@ Slack channel command surface must include:
 Required commands:
 
 - `provider [anthropic|openai] [--model ...]`
-- `model [sonnet|opus|gpt-5.2|gpt-5.3-codex]`
+- `model [sonnet|opus|haiku|gpt-5.3-codex|gpt-5.3-codex-spark]`
 
 ## Acceptance Criteria
 

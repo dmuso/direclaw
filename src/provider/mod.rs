@@ -56,7 +56,10 @@ mod tests {
             resolve_anthropic_model("opus").expect("map"),
             "claude-opus-4-6"
         );
-        assert!(resolve_anthropic_model("haiku").is_err());
+        assert_eq!(
+            resolve_anthropic_model("haiku").expect("map"),
+            "claude-haiku-4-5"
+        );
     }
 
     #[test]
@@ -76,7 +79,7 @@ mod tests {
     fn invocation_builds_expected_openai_args_and_resume_behavior() {
         let dir = tempdir().expect("tempdir");
         let mut req = sample_request(ProviderKind::OpenAi, dir.path());
-        req.model = "gpt-5.2".to_string();
+        req.model = "gpt-5.3-codex-spark".to_string();
 
         let spec = build_invocation(&req, &RunnerBinaries::default()).expect("build");
         assert_eq!(spec.binary, "codex");

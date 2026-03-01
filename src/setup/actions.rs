@@ -2479,11 +2479,11 @@ mod tests {
         );
         assert_eq!(
             model_options_for_provider(ConfigProviderKind::Anthropic),
-            &["sonnet", "opus", "claude-sonnet-4-5", "claude-opus-4-6"]
+            &["sonnet", "opus", "haiku"]
         );
         assert_eq!(
             model_options_for_provider(ConfigProviderKind::OpenAi),
-            &["gpt-5.2", "gpt-5.3-codex"]
+            &["gpt-5.3-codex", "gpt-5.3-codex-spark"]
         );
     }
 

@@ -11,7 +11,7 @@ agents:
 
   code_planner:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
     can_orchestrate_workflows: false
 
   plan_reviewer:

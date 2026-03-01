@@ -14,7 +14,7 @@ fn write_orchestrator_config(path: &Path, orchestrator_id: &str, agents: &[&str]
     let mut agent_lines = String::new();
     for agent in agents {
         agent_lines.push_str(&format!(
-            "  {agent}:\n    provider: openai\n    model: gpt-5.2\n"
+            "  {agent}:\n    provider: openai\n    model: gpt-5.3-codex-spark\n"
         ));
     }
 

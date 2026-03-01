@@ -15,7 +15,7 @@ selection_max_retries: 1
 agents:
   router:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
     can_orchestrate_workflows: true
 workflows:
   - id: quick_answer

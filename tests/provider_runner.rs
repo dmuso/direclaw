@@ -75,7 +75,12 @@ fn mocked_openai_jsonl_success() {
 
     let artifacts =
         write_file_backed_prompt(dir.path(), "req-b", "prompt", "ctx").expect("artifacts");
-    let request = base_request(ProviderKind::OpenAi, "gpt-5.2", dir.path(), artifacts);
+    let request = base_request(
+        ProviderKind::OpenAi,
+        "gpt-5.3-codex-spark",
+        dir.path(),
+        artifacts,
+    );
     let bins = RunnerBinaries {
         anthropic: "unused".to_string(),
         openai: bin.display().to_string(),
@@ -189,7 +194,12 @@ fn provider_parse_failure_is_explicit_for_openai() {
 
     let artifacts =
         write_file_backed_prompt(dir.path(), "req-f", "prompt", "ctx").expect("artifacts");
-    let request = base_request(ProviderKind::OpenAi, "gpt-5.2", dir.path(), artifacts);
+    let request = base_request(
+        ProviderKind::OpenAi,
+        "gpt-5.3-codex-spark",
+        dir.path(),
+        artifacts,
+    );
     let bins = RunnerBinaries {
         anthropic: "unused".to_string(),
         openai: bin.display().to_string(),

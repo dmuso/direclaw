@@ -26,7 +26,7 @@ fn sample_request(provider: ProviderKind, cwd: &Path) -> ProviderRequest {
 fn invocation_module_builds_openai_resume_args() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut req = sample_request(ProviderKind::OpenAi, dir.path());
-    req.model = "gpt-5.2".to_string();
+    req.model = "gpt-5.3-codex-spark".to_string();
 
     let spec = build_invocation(&req, &RunnerBinaries::default()).expect("build");
     assert_eq!(spec.binary, "codex");

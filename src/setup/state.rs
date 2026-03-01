@@ -24,9 +24,9 @@ pub(crate) fn provider_options() -> &'static [ConfigProviderKind] {
 
 pub(crate) fn model_options_for_provider(provider: ConfigProviderKind) -> &'static [&'static str] {
     if provider == ConfigProviderKind::OpenAi {
-        &["gpt-5.2", "gpt-5.3-codex"]
+        &["gpt-5.3-codex", "gpt-5.3-codex-spark"]
     } else {
-        &["sonnet", "opus", "claude-sonnet-4-5", "claude-opus-4-6"]
+        &["sonnet", "opus", "haiku"]
     }
 }
 

@@ -20,7 +20,7 @@ agents:
     can_orchestrate_workflows: true
   worker:
     provider: openai
-    model: gpt-5.2
+    model: gpt-5.3-codex-spark
     can_orchestrate_workflows: false
     shared_access: [common]
 workflows:
