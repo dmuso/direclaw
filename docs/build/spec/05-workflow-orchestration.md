@@ -376,7 +376,7 @@ Required JSON envelope:
 
 ```json
 {
-  "status": "complete|blocked|failed",
+  "status": "complete|failed",
   "summary": "short step summary",
   "output_files_written": true,
   "changed_files": ["relative/path/if_any"],
@@ -458,7 +458,7 @@ User diagnostics routing:
 `agent_task` routing:
 
 - `status=complete` -> `next` or workflow end
-- `status=blocked|failed` -> `on_blocked`/`on_failed` if configured, else run fails
+- `status=failed` -> run fails and preserve unblock guidance in summary
 
 `agent_review` routing:
 

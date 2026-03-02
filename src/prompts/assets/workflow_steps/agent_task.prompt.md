@@ -9,12 +9,12 @@ Execution requirements:
 - Follow the step objective and constraints above.
 - Use available workflow context and prior-step outputs when present.
 Required structured output keys:
-- status: "complete" | "blocked" | "failed"
+- status: "complete" | "failed"
 - summary: concise step summary
 - artifact: primary output text for this step
 Status policy:
 - complete only when the objective is fully satisfied.
-- blocked when waiting on missing dependency/permission; include unblock action in summary.
+- failed when waiting on missing dependency/permission; include unblock action in summary.
 - failed only for unrecoverable errors.
 Write outputs exactly to:
 - summary -> {{workflow.output_paths.summary}}

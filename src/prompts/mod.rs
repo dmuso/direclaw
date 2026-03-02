@@ -530,4 +530,25 @@ mod tests {
         assert!(prompt.contains("selectedWorkflow"));
         assert!(prompt.contains("must include all keys"));
     }
+
+    #[test]
+    fn builtin_task_prompts_do_not_allow_blocked_status() {
+        let prompts = [
+            DEFAULT_TASK_PROMPT_TEMPLATE,
+            MINIMAL_DEFAULT_STEP_1_PROMPT,
+            ENG_FEATURE_DELIVERY_PLAN_PROMPT,
+            ENG_FEATURE_DELIVERY_IMPLEMENT_PROMPT,
+            ENG_FEATURE_DELIVERY_DONE_PROMPT,
+            ENG_QUICK_ANSWER_PROMPT,
+            PRODUCT_PRD_RESEARCH_PROMPT,
+            PRODUCT_PRD_DRAFT_PROMPT,
+            PRODUCT_RELEASE_NOTES_COMPOSE_PROMPT,
+        ];
+        for prompt in prompts {
+            assert!(
+                !prompt.contains("\"blocked\""),
+                "prompt must not advertise blocked status: {prompt}"
+            );
+        }
+    }
 }
