@@ -510,6 +510,7 @@ mod tests {
                 channels: BTreeMap::new(),
                 auth_sync: Default::default(),
                 memory: MemoryConfig::default(),
+                local_llm: Default::default(),
             },
             queue_paths: QueuePaths::from_state_root(PathBuf::from("/tmp/state").as_path()),
             profile_id: "local-default".to_string(),

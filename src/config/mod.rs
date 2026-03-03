@@ -1,5 +1,9 @@
 pub mod error;
 pub mod load;
+pub use crate::local_llm::{
+    LocalLlmConfig, LocalLlmInferenceConfig, LocalLlmModelConfig, LocalLlmProvider,
+    LocalLlmTasksConfig,
+};
 pub mod orchestrator_file;
 pub mod orchestrators_registry;
 pub mod paths;

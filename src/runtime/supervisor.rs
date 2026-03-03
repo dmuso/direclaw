@@ -4,6 +4,7 @@ use super::{
 };
 use crate::channels::slack;
 use crate::config::load_orchestrator_config;
+use crate::local_llm::initialize_local_runtime;
 use crate::orchestration::shared_mounts::reconcile_all_orchestrator_shared_mounts;
 use crate::orchestration::skills_mounts::reconcile_all_orchestrator_skill_mounts;
 use crate::prompts::validate_orchestrator_prompt_templates;
@@ -44,6 +45,7 @@ pub fn run_supervisor(
 ) -> Result<(), RuntimeError> {
     let paths = StatePaths::new(state_root);
     bootstrap_state_root(&paths)?;
+    ensure_local_llm_startup(&paths.root, &settings)?;
     reconcile_shared_mounts_on_startup(&settings)?;
 
     let stop_path = paths.stop_signal_path();
@@ -176,6 +178,16 @@ pub fn run_supervisor(
         "runtime stopped cleanly",
     );
     Ok(())
+}
+
+fn ensure_local_llm_startup(
+    state_root: &Path,
+    settings: &crate::config::Settings,
+) -> Result<(), RuntimeError> {
+    if !settings.local_llm.enabled {
+        return Ok(());
+    }
+    initialize_local_runtime(state_root, &settings.local_llm).map_err(RuntimeError::Startup)
 }
 
 fn reconcile_shared_mounts_on_startup(

@@ -30,6 +30,7 @@ fn command_dispatch_module_executes_internal_orchestrator_list_function() {
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
+        local_llm: Default::default(),
     };
 
     let value = execute_function_invocation_with_executor(
@@ -80,6 +81,7 @@ fn schedule_show_rejects_cross_orchestrator_job_access() {
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
+        local_llm: Default::default(),
     };
 
     let alpha_runtime = settings
@@ -144,6 +146,7 @@ fn schedule_lifecycle_emits_scheduler_audit_events() {
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
+        local_llm: Default::default(),
     };
 
     let created = execute_internal_function(

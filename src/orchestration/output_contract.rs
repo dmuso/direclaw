@@ -105,45 +105,56 @@ fn validate_outputs_contract(
         return Ok(());
     }
 
-    let mut missing_required = Vec::new();
+    let mut required_issues = Vec::new();
     for key in contract.into_iter().filter(|key| key.required) {
-        if !outputs.contains_key(&key.name) {
-            missing_required.push(key.name);
+        let Some(value) = outputs.get(&key.name) else {
+            required_issues.push(format!("{}=missing", key.name));
+            continue;
+        };
+        if matches!(value, Value::String(text) if text.trim().is_empty()) {
+            required_issues.push(format!("{}=empty", key.name));
         }
     }
-    if missing_required.is_empty() {
+    if required_issues.is_empty() {
         return Ok(());
     }
 
-    missing_required.sort();
-    let details = missing_required
+    required_issues.sort();
+    let reason_prefix = if required_issues
         .iter()
-        .map(|key| format!("{key}=missing"))
-        .collect::<Vec<_>>()
-        .join(", ");
+        .all(|issue| issue.ends_with("=missing"))
+    {
+        "missing required output keys"
+    } else {
+        "invalid required output keys"
+    };
     Err(OrchestratorError::OutputContractValidation {
         step_id: step.id.clone(),
-        reason: format!("missing required output keys: {details}"),
+        reason: format!("{reason_prefix}: {}", required_issues.join(", ")),
     })
 }
 
 pub(crate) fn output_validation_errors_for(error: &OrchestratorError) -> BTreeMap<String, String> {
     match error {
-        OrchestratorError::OutputContractValidation { reason, .. } => reason
-            .trim()
-            .strip_prefix("missing required output keys:")
-            .unwrap_or(reason.as_str())
-            .split(',')
-            .filter_map(|entry| {
-                let mut parts = entry.trim().splitn(2, '=');
-                let key = parts.next()?.trim();
-                let detail = parts.next()?.trim();
-                if key.is_empty() || detail.is_empty() {
-                    return None;
-                }
-                Some((key.to_string(), detail.to_string()))
-            })
-            .collect(),
+        OrchestratorError::OutputContractValidation { reason, .. } => {
+            let details = reason
+                .trim()
+                .strip_prefix("missing required output keys:")
+                .or_else(|| reason.trim().strip_prefix("invalid required output keys:"))
+                .unwrap_or(reason.as_str());
+            details
+                .split(',')
+                .filter_map(|entry| {
+                    let mut parts = entry.trim().splitn(2, '=');
+                    let key = parts.next()?.trim();
+                    let detail = parts.next()?.trim();
+                    if key.is_empty() || detail.is_empty() {
+                        return None;
+                    }
+                    Some((key.to_string(), detail.to_string()))
+                })
+                .collect()
+        }
         _ => BTreeMap::new(),
     }
 }

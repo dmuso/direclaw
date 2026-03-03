@@ -1,4 +1,5 @@
 use super::{ConfigError, OrchestratorId};
+use crate::local_llm::LocalLlmConfig;
 use crate::memory::MemoryConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -63,6 +64,8 @@ pub struct Settings {
     pub auth_sync: AuthSyncConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub local_llm: LocalLlmConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -338,6 +341,7 @@ impl Settings {
         }
 
         self.memory.validate().map_err(ConfigError::Settings)?;
+        self.local_llm.validate().map_err(ConfigError::Settings)?;
 
         Ok(())
     }

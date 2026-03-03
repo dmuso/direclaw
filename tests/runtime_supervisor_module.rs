@@ -8,9 +8,12 @@ use direclaw::{config::Settings, runtime::RuntimeError};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tempfile::tempdir;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn runtime_supervisor_module_exposes_supervisor_state_and_lock_apis() {
@@ -127,5 +130,84 @@ channels: {{}}
     assert!(
         runtime_log.contains("prompt is inline; expected relative markdown path"),
         "expected informative prompt warning in runtime log:\n{runtime_log}"
+    );
+}
+
+#[test]
+fn runtime_supervisor_fails_fast_when_local_llm_model_download_fails() {
+    let _guard = ENV_LOCK.lock().expect("env lock");
+    let dir = tempdir().expect("tempdir");
+    let state_root = dir.path().join(".direclaw");
+    let paths = StatePaths::new(&state_root);
+    bootstrap_state_root(&paths).expect("bootstrap");
+
+    let orchestrator_workspace = dir.path().join("orch");
+    fs::create_dir_all(&orchestrator_workspace).expect("orchestrator workspace");
+    fs::write(
+        orchestrator_workspace.join("orchestrator.yaml"),
+        r#"
+id: main
+selector_agent: router
+default_workflow: triage
+selection_max_retries: 1
+selector_timeout_seconds: 30
+agents:
+  router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+workflows:
+  - id: triage
+    version: 1
+    description: "triage"
+    tags: [triage]
+    steps:
+      - id: start
+        type: agent_task
+        agent: router
+        prompt: "prompt"
+        outputs: [summary, artifact]
+        output_files:
+          summary: outputs/summary.txt
+          artifact: outputs/artifact.txt
+"#,
+    )
+    .expect("write orchestrator");
+
+    let settings: Settings = serde_yaml::from_str(&format!(
+        r#"
+workspaces_path: {workspace}
+shared_workspaces: {{}}
+orchestrators:
+  main:
+    private_workspace: {orchestrator_workspace}
+    shared_access: []
+channel_profiles: {{}}
+monitoring: {{}}
+channels: {{}}
+local_llm:
+  enabled: true
+  model:
+    repo: test/repo
+    file: missing.gguf
+"#,
+        workspace = dir.path().display(),
+        orchestrator_workspace = orchestrator_workspace.display(),
+    ))
+    .expect("parse settings");
+
+    let old = std::env::var_os("DIRECLAW_LOCAL_LLM_HF_BASE_URL");
+    std::env::set_var("DIRECLAW_LOCAL_LLM_HF_BASE_URL", "http://127.0.0.1:1");
+    let result = run_supervisor(&state_root, settings);
+    if let Some(value) = old {
+        std::env::set_var("DIRECLAW_LOCAL_LLM_HF_BASE_URL", value);
+    } else {
+        std::env::remove_var("DIRECLAW_LOCAL_LLM_HF_BASE_URL");
+    }
+
+    let err = result.expect_err("startup should fail fast");
+    assert!(
+        err.to_string().contains("failed to download model"),
+        "unexpected error: {err}"
     );
 }

@@ -1513,6 +1513,17 @@ steps:
     assert!(missing_required
         .to_string()
         .contains("missing required output keys"));
+
+    let empty_required = evaluate_step_result(
+        &workflow,
+        step,
+        r#"[workflow_result]{"required_key":"   "}[/workflow_result]"#,
+        &BTreeMap::new(),
+    )
+    .expect_err("empty required key should fail");
+    assert!(empty_required
+        .to_string()
+        .contains("invalid required output keys"));
 }
 
 #[test]
@@ -1589,6 +1600,81 @@ workflows:
     assert_eq!(
         attempt_2.output_validation_errors.get("plan"),
         Some(&"missing".to_string())
+    );
+}
+
+#[test]
+fn empty_required_output_key_retries_and_persists_key_level_validation_errors() {
+    let dir = tempdir().expect("tempdir");
+    let bad = dir.path().join("claude-empty-output");
+    write_script(
+        &bad,
+        "#!/bin/sh\necho '[workflow_result]{\"summary\":\"x\",\"plan\":\"\"}[/workflow_result]'\n",
+    );
+    let orchestrator: OrchestratorConfig = serde_yaml::from_str(
+        r#"
+id: engineering_orchestrator
+selector_agent: workflow_router
+default_workflow: wf
+selection_max_retries: 1
+agents:
+  workflow_router:
+    provider: anthropic
+    model: sonnet
+    can_orchestrate_workflows: true
+  worker:
+    provider: anthropic
+    model: sonnet
+workflows:
+  - id: wf
+    version: 1
+    steps:
+      - id: s1
+        type: agent_task
+        agent: worker
+        prompt: test
+        outputs: [summary, plan]
+        output_files:
+          summary: out/summary.txt
+          plan: out/plan.md
+        limits:
+          max_retries: 1
+"#,
+    )
+    .expect("orchestrator");
+    let state_root = dir.path().join(".direclaw");
+    bootstrap_state_root(&StatePaths::new(&state_root)).expect("bootstrap");
+    let store = WorkflowRunStore::new(&state_root);
+    store.create_run("run-empty-output", "wf", 1).expect("run");
+    let engine =
+        WorkflowEngine::new(store.clone(), orchestrator).with_runner_binaries(RunnerBinaries {
+            anthropic: bad.display().to_string(),
+            openai: "unused".to_string(),
+        });
+
+    let err = engine
+        .start("run-empty-output", 2)
+        .expect_err("must fail after retries");
+    assert!(err.to_string().contains("invalid required output keys"));
+    let run = store.load_run("run-empty-output").expect("run");
+    assert_eq!(run.state, RunState::Failed);
+    assert!(run
+        .terminal_reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("invalid required output keys"));
+
+    let attempt_1 = store
+        .load_step_attempt("run-empty-output", "s1", 1)
+        .expect("attempt1");
+    let attempt_2 = store
+        .load_step_attempt("run-empty-output", "s1", 2)
+        .expect("attempt2");
+    assert_eq!(attempt_1.state, "failed_retryable");
+    assert_eq!(attempt_2.state, "failed");
+    assert_eq!(
+        attempt_2.output_validation_errors.get("plan"),
+        Some(&"empty".to_string())
     );
 }
 

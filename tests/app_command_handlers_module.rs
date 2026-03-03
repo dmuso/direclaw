@@ -49,6 +49,7 @@ fn app_command_handlers_execute_function_invocation_routes_internal_functions() 
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
+        local_llm: Default::default(),
     };
 
     let value = execute_function_invocation(

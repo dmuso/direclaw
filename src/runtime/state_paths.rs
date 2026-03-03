@@ -1,4 +1,5 @@
 use super::RuntimeError;
+use crate::local_llm::ensure_local_llm_prompt_assets;
 use std::fs;
 use std::path::PathBuf;
 
@@ -65,5 +66,6 @@ pub fn bootstrap_state_root(paths: &StatePaths) -> Result<(), RuntimeError> {
             source,
         })?;
     }
+    ensure_local_llm_prompt_assets(&paths.root).map_err(RuntimeError::Startup)?;
     Ok(())
 }

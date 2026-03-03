@@ -2,6 +2,7 @@ use crate::channels::policy::{
     classify_response_eligibility, is_explicit_profile_mention, ResponseEligibility,
 };
 use crate::config::{load_orchestrator_config, OrchestratorConfig, Settings};
+use crate::local_llm::{local_runtime, preprocess_memory_bulletin, preprocess_thread_context};
 use crate::memory::{
     embed_query_text, generate_bulletin_for_message, persist_transcript_observation,
     HybridRecallRequest, MemoryBulletin, MemoryBulletinOptions, MemoryPaths, MemoryRecallOptions,
@@ -41,6 +42,108 @@ fn empty_bulletin(now: i64) -> MemoryBulletin {
         sections: Vec::new(),
         generated_at: now,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreprocessedLocalContext {
+    thread_context: Option<String>,
+    memory_bulletin_rendered: Option<String>,
+    memory_bulletin_citations: Vec<String>,
+}
+
+fn apply_local_llm_preprocessing(
+    runtime_root: &Path,
+    message_id: &str,
+    settings: &Settings,
+    thread_context: Option<String>,
+    memory_bulletin_rendered: Option<String>,
+    memory_bulletin_citations: Vec<String>,
+) -> PreprocessedLocalContext {
+    let Some(runtime) = local_runtime() else {
+        return PreprocessedLocalContext {
+            thread_context,
+            memory_bulletin_rendered,
+            memory_bulletin_citations,
+        };
+    };
+    apply_local_llm_preprocessing_with(
+        runtime_root,
+        message_id,
+        settings,
+        thread_context,
+        memory_bulletin_rendered,
+        memory_bulletin_citations,
+        |rendered, citations, inference| {
+            preprocess_memory_bulletin(runtime.as_ref(), rendered, citations, inference)
+        },
+        |rendered, inference| preprocess_thread_context(runtime.as_ref(), rendered, inference),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_local_llm_preprocessing_with<MB, TC>(
+    runtime_root: &Path,
+    message_id: &str,
+    settings: &Settings,
+    thread_context: Option<String>,
+    memory_bulletin_rendered: Option<String>,
+    memory_bulletin_citations: Vec<String>,
+    mut preprocess_memory: MB,
+    mut preprocess_thread: TC,
+) -> PreprocessedLocalContext
+where
+    MB: FnMut(
+        &str,
+        &[String],
+        &crate::local_llm::LocalLlmInferenceConfig,
+    ) -> Result<crate::local_llm::BulletinPreprocessOutput, String>,
+    TC: FnMut(&str, &crate::local_llm::LocalLlmInferenceConfig) -> Result<String, String>,
+{
+    let mut result = PreprocessedLocalContext {
+        thread_context,
+        memory_bulletin_rendered,
+        memory_bulletin_citations,
+    };
+    if !settings.local_llm.enabled {
+        return result;
+    }
+
+    if settings.local_llm.tasks.memory_bulletin_preprocess {
+        if let Some(rendered) = result.memory_bulletin_rendered.as_deref() {
+            match preprocess_memory(
+                rendered,
+                &result.memory_bulletin_citations,
+                &settings.local_llm.inference,
+            ) {
+                Ok(processed) => {
+                    result.memory_bulletin_rendered = Some(processed.rendered);
+                    result.memory_bulletin_citations = processed.citations;
+                }
+                Err(err) => append_security_log(
+                    runtime_root,
+                    &format!(
+                        "local llm memory bulletin preprocessing failed for message `{message_id}`: {err}"
+                    ),
+                ),
+            }
+        }
+    }
+
+    if settings.local_llm.tasks.thread_context_preprocess {
+        if let Some(rendered) = result.thread_context.as_deref() {
+            match preprocess_thread(rendered, &settings.local_llm.inference) {
+                Ok(processed) => result.thread_context = Some(processed),
+                Err(err) => append_security_log(
+                    runtime_root,
+                    &format!(
+                        "local llm thread context preprocessing failed for message `{message_id}`: {err}"
+                    ),
+                ),
+            }
+        }
+    }
+
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -510,6 +613,26 @@ where
         None
     };
 
+    let memory_bulletin_rendered = memory_bulletin.as_ref().map(|value| value.rendered.clone());
+    let memory_bulletin_citations: Vec<String> = memory_bulletin
+        .as_ref()
+        .map(|value| {
+            value
+                .citations
+                .iter()
+                .map(|citation| citation.memory_id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let preprocessed_local_context = apply_local_llm_preprocessing(
+        &runtime_root,
+        &inbound.message_id,
+        settings,
+        thread_context,
+        memory_bulletin_rendered,
+        memory_bulletin_citations,
+    );
+
     let request = SelectorRequest {
         selector_id: format!("sel-{}", inbound.message_id),
         channel_profile_id: inbound
@@ -519,18 +642,9 @@ where
         message_id: inbound.message_id.clone(),
         conversation_id: inbound.conversation_id.clone(),
         user_message: inbound.message.clone(),
-        thread_context,
-        memory_bulletin: memory_bulletin.as_ref().map(|value| value.rendered.clone()),
-        memory_bulletin_citations: memory_bulletin
-            .as_ref()
-            .map(|value| {
-                value
-                    .citations
-                    .iter()
-                    .map(|citation| citation.memory_id.clone())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        thread_context: preprocessed_local_context.thread_context,
+        memory_bulletin: preprocessed_local_context.memory_bulletin_rendered,
+        memory_bulletin_citations: preprocessed_local_context.memory_bulletin_citations,
         available_workflows: orchestrator
             .workflows
             .iter()
@@ -787,5 +901,86 @@ fn route_scheduled_trigger(
             );
             Err(err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Settings;
+    use tempfile::tempdir;
+
+    fn settings_with_local_llm_enabled() -> Settings {
+        serde_yaml::from_str(
+            r#"
+workspaces_path: /tmp/workspaces
+shared_workspaces: {}
+orchestrators: {}
+channel_profiles: {}
+monitoring: {}
+channels: {}
+local_llm:
+  enabled: true
+"#,
+        )
+        .expect("parse settings")
+    }
+
+    #[test]
+    fn local_llm_preprocessing_helper_applies_transforms() {
+        let settings = settings_with_local_llm_enabled();
+        let temp = tempdir().expect("tempdir");
+        let processed = apply_local_llm_preprocessing_with(
+            temp.path(),
+            "m-1",
+            &settings,
+            Some("thread raw".to_string()),
+            Some("bulletin raw".to_string()),
+            vec!["mem-1".to_string(), "mem-1".to_string()],
+            |_rendered, _citations, _inference| {
+                Ok(crate::local_llm::BulletinPreprocessOutput {
+                    rendered: "bulletin optimized".to_string(),
+                    citations: vec!["mem-1".to_string()],
+                })
+            },
+            |_rendered, _inference| Ok("thread optimized".to_string()),
+        );
+        assert_eq!(
+            processed.thread_context.as_deref(),
+            Some("thread optimized")
+        );
+        assert_eq!(
+            processed.memory_bulletin_rendered.as_deref(),
+            Some("bulletin optimized")
+        );
+        assert_eq!(
+            processed.memory_bulletin_citations,
+            vec!["mem-1".to_string()]
+        );
+    }
+
+    #[test]
+    fn local_llm_preprocessing_helper_falls_back_on_preprocess_errors() {
+        let settings = settings_with_local_llm_enabled();
+        let temp = tempdir().expect("tempdir");
+        let processed = apply_local_llm_preprocessing_with(
+            temp.path(),
+            "m-2",
+            &settings,
+            Some("thread raw".to_string()),
+            Some("bulletin raw".to_string()),
+            vec!["mem-1".to_string()],
+            |_rendered, _citations, _inference| Err("boom".to_string()),
+            |_rendered, _inference| Err("boom".to_string()),
+        );
+        assert_eq!(processed.thread_context.as_deref(), Some("thread raw"));
+        assert_eq!(
+            processed.memory_bulletin_rendered.as_deref(),
+            Some("bulletin raw")
+        );
+        assert_eq!(
+            processed.memory_bulletin_citations,
+            vec!["mem-1".to_string()]
+        );
     }
 }

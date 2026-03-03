@@ -1,6 +1,7 @@
 pub mod app;
 pub mod channels;
 pub mod config;
+pub mod local_llm;
 pub mod memory;
 pub mod orchestration;
 pub mod prompts;

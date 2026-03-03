@@ -960,6 +960,7 @@ impl SetupDraft {
             channels: BTreeMap::new(),
             auth_sync: AuthSyncConfig::default(),
             memory: MemoryConfig::default(),
+            local_llm: Default::default(),
         });
 
         settings.workspaces_path = self.workspaces_path.clone();

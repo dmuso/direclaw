@@ -446,6 +446,7 @@ fn sample_settings_with_dm_listing(
         channels,
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
+        local_llm: Default::default(),
     }
 }
 

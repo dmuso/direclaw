@@ -59,6 +59,7 @@ mod tests {
             channels: BTreeMap::new(),
             auth_sync: Default::default(),
             memory: Default::default(),
+            local_llm: Default::default(),
         }
     }
 

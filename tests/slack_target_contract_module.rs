@@ -125,6 +125,7 @@ fn profile_mapping_validation_rejects_cross_orchestrator_target() {
         channels: BTreeMap::new(),
         auth_sync: AuthSyncConfig::default(),
         memory: MemoryConfig::default(),
+        local_llm: Default::default(),
     };
     let target = SlackTargetRef {
         channel_profile_id: "slack_beta".to_string(),
