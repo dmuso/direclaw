@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalLlmProvider {
-    Candle,
+    LlamaCpp,
 }
 
 fn default_enabled() -> bool {
@@ -11,7 +11,7 @@ fn default_enabled() -> bool {
 }
 
 fn default_provider() -> LocalLlmProvider {
-    LocalLlmProvider::Candle
+    LocalLlmProvider::LlamaCpp
 }
 
 fn default_repo() -> String {
@@ -20,14 +20,6 @@ fn default_repo() -> String {
 
 fn default_file() -> String {
     "Qwen3.5-0.8B-UD-IQ2_M.gguf".to_string()
-}
-
-fn default_tokenizer_repo() -> String {
-    "Qwen/Qwen3.5-0.8B".to_string()
-}
-
-fn default_tokenizer_file() -> String {
-    "tokenizer.json".to_string()
 }
 
 fn default_temperature() -> f64 {
@@ -93,10 +85,6 @@ pub struct LocalLlmModelConfig {
     pub file: String,
     pub revision: Option<String>,
     pub sha256: Option<String>,
-    #[serde(default = "default_tokenizer_repo")]
-    pub tokenizer_repo: String,
-    #[serde(default = "default_tokenizer_file")]
-    pub tokenizer_file: String,
 }
 
 impl Default for LocalLlmModelConfig {
@@ -106,8 +94,6 @@ impl Default for LocalLlmModelConfig {
             file: default_file(),
             revision: None,
             sha256: None,
-            tokenizer_repo: default_tokenizer_repo(),
-            tokenizer_file: default_tokenizer_file(),
         }
     }
 }
@@ -185,12 +171,6 @@ impl LocalLlmConfig {
         }
         if self.model.file.trim().is_empty() {
             return Err("local_llm.model.file must be non-empty".to_string());
-        }
-        if self.model.tokenizer_repo.trim().is_empty() {
-            return Err("local_llm.model.tokenizer_repo must be non-empty".to_string());
-        }
-        if self.model.tokenizer_file.trim().is_empty() {
-            return Err("local_llm.model.tokenizer_file must be non-empty".to_string());
         }
         if self.inference.max_input_chars == 0 {
             return Err("local_llm.inference.max_input_chars must be >= 1".to_string());

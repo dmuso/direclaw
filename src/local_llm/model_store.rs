@@ -43,35 +43,6 @@ pub fn ensure_model_available(
     ensure_model_available_with_downloader(state_root, model, download_model_file)
 }
 
-pub fn ensure_tokenizer_available(
-    state_root: &Path,
-    model: &LocalLlmModelConfig,
-) -> Result<PathBuf, String> {
-    let location = resolve_model_location(state_root, model);
-    fs::create_dir_all(&location.models_dir).map_err(|e| {
-        format!(
-            "failed to create models directory {}: {e}",
-            location.models_dir.display()
-        )
-    })?;
-    let tokenizer_path = location.models_dir.join(model.tokenizer_file.trim());
-    if tokenizer_path.is_file() {
-        return Ok(tokenizer_path);
-    }
-    let revision = model.revision.clone().unwrap_or_else(|| "main".to_string());
-    let url = model_download_url(&model.tokenizer_repo, &revision, &model.tokenizer_file);
-    let temp_path = tokenizer_path.with_extension(format!("downloading-{}", std::process::id()));
-    download_model_file(&url, &temp_path)?;
-    fs::rename(&temp_path, &tokenizer_path).map_err(|e| {
-        format!(
-            "failed to move tokenizer from {} to {}: {e}",
-            temp_path.display(),
-            tokenizer_path.display()
-        )
-    })?;
-    Ok(tokenizer_path)
-}
-
 pub fn ensure_model_available_with_downloader<F>(
     state_root: &Path,
     model: &LocalLlmModelConfig,

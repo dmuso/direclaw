@@ -1,4 +1,4 @@
-use crate::local_llm::{CandleQwenRuntime, LocalLlmInferenceConfig};
+use crate::local_llm::{LlamaCppRuntime, LocalLlmInferenceConfig};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,7 +8,7 @@ pub struct BulletinPreprocessOutput {
 }
 
 pub fn preprocess_memory_bulletin(
-    runtime: &CandleQwenRuntime,
+    runtime: &LlamaCppRuntime,
     bulletin: &str,
     citations: &[String],
     inference: &LocalLlmInferenceConfig,
@@ -28,7 +28,7 @@ pub fn preprocess_memory_bulletin(
 }
 
 pub fn preprocess_thread_context(
-    runtime: &CandleQwenRuntime,
+    runtime: &LlamaCppRuntime,
     thread_context: &str,
     inference: &LocalLlmInferenceConfig,
 ) -> Result<String, String> {

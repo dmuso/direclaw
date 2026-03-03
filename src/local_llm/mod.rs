@@ -1,17 +1,17 @@
-mod candle_runtime;
 mod config;
+mod llama_runtime;
 mod model_store;
 mod preprocess;
 mod prompts;
 
-pub use candle_runtime::CandleQwenRuntime;
 pub use config::{
     LocalLlmConfig, LocalLlmInferenceConfig, LocalLlmModelConfig, LocalLlmProvider,
     LocalLlmTasksConfig,
 };
+pub use llama_runtime::LlamaCppRuntime;
 pub use model_store::{
-    ensure_model_available, ensure_model_available_with_downloader, ensure_tokenizer_available,
-    model_download_url, resolve_model_location, ModelLocation,
+    ensure_model_available, ensure_model_available_with_downloader, model_download_url,
+    resolve_model_location, ModelLocation,
 };
 pub use preprocess::{
     preprocess_memory_bulletin, preprocess_thread_context, BulletinPreprocessOutput,
@@ -30,17 +30,15 @@ struct RuntimeKey {
     model_repo: String,
     model_file: String,
     model_revision: Option<String>,
-    tokenizer_repo: String,
-    tokenizer_file: String,
     inference: LocalLlmInferenceConfig,
 }
 
 struct RuntimeSlot {
     key: RuntimeKey,
-    runtime: Arc<CandleQwenRuntime>,
+    runtime: Arc<LlamaCppRuntime>,
 }
 
-static LOCAL_QWEN_RUNTIME: LazyLock<Mutex<Option<RuntimeSlot>>> =
+static LOCAL_LLAMA_RUNTIME: LazyLock<Mutex<Option<RuntimeSlot>>> =
     LazyLock::new(|| Mutex::new(None));
 
 fn runtime_key(state_root: &Path, config: &LocalLlmConfig) -> RuntimeKey {
@@ -49,8 +47,6 @@ fn runtime_key(state_root: &Path, config: &LocalLlmConfig) -> RuntimeKey {
         model_repo: config.model.repo.clone(),
         model_file: config.model.file.clone(),
         model_revision: config.model.revision.clone(),
-        tokenizer_repo: config.model.tokenizer_repo.clone(),
-        tokenizer_file: config.model.tokenizer_file.clone(),
         inference: config.inference.clone(),
     }
 }
@@ -62,15 +58,8 @@ fn should_reload_runtime(current: Option<&RuntimeKey>, next: &RuntimeKey) -> boo
 pub fn initialize_local_runtime(state_root: &Path, config: &LocalLlmConfig) -> Result<(), String> {
     initialize_local_runtime_with_loader(state_root, config, |state_root, config| {
         let model_path = ensure_model_available(state_root, &config.model)?;
-        let tokenizer_path = ensure_tokenizer_available(state_root, &config.model)?;
         let prompts = load_local_llm_prompt_templates(state_root);
-        CandleQwenRuntime::load(
-            &model_path,
-            &config.model,
-            &tokenizer_path,
-            &prompts,
-            &config.inference,
-        )
+        LlamaCppRuntime::load(&model_path, &config.model, &prompts, &config.inference)
     })
 }
 
@@ -80,13 +69,13 @@ fn initialize_local_runtime_with_loader<F>(
     loader: F,
 ) -> Result<(), String>
 where
-    F: FnOnce(&Path, &LocalLlmConfig) -> Result<CandleQwenRuntime, String>,
+    F: FnOnce(&Path, &LocalLlmConfig) -> Result<LlamaCppRuntime, String>,
 {
     if !config.enabled {
         return Ok(());
     }
     let key = runtime_key(state_root, config);
-    let mut slot = LOCAL_QWEN_RUNTIME
+    let mut slot = LOCAL_LLAMA_RUNTIME
         .lock()
         .map_err(|_| "failed to acquire local runtime lock".to_string())?;
     if !should_reload_runtime(slot.as_ref().map(|value| &value.key), &key) {
@@ -100,8 +89,8 @@ where
     Ok(())
 }
 
-pub fn local_runtime() -> Option<Arc<CandleQwenRuntime>> {
-    let slot = LOCAL_QWEN_RUNTIME.lock().ok()?;
+pub fn local_runtime() -> Option<Arc<LlamaCppRuntime>> {
+    let slot = LOCAL_LLAMA_RUNTIME.lock().ok()?;
     slot.as_ref().map(|current| current.runtime.clone())
 }
 

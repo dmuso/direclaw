@@ -1,4 +1,5 @@
 use direclaw::config::{ConfigError, Settings, ValidationOptions};
+use direclaw::local_llm::LocalLlmProvider;
 
 #[test]
 fn settings_local_llm_defaults_parse_and_validate() {
@@ -20,6 +21,7 @@ channels: {}
         })
         .expect("validation succeeds");
     assert!(!settings.local_llm.enabled);
+    assert_eq!(settings.local_llm.provider, LocalLlmProvider::LlamaCpp);
 }
 
 #[test]
